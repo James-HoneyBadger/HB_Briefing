@@ -275,6 +275,52 @@ def _parse_date(value):
         return None
 
 
+def _parse_clock(value):
+    """Parse an "HH:MM" quiet-hours boundary; None when blank or malformed."""
+    try:
+        hour, minute = (value or "").strip().split(":")
+        hour, minute = int(hour), int(minute)
+    except (AttributeError, ValueError):
+        return None
+    if 0 <= hour < 24 and 0 <= minute < 60:
+        return hour * 60 + minute
+    return None
+
+
+def in_scan_window(settings, now=None):
+    """True when `now` falls inside the configured scanning hours.
+
+    Blank boundaries mean all day. A window whose end is before its start wraps
+    midnight, so 22:00-06:00 means overnight.
+    """
+    start = _parse_clock(settings.get("scan_window_start", ""))
+    end = _parse_clock(settings.get("scan_window_end", ""))
+    if start is None or end is None or start == end:
+        return True
+    now = now or datetime.now()
+    minute = now.hour * 60 + now.minute
+    if start < end:
+        return start <= minute < end
+    return minute >= start or minute < end
+
+
+def parse_setting_clock(value):
+    """Validate an HH:MM window boundary; returns minutes past midnight or None."""
+    return _parse_clock(value)
+
+
+def seconds_until_window(settings, now=None):
+    """Seconds until the window opens; 0 when it is open now or unrestricted."""
+    if in_scan_window(settings, now):
+        return 0
+    start = _parse_clock(settings.get("scan_window_start", ""))
+    if start is None:
+        return 0
+    now = now or datetime.now()
+    minute = now.hour * 60 + now.minute
+    return ((start - minute) % (24 * 60)) * 60
+
+
 def _parse_pubdate(value):
     """Normalise an RSS RFC-822 or Atom ISO-8601 date to an ISO timestamp."""
     raw = (value or "").strip()
@@ -302,6 +348,7 @@ SETTING_CHOICES = {
     "theme": ("dark", "light"),
     "window_state": ("normal", "zoomed"),
     "notify_min_severity": ("high", "medium"),
+    "scan_interval_minutes": ("5", "10", "15", "30", "60", "120", "240"),
 }
 
 # key -> (minimum, maximum) for numeric settings.
@@ -310,6 +357,7 @@ INT_SETTINGS = {
     "sash": (0, 4000),
     "font_scale": (80, 150),
     "notify_max_items": (1, 20),
+    "scan_interval_minutes": (5, 1440),
 }
 
 WINDOW_GEOMETRY_RE = re.compile(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}){2}$")
@@ -336,6 +384,10 @@ DEFAULT_SETTINGS = {
     "filter_category": "all",
     "filter_group": "all",
     "row_order": "priority",
+    "auto_scan": True,
+    "scan_interval_minutes": 30,
+    "scan_window_start": "",
+    "scan_window_end": "",
     "notify_enabled": False,
     "notify_min_severity": "high",
     "notify_include_watchlist": True,
@@ -360,6 +412,8 @@ def _coerce_setting(key, value, default):
             return max(low, min(high, int(value)))
         except (TypeError, ValueError):
             return default
+    if key in ("scan_window_start", "scan_window_end"):
+        return value if _parse_clock(value) is not None else default
     if key in SETTING_CHOICES:
         return value if value in SETTING_CHOICES[key] else default
     if key == "window_geometry":
@@ -2109,6 +2163,50 @@ def export_items(conn, path, fmt=None, filters=None, title=None, log_callback=pr
     return path, len(rows)
 
 
+# ------------------------------------------------------------------------- scheduling
+
+
+def run_daemon(log_callback=print, cancel=None, sleep=None, clock=None, max_cycles=None):
+    """Scan on the configured interval, honouring the quiet-hours window.
+
+    `sleep`, `clock` and `max_cycles` are injectable so the loop is testable.
+    Returns the number of scans actually performed.
+    """
+    sleep = sleep or time.sleep
+    clock = clock or datetime.now
+    performed = 0
+    cycles = 0
+    # max_cycles bounds loop iterations, not scans: a disabled or out-of-window
+    # daemon still has to terminate when asked.
+    while cancel is None or not cancel.is_set():
+        if max_cycles is not None and cycles >= max_cycles:
+            break
+        cycles += 1
+
+        settings = load_settings()
+        if settings["auto_scan"] and in_scan_window(settings, clock()):
+            log_callback(f"[{_now_hms()}] Scheduled scan starting.")
+            try:
+                run_scan(log_callback=log_callback, cancel=cancel)
+            except Exception as exc:  # keep the daemon alive across a failed cycle
+                log_callback(f"[ERROR] Scan failed: {type(exc).__name__}: {exc}")
+            performed += 1
+        elif not settings["auto_scan"]:
+            log_callback(f"[{_now_hms()}] Scanning is disabled; waiting.")
+        else:
+            log_callback(f"[{_now_hms()}] Outside the scanning window; waiting.")
+
+        if max_cycles is not None and cycles >= max_cycles:
+            break
+        interval = max(1, int(settings["scan_interval_minutes"])) * 60
+        remaining = interval
+        while remaining > 0 and (cancel is None or not cancel.is_set()):
+            step = min(30, remaining)
+            sleep(step)
+            remaining -= step
+    return performed
+
+
 # -------------------------------------------------------------------------- dismissals
 
 
@@ -2408,6 +2506,12 @@ if __name__ == "__main__":
         finally:
             conn.close()
         print(f"[OK] {count} signal(s) written to {path}")
+        sys.exit(0)
+    if "--daemon" in sys.argv or "--watch" in sys.argv:
+        try:
+            run_daemon()
+        except KeyboardInterrupt:
+            print("\n[INFO] Stopped.")
         sys.exit(0)
     if "--reclassify" in sys.argv:
         dry_run = "--dry-run" in sys.argv

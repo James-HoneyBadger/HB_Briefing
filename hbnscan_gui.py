@@ -75,8 +75,7 @@ class NewsScanApp(tk.Tk):
 
         self.is_scanning = False
         self._closing = False
-        self.auto_interval_sec = 1800  # 30 mins
-        self.auto_enabled = tk.BooleanVar(value=True)
+        self.auto_enabled = tk.BooleanVar(value=self.settings["auto_scan"])
 
         # Worker threads must never touch Tk directly; they post callables here.
         self._ui_queue = queue.Queue()
@@ -206,7 +205,8 @@ class NewsScanApp(tk.Tk):
         self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=120)
         self._progress_packed = False
 
-        tk.Checkbutton(toolbar, text="Auto-Poll (30m)", variable=self.auto_enabled,
+        tk.Checkbutton(toolbar, text="Auto-Scan", variable=self.auto_enabled,
+                       command=self._on_auto_toggle,
                        bg=BG_MAIN, fg=FG_TEXT, selectcolor=BG_PANEL, activebackground=BG_MAIN,
                        font=("Sans", 10)).pack(side=tk.RIGHT)
 
@@ -562,9 +562,14 @@ class NewsScanApp(tk.Tk):
         if window["feed_since"] or window["feed_until"]:
             window_text = (f"  |  Window: {window['feed_since'] or 'open'}"
                            f"→{window['feed_until'] or 'open'}")
+        scan_mode = (f"Scan: {window['scan_interval_minutes']}m"
+                     if window["auto_scan"] else "Scan: manual")
+        if window["auto_scan"] and (window["scan_window_start"] or window["scan_window_end"]):
+            scan_mode += f" ({window['scan_window_start'] or '00:00'}-" \
+                         f"{window['scan_window_end'] or '24:00'})"
         self.footer_lbl.configure(
             text=f"Active Feeds: {feeds_count}  |  Signals: {flagged_total} "
-                 f"({high_total} high)  |  AI: {ai_mode}{window_text}"
+                 f"({high_total} high)  |  {scan_mode}  |  AI: {ai_mode}{window_text}"
                  f"  |  MIT License — James-HoneyBadger"
         )
 
@@ -797,7 +802,7 @@ class NewsScanApp(tk.Tk):
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title("HB Briefing - Settings")
-        win.geometry("560x680")
+        win.geometry("560x780")
         win.configure(bg=BG_PANEL)
         win.transient(self)
 
@@ -876,6 +881,39 @@ class NewsScanApp(tk.Tk):
             threading.Thread(target=worker, daemon=True).start()
 
         test_btn.configure(command=test_key)
+
+        tk.Label(win, text="SCANNING", bg=BG_PANEL, fg=AMBER,
+                 font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(10, 2))
+        scan_var = tk.BooleanVar(value=settings["auto_scan"])
+        tk.Checkbutton(win, text="Scan automatically", variable=scan_var,
+                       bg=BG_PANEL, fg=FG_TEXT, selectcolor=BG_ACCENT,
+                       activebackground=BG_PANEL, activeforeground=FG_TEXT,
+                       font=("Sans", 9), anchor="w").pack(fill=tk.X, padx=16)
+        scan_row = tk.Frame(win, bg=BG_PANEL)
+        scan_row.pack(fill=tk.X, padx=16, pady=(4, 0))
+        interval_var = tk.StringVar(value=str(settings["scan_interval_minutes"]))
+        window_start_var = tk.StringVar(value=settings["scan_window_start"])
+        window_end_var = tk.StringVar(value=settings["scan_window_end"])
+        for label, var, choices in (
+            ("Every", interval_var, hbnscan.SETTING_CHOICES["scan_interval_minutes"]),
+        ):
+            tk.Label(scan_row, text=f"{label}:", bg=BG_PANEL, fg=FG_MUTED,
+                     font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
+            menu = tk.OptionMenu(scan_row, var, *choices)
+            menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                           relief="flat", font=("Sans", 9), highlightthickness=0,
+                           bd=0, indicatoron=False, padx=8, pady=3)
+            menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                   activeforeground=AMBER, font=("Sans", 9))
+            menu.pack(side=tk.LEFT, padx=(0, 4))
+        tk.Label(scan_row, text="min   only between", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
+        for var, hint in ((window_start_var, "HH:MM"), (window_end_var, "HH:MM")):
+            tk.Entry(scan_row, textvariable=var, width=7, bg=BG_INPUT, fg=FG_TEXT,
+                     insertbackground=FG_TEXT, relief="flat",
+                     font=("Monospace", 9)).pack(side=tk.LEFT, padx=(0, 4), ipady=2)
+        tk.Label(scan_row, text="(blank = all day)", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 8)).pack(side=tk.LEFT)
 
         tk.Label(win, text="NOTIFICATIONS", bg=BG_PANEL, fg=AMBER,
                  font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(10, 2))
@@ -962,10 +1000,26 @@ class NewsScanApp(tk.Tk):
             if start and end and start > end:
                 messagebox.showerror("Settings", "'From' is after 'To'.", parent=win)
                 return
+            for label, value in (("From", window_start_var.get().strip()),
+                                 ("To", window_end_var.get().strip())):
+                if value and hbnscan.parse_setting_clock(value) is None:
+                    messagebox.showerror("Settings", f"{label} must be HH:MM.", parent=win)
+                    return
+            before = hbnscan.load_settings()
             hbnscan.save_settings(feed_since=since, feed_until=until,
                                   theme=theme_var.get(), font_scale=scale_var.get(),
                                   notify_enabled=notify_var.get(),
-                                  notify_min_severity=severity_var.get())
+                                  notify_min_severity=severity_var.get(),
+                                  auto_scan=scan_var.get(),
+                                  scan_interval_minutes=interval_var.get(),
+                                  scan_window_start=window_start_var.get().strip(),
+                                  scan_window_end=window_end_var.get().strip())
+            after = hbnscan.load_settings()
+            self.auto_enabled.set(after["auto_scan"])
+            if any(before[key] != after[key] for key in
+                   ("auto_scan", "scan_interval_minutes", "scan_window_start",
+                    "scan_window_end")):
+                self._reschedule_auto_scan()
             self.log(f"[INFO] Feed date window: {since or 'open'} to {until or 'open'}.")
             if (theme_var.get() != self.settings["theme"]
                     or int(scale_var.get()) != int(self.settings["font_scale"])):
@@ -1050,16 +1104,44 @@ class NewsScanApp(tk.Tk):
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state="disabled")
 
+    def _on_auto_toggle(self):
+        enabled = self.auto_enabled.get()
+        hbnscan.save_settings(auto_scan=enabled)
+        self.log(f"[AUTO] Automatic scanning {'enabled' if enabled else 'disabled'}.")
+        self._reschedule_auto_scan()
+
+    def _reschedule_auto_scan(self):
+        """Cancel any pending timer and start a fresh cycle from now."""
+        if self._auto_after_id is not None:
+            try:
+                self.after_cancel(self._auto_after_id)
+            except tk.TclError:
+                pass
+            self._auto_after_id = None
+        self.refresh_table()  # footer shows the schedule
+        self._schedule_auto_scan(initial=False)
+
     def _schedule_auto_scan(self, initial=False):
         if self._closing:
             return
-        if self.auto_enabled.get() and not self.is_scanning:
+        settings = hbnscan.load_settings()
+        if not self.auto_enabled.get():
+            self._auto_after_id = self.after(60000, self._schedule_auto_scan)
+            return
+
+        interval_ms = max(1, int(settings["scan_interval_minutes"])) * 60000
+        if hbnscan.in_scan_window(settings):
+            if not self.is_scanning:
+                self.log("[AUTO] Startup scan triggered." if initial
+                         else f"[AUTO] Scheduled scan ({settings['scan_interval_minutes']}m).")
+                self.start_scan_thread()
+            delay = interval_ms
+        else:
+            wait = hbnscan.seconds_until_window(settings) * 1000
+            delay = min(max(wait, 60000), interval_ms)
             if initial:
-                self.log("[AUTO] Startup scan triggered.")
-            else:
-                self.log("[AUTO] Scheduled 30-minute poll triggered.")
-            self.start_scan_thread()
-        self._auto_after_id = self.after(self.auto_interval_sec * 1000, self._schedule_auto_scan)
+                self.log("[AUTO] Outside the scanning window; waiting.")
+        self._auto_after_id = self.after(delay, self._schedule_auto_scan)
 
     def _rebuild_ui(self):
         """Recreate every widget so a new palette or text size takes effect."""

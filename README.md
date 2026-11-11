@@ -170,6 +170,30 @@ Both keys are optional; blank or missing means open-ended. Rules:
 This is separate from `WATCHDOG_BRIEF_HOURS`, which bounds how far back the *briefing*
 looks among items already collected.
 
+### Scheduling
+
+Scanning is controlled from **Settings → Scanning** and mirrored in the footer:
+
+- **Scan automatically** — off means the GUI never scans on its own; the Run button and
+  the headless commands still work.
+- **Every** — 5, 10, 15, 30, 60, 120 or 240 minutes.
+- **only between** — a quiet-hours window (`HH:MM` to `HH:MM`). Blank means all day; the
+  window wraps midnight, so `22:00`–`06:00` is overnight. Outside the window the GUI sleeps
+  until it opens rather than polling.
+
+These persist in `settings.json` as `auto_scan`, `scan_interval_minutes`,
+`scan_window_start` and `scan_window_end`.
+
+For a headless machine, the engine schedules itself:
+
+```bash
+python3 hbnscan.py --daemon     # or --watch
+```
+
+It re-reads settings every cycle, so toggling `auto_scan` or changing the interval from the
+GUI takes effect on the next tick. A failed cycle is logged and the loop continues; `Ctrl-C`
+stops it. One-shot `python3 hbnscan.py` and cron remain available.
+
 ### Searching signals
 
 The **Flagged Signals** tab has a search box (`Ctrl+F`) that filters as you type, after a
