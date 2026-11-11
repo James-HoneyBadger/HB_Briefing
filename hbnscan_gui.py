@@ -307,6 +307,16 @@ class NewsScanApp(tk.Tk):
         self.tree.tag_configure("sev_medium", foreground=AMBER)
         self.tree.tag_configure("sev_low", foreground=FG_MUTED)
         self.tree.bind("<Double-1>", self._on_row_double_click)
+        self.tree.bind("<Button-3>", self._show_row_menu)
+        self.tree.bind("<Button-2>", self._show_row_menu)
+        self.row_menu = tk.Menu(self, tearoff=0, bg=BG_PANEL, fg=FG_TEXT,
+                                activebackground=BG_SELECT, activeforeground=AMBER,
+                                font=("Sans", 9))
+        self.row_menu.add_command(label="Open in browser", command=self._open_selected)
+        self.row_menu.add_command(label="Copy headline", command=self._copy_selected)
+        self.row_menu.add_separator()
+        self.row_menu.add_command(label="Not relevant (dismiss)", command=self._dismiss_selected)
+        self.tree.bind("<Delete>", lambda _e: self._dismiss_selected())
         self.bind("<Control-f>", lambda _e: self.search_entry.focus_set())
         self.row_links = {}
 
@@ -444,6 +454,7 @@ class NewsScanApp(tk.Tk):
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.row_links.clear()
+        self.row_keys = {}
         feeds_count = len(hbnscan.load_feeds())
         query = self.search_var.get().strip() if hasattr(self, "search_var") else ""
         filters = self._active_filters()
@@ -487,7 +498,7 @@ class NewsScanApp(tk.Tk):
                 conn = sqlite3.connect(DB_PATH, timeout=5)
                 try:
                     rows = conn.execute(
-                        "SELECT seen_at, title, summary, link, severity, category "
+                        "SELECT seen_at, title, summary, link, severity, category, item_hash "
                         f"FROM seen_items WHERE {where} ORDER BY {order} LIMIT ?",
                         (*params, limit),
                     ).fetchall()
@@ -509,7 +520,8 @@ class NewsScanApp(tk.Tk):
             flagged_total, high_total = totals
             previous_scan = marker[0] if marker and marker[0] else ""
             new_count = 0
-            for idx, (seen_at, title, summary, link, severity, category) in enumerate(rows):
+            for idx, (seen_at, title, summary, link, severity, category,
+                      item_hash) in enumerate(rows):
                 severity = (severity or "none").lower()
                 iid = f"row_{idx}"
                 tag = f"sev_{severity}" if severity in ("high", "medium", "low") else ""
@@ -522,6 +534,7 @@ class NewsScanApp(tk.Tk):
                     tags=(tag,) if tag else ()
                 )
                 self.row_links[iid] = link
+                self.row_keys[iid] = item_hash
 
         active = [
             f"{key.split('_', 1)[1]}={value}"
@@ -539,7 +552,7 @@ class NewsScanApp(tk.Tk):
         self.table_lbl.configure(
             text=f"{detail}: showing {len(rows)} of {total}, limit {limit}"
                  + (f", {new_count} new" if new_count else "")
-                 + ("" if (query or active) else " (double-click a row to open)")
+                 + ("" if (query or active) else " (double-click opens, right-click dismisses)")
         )
 
         ai_mode = (f"DeepSeek ({hbnscan.DEEPSEEK_MODEL})"
@@ -692,6 +705,64 @@ class NewsScanApp(tk.Tk):
             field("Confidence", f"{float(confidence):.2f}")
         field("Verification", "deep read" if deep_read else "screened only")
         self.detail_text.configure(state="disabled")
+
+    def _show_row_menu(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        self.tree.selection_set(iid)
+        self._on_row_select()
+        try:
+            self.row_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.row_menu.grab_release()
+
+    def _selected_row(self):
+        selection = self.tree.selection()
+        return selection[0] if selection else None
+
+    def _open_selected(self):
+        iid = self._selected_row()
+        if iid:
+            url = hbnscan.safe_link(self.row_links.get(iid, ""))
+            if url:
+                webbrowser.open(url)
+
+    def _copy_selected(self):
+        iid = self._selected_row()
+        if not iid:
+            return
+        headline = str(self.tree.item(iid, "values")[3])
+        self.clipboard_clear()
+        self.clipboard_append(headline)
+        self.log(f"[INFO] Copied: {headline[:70]}")
+
+    def _dismiss_selected(self):
+        iid = self._selected_row()
+        if not iid:
+            return
+        key = self.row_keys.get(iid)
+        if not key:
+            return
+        headline = str(self.tree.item(iid, "values")[3])
+        if not messagebox.askyesno(
+                "Dismiss signal",
+                f"Mark as not relevant?\n\n{headline[:160]}\n\n"
+                "It leaves the report, table and exports but stays in the database.",
+                parent=self):
+            return
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=10)
+            try:
+                state = hbnscan.dismiss_item(conn, key)
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            self.log(f"[ERROR] Dismiss failed: {exc}")
+            return
+        if state == "dismissed":
+            self.log(f"[INFO] Dismissed: {headline[:70]}")
+            self.refresh_table()
 
     def _on_row_double_click(self, _event):
         sel = self.tree.selection()

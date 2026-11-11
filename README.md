@@ -187,6 +187,11 @@ looking at, e.g. `SEARCH 'metronet': showing 51 of 51 match(es), limit 100`.
 - **Select a row** to see the detail pane: assessment, next step, published date, key
   facts, entities, confidence and whether the item was deep-read or only screened — the
   fields the grid has no room for.
+- **Right-click a row** for *Open in browser*, *Copy headline* and **Not relevant
+  (dismiss)** (`Delete` also works). Dismissing sets `flagged = 0, dismissed = 1` with a
+  `[Dismissed]` marker in the analysis; the item leaves the report, the grid, exports and
+  notifications but stays in the database, and `hbnscan.dismiss_item(conn, hash, undo=True)`
+  restores it.
 - **`NEW`** marks signals that arrived after the previous scan (`meta.prev_scan_at`), and
   the header counts them (`showing 100 of 186, limit 100, 2 new`). Nothing is marked on a
   fresh install, where everything would be new.

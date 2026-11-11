@@ -2085,6 +2085,47 @@ def export_items(conn, path, fmt=None, filters=None, title=None, log_callback=pr
     return path, len(rows)
 
 
+# -------------------------------------------------------------------------- dismissals
+
+
+def dismiss_item(conn, item_hash, undo=False):
+    """Mark a signal as not relevant (or restore it). Returns the new state, or None.
+
+    Dismissed rows stay in the database with `dismissed = 1`; every read path filters on
+    `flagged = 1`, so they leave the report, the grid, the exports and notifications while
+    remaining auditable.
+    """
+    row = conn.execute(
+        "SELECT summary, flagged, dismissed FROM seen_items WHERE item_hash = ?",
+        (item_hash,),
+    ).fetchone()
+    if row is None:
+        return None
+    summary = row[0] or ""
+    if undo:
+        stripped = summary[len("[Dismissed] "):] if summary.startswith("[Dismissed] ") else summary
+        conn.execute(
+            "UPDATE seen_items SET flagged = 1, dismissed = 0, summary = ? WHERE item_hash = ?",
+            (stripped, item_hash),
+        )
+        state = "restored"
+    else:
+        if not summary.startswith("[Dismissed] "):
+            summary = f"[Dismissed] {summary}"
+        conn.execute(
+            "UPDATE seen_items SET flagged = 0, dismissed = 1, summary = ? WHERE item_hash = ?",
+            (summary, item_hash),
+        )
+        state = "dismissed"
+    conn.commit()
+    return state
+
+
+def dismissed_count(conn):
+    return conn.execute(
+        "SELECT COUNT(*) FROM seen_items WHERE dismissed = 1").fetchone()[0]
+
+
 # --------------------------------------------------------------------------- reclassify
 
 
