@@ -66,11 +66,12 @@ FETCH_TIMEOUT = 15
 AI_TIMEOUT = 25
 AI_MAX_ATTEMPTS = 3
 AI_MAX_RETRY_DELAY = 20.0
+AI_MAX_TOKENS_CEILING = 8000
 RETENTION_DAYS = 90
 
 AI_TRIAGE_MAX_TOKENS = 320
 AI_DEEP_MAX_TOKENS = 700
-AI_BRIEF_MAX_TOKENS = 900
+AI_BRIEF_MAX_TOKENS = 2000
 
 # Regulatory action and litigation are the core of HB Briefing; every other
 # category is context around them, so the two are declared first.
@@ -910,6 +911,13 @@ def _call_deepseek(system_prompt, user_prompt, max_tokens, temperature=0.2, api_
             time.sleep(_retry_delay(None, attempt))
 
     _record_usage(data)
+    # A JSON-mode answer cut off at the token cap is unparseable, so ask again with a
+    # larger budget rather than failing the stage.
+    choice = (data.get("choices") or [{}])[0]
+    if choice.get("finish_reason") == "length" and max_tokens < AI_MAX_TOKENS_CEILING:
+        return _call_deepseek(system_prompt, user_prompt,
+                              min(max_tokens * 2, AI_MAX_TOKENS_CEILING),
+                              temperature, api_key)
     message = ((data.get("choices") or [{}])[0].get("message") or {})
     return _extract_json(message.get("content") or "{}")
 
@@ -1298,6 +1306,7 @@ def build_briefing(conn, log_callback=print):
         "INSERT INTO briefings (created_at, model, signal_count, content) VALUES (?, ?, ?, ?)",
         (datetime.now().isoformat(timespec="seconds"), DEEPSEEK_MODEL, len(rows), markdown),
     )
+    conn.commit()  # callers may close the connection before their own commit
     log_callback(f"  [BRIEFING] Generated from {len(rows)} signal(s).")
     return markdown
 
