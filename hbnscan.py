@@ -7,24 +7,31 @@ Two-stage AI triage:
   2. Verify  - for flagged items only, fetch the article, extract its text, and re-judge with facts
   3. Brief   - one per-scan call that ranks the batch, merges syndicated duplicates, writes a digest
 """
+import csv
 import hashlib
+import io
 import json
 import os
 import random
 import re
+import smtplib
 import sqlite3
 import sys
 import time
+from email.message import EmailMessage
 import urllib.error
 import urllib.request
+import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
+import html
 from html.parser import HTMLParser
+from xml.sax.saxutils import escape
 from pathlib import Path
 from urllib.parse import urlparse
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "watchdog_state.db"
@@ -290,7 +297,20 @@ SETTING_CHOICES = {
     "filter_category": ("all",) + CATEGORIES,
     "filter_group": ("all", "watchlist", "core", "context"),
     "row_order": ("priority", "newest", "oldest", "severity", "title", "category"),
+    "theme": ("dark", "light"),
+    "window_state": ("normal", "zoomed"),
+    "notify_min_severity": ("high", "medium"),
 }
+
+# key -> (minimum, maximum) for numeric settings.
+INT_SETTINGS = {
+    "table_limit": (10, 5000),
+    "sash": (0, 4000),
+    "font_scale": (80, 150),
+    "notify_max_items": (1, 20),
+}
+
+WINDOW_GEOMETRY_RE = re.compile(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}){2}$")
 
 # Order fragments are fixed strings, never interpolated from user input.
 _GROUP_RANK = ("CASE WHEN summary LIKE '[Watchlist]%' THEN 0 ELSE 1 END, "
@@ -314,7 +334,38 @@ DEFAULT_SETTINGS = {
     "filter_category": "all",
     "filter_group": "all",
     "row_order": "priority",
+    "notify_enabled": False,
+    "notify_min_severity": "high",
+    "notify_include_watchlist": True,
+    "notify_max_items": 5,
+    "theme": "dark",
+    "window_geometry": "",
+    "window_state": "normal",
+    "sash": 360,
+    "font_scale": 100,
 }
+
+
+def _coerce_setting(key, value, default):
+    """Validate one stored value against the schema for its key."""
+    if isinstance(default, bool):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value) if value is not None else default
+    if key in INT_SETTINGS:
+        low, high = INT_SETTINGS[key]
+        try:
+            return max(low, min(high, int(value)))
+        except (TypeError, ValueError):
+            return default
+    if key in SETTING_CHOICES:
+        return value if value in SETTING_CHOICES[key] else default
+    if key == "window_geometry":
+        return value if isinstance(value, str) and WINDOW_GEOMETRY_RE.match(value) else default
+    if key in ("feed_since", "feed_until"):
+        parsed = _parse_date(value)
+        return parsed.isoformat() if parsed else default
+    return default
 
 
 def load_settings():
@@ -329,17 +380,7 @@ def load_settings():
     if not isinstance(stored, dict):
         return settings
     for key, default in DEFAULT_SETTINGS.items():
-        value = stored.get(key)
-        if isinstance(default, int):
-            try:
-                settings[key] = max(TABLE_LIMIT_MIN, min(TABLE_LIMIT_MAX, int(value)))
-            except (TypeError, ValueError):
-                pass
-        elif key in SETTING_CHOICES:
-            if value in SETTING_CHOICES[key]:
-                settings[key] = value
-        elif _parse_date(value):
-            settings[key] = _parse_date(value).isoformat()
+        settings[key] = _coerce_setting(key, stored.get(key), default)
     return settings
 
 
@@ -352,17 +393,8 @@ def save_settings(**values):
     """Merge values into settings.json; invalid values are reset to their default."""
     settings = load_settings()
     for key, value in values.items():
-        if key not in DEFAULT_SETTINGS:
-            continue
-        if isinstance(DEFAULT_SETTINGS[key], int):
-            try:
-                settings[key] = max(TABLE_LIMIT_MIN, min(TABLE_LIMIT_MAX, int(value)))
-            except (TypeError, ValueError):
-                settings[key] = DEFAULT_SETTINGS[key]
-        elif key in SETTING_CHOICES:
-            settings[key] = value if value in SETTING_CHOICES[key] else DEFAULT_SETTINGS[key]
-        else:
-            settings[key] = value if _parse_date(value) else ""
+        if key in DEFAULT_SETTINGS:
+            settings[key] = _coerce_setting(key, value, DEFAULT_SETTINGS[key])
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     return settings
 
@@ -420,6 +452,25 @@ def _is_trusted_source(feed_url):
 # --------------------------------------------------------------------------- database
 
 
+def acquire_lock(path):
+    """Take a non-blocking exclusive lock. Returns the handle, or None if already held.
+
+    The handle must stay referenced: closing it releases the lock. On platforms
+    without fcntl this degrades to no locking rather than failing.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return open(path, "w")
+    handle = open(path, "w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
 def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("""
@@ -442,6 +493,12 @@ def init_db():
             etag TEXT,
             last_modified TEXT,
             checked_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
         )
     """)
     conn.execute("""
@@ -1286,7 +1343,19 @@ INSERT_SQL = (
 )
 
 
-def run_scan(log_callback=print):
+def run_scan(log_callback=print, cancel=None):
+    """Run one scan, guarded against a concurrent scan in another process."""
+    lock = acquire_lock(APP_DIR / "scan.lock")
+    if lock is None:
+        log_callback("[!] Another scan is already running; this one was skipped.")
+        return 0, 0
+    try:
+        return _run_scan(log_callback, cancel)
+    finally:
+        lock.close()
+
+
+def _run_scan(log_callback=print, cancel=None):
     reset_usage()
     scan_started = datetime.now().isoformat(timespec="seconds")
     conn = init_db()
@@ -1310,7 +1379,12 @@ def run_scan(log_callback=print):
     scan_verdicts = {}
 
     try:
+        cancelled = False
         for url in feeds:
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                log_callback("  [CANCELLED] not all feeds were reached")
+                break
             log_callback(f"  -> Fetching: {url}")
             etag, last_modified = get_feed_state(conn, url)
             try:
@@ -1324,8 +1398,13 @@ def run_scan(log_callback=print):
 
             processed = 0
             capped = False
+            cancelled = False
             skipped = 0
             for item in items:
+                if cancel is not None and cancel.is_set():
+                    cancelled = True
+                    log_callback("  [CANCELLED] stopped mid-feed")
+                    break
                 if processed >= MAX_NEW_PER_FEED:
                     capped = True
                     log_callback(
@@ -1380,6 +1459,9 @@ def run_scan(log_callback=print):
                         + (" (deep read)" if verdict["deep_read"] else "")
                     )
 
+            if cancelled:
+                conn.commit()
+                break
             if skipped:
                 log_callback(f"     ({skipped} item(s) outside the feed date window)")
             if capped:
@@ -1391,7 +1473,7 @@ def run_scan(log_callback=print):
             conn.commit()
 
         prune_old_items(conn)
-        briefing_markdown = build_briefing(conn, log_callback)
+        briefing_markdown = None if cancelled else build_briefing(conn, log_callback)
         write_report(conn, briefing_markdown)
         conn.commit()
     finally:
@@ -1415,14 +1497,586 @@ def run_scan(log_callback=print):
         except sqlite3.Error as exc:
             log_callback(f"  [!] Could not record usage: {exc}")
 
+    try:
+        store = init_db()
+        try:
+            previous = store.execute(
+                "SELECT value FROM meta WHERE key = 'last_scan_at'").fetchone()
+            store.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('prev_scan_at', ?)",
+                          (previous[0] if previous else "",))
+            store.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('last_scan_at', ?)",
+                          (datetime.now().isoformat(timespec="seconds"),))
+            store.commit()
+        finally:
+            store.close()
+    except sqlite3.Error as exc:
+        log_callback(f"  [!] Could not record scan time: {exc}")
+
+    if not (cancel is not None and cancel.is_set()) and new_count:
+        try:
+            notify_conn = init_db()
+            try:
+                send_notifications(notify_conn, settings, log_callback)
+            finally:
+                notify_conn.close()
+        except sqlite3.Error as exc:
+            log_callback(f"  [!] Notification step skipped: {exc}")
+
+    cancel_text = " | CANCELLED" if (cancel is not None and cancel.is_set()) else ""
     usage_text = (f" | AI: {USAGE['calls']} calls, {USAGE['prompt_tokens']} in"
                   f" / {USAGE['completion_tokens']} out") if USAGE["calls"] else ""
     log_callback(
         f"[{_now_hms()}] Scan complete. New: {new_count} | Flagged: {flagged_count} "
-        f"| Deep reads: {deep_count}" + usage_text
+        f"| Deep reads: {deep_count}" + usage_text + cancel_text
         + (f" | Out of window: {out_of_range}" if out_of_range else "")
     )
     return new_count, flagged_count
+
+# ------------------------------------------------------------------------ notifications
+
+SMTP_ENV_KEYS = (
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM",
+    "SMTP_SECURITY", "NOTIFY_EMAIL_TO", "NOTIFY_SMS_TO", "SMS_GATEWAY_DOMAIN",
+)
+
+# Free carrier e-mail-to-SMS gateways: <number>@<gateway> receives a text.
+SMS_GATEWAYS = {
+    "verizon": "vtext.com",
+    "att": "txt.att.net",
+    "tmobile": "tmomail.net",
+    "sprint": "messaging.sprintpcs.com",
+    "uscellular": "email.uscc.net",
+    "googlefi": "msg.fi.google.com",
+    "cricket": "sms.cricketwireless.net",
+    "metro": "mymetropcs.com",
+}
+
+
+def _env_values():
+    """Read .env fresh (the GUI writes it at runtime) with real env winning."""
+    values = dict(dotenv_values(ENV_PATH)) if ENV_PATH.exists() else {}
+    for key in SMTP_ENV_KEYS + ("DEEPSEEK_API_KEY",):
+        if os.getenv(key):
+            values[key] = os.getenv(key)
+    return {key: (value or "").strip() for key, value in values.items()}
+
+
+def notification_config():
+    """Resolve SMTP settings and recipient addresses, including SMS gateways."""
+    env = _env_values()
+    gateway = env.get("SMS_GATEWAY_DOMAIN", "").lower()
+    gateway = SMS_GATEWAYS.get(gateway, gateway)
+
+    emails = [a.strip() for a in env.get("NOTIFY_EMAIL_TO", "").split(",") if a.strip()]
+    sms = []
+    for raw in env.get("NOTIFY_SMS_TO", "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if "@" in raw:
+            sms.append(raw)
+        elif gateway:
+            sms.append(f"{re.sub(r'[^0-9+]', '', raw)}@{gateway}")
+
+    port = env.get("SMTP_PORT", "").strip()
+    security = env.get("SMTP_SECURITY", "starttls").lower()
+    return {
+        "host": env.get("SMTP_HOST", ""),
+        "port": int(port) if port.isdigit() else (465 if security == "ssl" else 587),
+        "user": env.get("SMTP_USER", ""),
+        "password": env.get("SMTP_PASSWORD", ""),
+        "sender": env.get("SMTP_FROM", "") or env.get("SMTP_USER", ""),
+        "security": security if security in ("starttls", "ssl", "none") else "starttls",
+        "emails": emails,
+        "sms": sms,
+        "recipients": emails + sms,
+    }
+
+
+def notifications_configured(config=None):
+    config = config or notification_config()
+    return bool(config["host"] and config["sender"] and config["recipients"])
+
+
+def describe_notifications(config=None):
+    config = config or notification_config()
+    if not notifications_configured(config):
+        return "not configured - set SMTP_HOST and NOTIFY_EMAIL_TO in .env"
+    return (f"{config['host']}:{config['port']} ({config['security']}) - "
+            f"{len(config['emails'])} email, {len(config['sms'])} SMS")
+
+
+def _notify_subject(items):
+    top = _clean_text(items[0]["title"], 90) if items else ""
+    if len(items) == 1:
+        return f"[HB Briefing] {top}"
+    return f"[HB Briefing] {len(items)} new signals - {top}"
+
+
+def _notify_body(items):
+    lines = []
+    for item in items:
+        lines.append(f"[{item['severity'].upper()}] {_clean_text(item['title'], 140)}")
+        detail = f"    {item['category']}"
+        if item.get("published"):
+            detail += f" - published {item['published'][:10]}"
+        lines.append(detail)
+        if item.get("link"):
+            lines.append(f"    {item['link']}")
+        lines.append("")
+    lines.append("-- HB Briefing")
+    return "\n".join(lines)
+
+
+def _smtp_send(config, subject, body):
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = config["sender"]
+    message["To"] = ", ".join(config["recipients"])
+    message.set_content(body)
+
+    if config["security"] == "ssl":
+        server = smtplib.SMTP_SSL(config["host"], config["port"], timeout=20)
+    else:
+        server = smtplib.SMTP(config["host"], config["port"], timeout=20)
+    try:
+        if config["security"] == "starttls":
+            server.starttls()
+        if config["user"] and config["password"]:
+            server.login(config["user"], config["password"])
+        server.send_message(message)
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+
+def _pending_alerts(conn, settings):
+    """New high-priority signals since the last notification, newest first."""
+    severities = ("high",) if settings["notify_min_severity"] == "high" else ("high", "medium")
+    marks = ",".join("?" for _ in severities)
+    last = conn.execute("SELECT value FROM meta WHERE key = 'last_notified_at'").fetchone()
+    since = last[0] if last and last[0] else ""
+    sql = (
+        "SELECT title, link, severity, category, published, seen_at FROM seen_items "
+        f"WHERE flagged = 1 AND severity IN ({marks}) AND seen_at > ?"
+    )
+    if not settings["notify_include_watchlist"]:
+        sql += " AND summary NOT LIKE '[Watchlist]%'"
+    rows = conn.execute(
+        sql + " ORDER BY " + ROW_ORDERS["priority"] + " LIMIT ?",
+        (*severities, since, settings["notify_max_items"]),
+    ).fetchall()
+    return [
+        {"title": t, "link": l, "severity": s, "category": c, "published": p, "seen_at": a}
+        for t, l, s, c, p, a in rows
+    ]
+
+
+def send_notifications(conn, settings=None, log_callback=print):
+    """Mail new high-priority signals. Never raises: a scan must not fail on SMTP."""
+    settings = settings or load_settings()
+    if not settings["notify_enabled"]:
+        return 0
+    config = notification_config()
+    if not notifications_configured(config):
+        log_callback("  [!] Notifications are on but SMTP is not configured; see .env")
+        return 0
+
+    items = _pending_alerts(conn, settings)
+    if not items:
+        return 0
+    try:
+        _smtp_send(config, _notify_subject(items), _notify_body(items))
+    except Exception as exc:
+        log_callback(f"  [!] Notification failed: {type(exc).__name__}: {exc}")
+        return 0
+
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_notified_at', ?)",
+        (datetime.now().isoformat(timespec="seconds"),),
+    )
+    conn.commit()
+    log_callback(f"  [NOTIFY] Sent {len(items)} signal(s) to {len(config['recipients'])} recipient(s).")
+    return len(items)
+
+
+def send_test_notification(log_callback=print):
+    """Send one fixed message so the operator can prove the wiring."""
+    config = notification_config()
+    if not notifications_configured(config):
+        log_callback("[FAIL] Notifications are not configured.")
+        log_callback("       Set SMTP_HOST, SMTP_FROM and NOTIFY_EMAIL_TO in .env.")
+        return 1
+    sample = [{
+        "title": "Test message from HB Briefing",
+        "link": "",
+        "severity": "high",
+        "category": "regulatory_action",
+        "published": "",
+    }]
+    try:
+        _smtp_send(config, "[HB Briefing] Test notification", _notify_body(sample))
+    except Exception as exc:
+        log_callback(f"[FAIL] {type(exc).__name__}: {exc}")
+        return 1
+    log_callback(f"[OK] Test sent to {len(config['recipients'])} recipient(s): "
+                 f"{describe_notifications(config)}")
+    return 0
+
+
+# ----------------------------------------------------------------------------- export
+
+EXPORT_FORMATS = {
+    ".md": "markdown", ".markdown": "markdown", ".txt": "text",
+    ".html": "html", ".htm": "html", ".csv": "csv", ".json": "json", ".docx": "docx",
+}
+EXPORT_TYPES = [("Markdown", "*.md"), ("HTML", "*.html"), ("CSV", "*.csv"),
+                ("JSON", "*.json"), ("Word document", "*.docx"), ("Plain text", "*.txt")]
+
+EXPORT_COLUMNS = (
+    ("detected", "Detected"), ("published", "Published"), ("severity", "Severity"),
+    ("category", "Category"), ("priority", "Priority"), ("title", "Headline"),
+    ("link", "Link"), ("source", "Source"), ("analysis", "AI assessment"),
+    ("action", "Next step"), ("facts", "Key facts"), ("entities", "Entities"),
+    ("confidence", "Confidence"), ("verification", "Verification"),
+)
+
+
+def _export_filters(filters):
+    """Translate GUI-style filters into a WHERE clause plus bound parameters."""
+    filters = filters or {}
+    clauses = ["flagged = 1"]
+    params = []
+    severity = filters.get("severity", "all")
+    if severity and severity != "all":
+        clauses.append("severity = ?")
+        params.append(severity)
+    category = filters.get("category", "all")
+    if category and category != "all":
+        clauses.append("category = ?")
+        params.append(category)
+    group = filters.get("group", "all")
+    if group == "watchlist":
+        clauses.append("summary LIKE '[Watchlist]%'")
+    elif group == "core":
+        clauses.append("summary NOT LIKE '[Watchlist]%'")
+        clauses.append("category IN ('regulatory_action', 'litigation')")
+    elif group == "context":
+        clauses.append("summary NOT LIKE '[Watchlist]%'")
+        clauses.append("category NOT IN ('regulatory_action', 'litigation')")
+    query = (filters.get("query") or "").strip()
+    if query:
+        like = f"%{query}%"
+        clauses.append("(title LIKE ? OR summary LIKE ? OR category LIKE ? OR link LIKE ?)")
+        params.extend([like, like, like, like])
+    since = filters.get("since") or ""
+    if since:
+        clauses.append("seen_at >= ?")
+        params.append(since)
+    limit = filters.get("limit")
+    try:
+        limit = max(1, min(10000, int(limit)))
+    except (TypeError, ValueError):
+        limit = 10000
+    return " AND ".join(clauses), params, limit
+
+
+def export_rows(conn, filters=None):
+    """Every stored field worth exporting, worst-priority last."""
+    where, params, limit = _export_filters(filters)
+    rows = conn.execute(
+        "SELECT title, link, feed_url, severity, category, summary, action, facts, entities, "
+        "confidence, deep_read, published, seen_at FROM seen_items "
+        f"WHERE {where} ORDER BY {ROW_ORDERS['priority']} LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    out = []
+    for (title, link, feed, severity, category, summary, action, facts, entities,
+         confidence, deep_read, published, seen_at) in rows:
+        try:
+            fact_list = json.loads(facts or "[]")
+        except ValueError:
+            fact_list = []
+        try:
+            entity_map = json.loads(entities or "{}")
+        except ValueError:
+            entity_map = {}
+        out.append({
+            "detected": seen_at or "",
+            "published": (published or "")[:10],
+            "severity": severity or "none",
+            "category": category or "other",
+            "priority": PRIORITY_LABELS.get(_priority_of(summary, category), "context"),
+            "title": title or "",
+            "link": link or "",
+            "source": urlparse(feed or "").hostname or "",
+            "analysis": (summary or "").replace("[Watchlist] ", "").replace("[Local Heuristic] ", ""),
+            "action": action or "",
+            "facts": [str(f) for f in fact_list if str(f).strip()],
+            "entities": {str(k): [str(v) for v in vals] for k, vals in entity_map.items()
+                         if isinstance(vals, list) and vals},
+            "confidence": "" if confidence is None else f"{float(confidence):.2f}",
+            "verification": "deep read" if deep_read else "screened only",
+        })
+    return out
+
+
+PRIORITY_LABELS = {"watchlist": "watchlist", "core": "core", "context": "context"}
+
+
+def _priority_of(summary, category):
+    if (summary or "").startswith("[Watchlist]"):
+        return "watchlist"
+    if (category or "") in CORE_CATEGORIES:
+        return "core"
+    return "context"
+
+
+def _export_counts(rows):
+    counts = {"high": 0, "medium": 0, "low": 0, "none": 0}
+    for row in rows:
+        counts[row["severity"]] = counts.get(row["severity"], 0) + 1
+    return counts
+
+
+def latest_briefing(conn):
+    row = conn.execute(
+        "SELECT content, created_at FROM briefings ORDER BY id DESC LIMIT 1").fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def render_text(rows, title="HB Briefing", briefing=None):
+    counts = _export_counts(rows)
+    lines = [title, "=" * len(title), ""]
+    lines.append(f"{len(rows)} signal(s): " + ", ".join(f"{k} {v}" for k, v in counts.items() if v))
+    lines.append("")
+    if briefing and briefing[0]:
+        lines.append("EXECUTIVE BRIEFING" + (f" (briefed {briefing[1]})" if briefing[1] else ""))
+        lines.extend("    " + line for line in briefing[0].splitlines() if line.strip())
+        lines.append("")
+    for row in rows:
+        lines.append(f"[{row['severity'].upper()}] {row['title']}")
+        lines.append(f"    {row['category']} | {row['priority']} | {row['verification']}"
+                     + (f" | published {row['published']}" if row["published"] else ""))
+        if row["analysis"]:
+            lines.append(f"    {row['analysis']}")
+        for fact in row["facts"]:
+            lines.append(f"    - {fact}")
+        if row["action"]:
+            lines.append(f"    Next step: {row['action']}")
+        if row["link"]:
+            lines.append(f"    {row['link']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_markdown(rows, title="HB Briefing", briefing=None):
+    counts = _export_counts(rows)
+    lines = [f"# {title}", "",
+             f"_Exported {datetime.now().strftime('%Y-%m-%d %H:%M')} · {len(rows)} signal(s): "
+             + ", ".join(f"{k} {v}" for k, v in counts.items() if v) + "_", ""]
+    if briefing and briefing[0]:
+        lines.extend(["## Executive Briefing", "",
+                      f"_Briefed {briefing[1]}_" if briefing[1] else "", briefing[0], ""])
+    for row in rows:
+        link = safe_link(row["link"])
+        heading = f"### [{_md_text(row['title'])}]({_md_url(link)})" if link else f"### {_md_text(row['title'])}"
+        lines.append(heading)
+        lines.append(f"- **Severity:** {row['severity']} · **Category:** {row['category']} · "
+                     f"**Priority:** {row['priority']}")
+        lines.append(f"- **Detected:** {row['detected']}")
+        if row["published"]:
+            lines.append(f"- **Published:** {row['published']}")
+        lines.append(f"- **Verification:** {row['verification']}")
+        if row["analysis"]:
+            lines.append(f"- **Assessment:** {_md_text(row['analysis'])}")
+        if row["action"]:
+            lines.append(f"- **Next step:** {_md_text(row['action'])}")
+        if row["facts"]:
+            lines.append("- **Key facts:** " + "; ".join(_md_text(f) for f in row["facts"]))
+        if row["entities"]:
+            rendered = "; ".join(f"{k}: {', '.join(v)}" for k, v in row["entities"].items())
+            lines.append(f"- **Entities:** {_md_text(rendered)}")
+        if row["confidence"]:
+            lines.append(f"- **Confidence:** {row['confidence']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_csv(rows):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_MINIMAL)
+    writer.writerow([label for _, label in EXPORT_COLUMNS])
+    for row in rows:
+        writer.writerow([
+            row["detected"], row["published"], row["severity"], row["category"],
+            row["priority"], row["title"], row["link"], row["source"], row["analysis"],
+            row["action"], "; ".join(row["facts"]),
+            "; ".join(f"{k}: {', '.join(v)}" for k, v in row["entities"].items()),
+            row["confidence"], row["verification"],
+        ])
+    return buffer.getvalue()
+
+
+def render_json(rows, title="HB Briefing", briefing=None):
+    return json.dumps({"title": title, "exported": datetime.now().isoformat(timespec="seconds"),
+                       "count": len(rows), "briefing": briefing[0] if briefing else None,
+                       "signals": rows}, indent=2, ensure_ascii=False)
+
+
+def render_html(rows, title="HB Briefing", briefing=None):
+    counts = _export_counts(rows)
+    badge = {"high": "#b91c1c", "medium": "#b45309", "low": "#475569", "none": "#64748b"}
+    cards = []
+    for row in rows:
+        link = safe_link(row["link"])
+        title_html = (f'<a href="{html.escape(link, quote=True)}">{html.escape(row["title"])}</a>'
+                      if link else html.escape(row["title"]))
+        facts = ("<ul>" + "".join(f"<li>{html.escape(f)}</li>" for f in row["facts"]) + "</ul>"
+                 if row["facts"] else "")
+        entities = ("; ".join(f"{html.escape(k)}: {html.escape(', '.join(v))}"
+                              for k, v in row["entities"].items()))
+        meta = [html.escape(row["category"]), html.escape(row["priority"]),
+                html.escape(row["verification"])]
+        if row["published"]:
+            meta.append(f"published {html.escape(row['published'])}")
+        if row["confidence"]:
+            meta.append(f"confidence {html.escape(row['confidence'])}")
+        cards.append(f"""
+        <article class="card">
+          <h2><span class="badge" style="background:{badge.get(row['severity'], '#64748b')}">
+            {html.escape(row['severity'].upper())}</span> {title_html}</h2>
+          <p class="meta">{" · ".join(meta)}</p>
+          {f'<p class="ai"><strong>Assessment.</strong> {html.escape(row["analysis"])}</p>' if row["analysis"] else ""}
+          {f'<p><strong>Key facts.</strong></p>{facts}' if facts else ""}
+          {f'<p class="entities"><strong>Entities.</strong> {entities}</p>' if entities else ""}
+          {f'<p><strong>Next step.</strong> {html.escape(row["action"])}</p>' if row["action"] else ""}
+        </article>""")
+    briefing_html = ""
+    if briefing and briefing[0]:
+        briefing_html = ('<section class="briefing"><h2>Executive Briefing</h2>'
+                         f'<p class="meta">{html.escape(briefing[1] or "")}</p>'
+                         f'<pre>{html.escape(briefing[0])}</pre></section>')
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{html.escape(title)}</title>
+<style>
+ body {{ font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0;
+        background: #f4f6f9; color: #0f172a; }}
+ header {{ background: #1a202c; color: #e2e8f0; padding: 22px 28px; }}
+ header h1 {{ margin: 0 0 6px; font-size: 21px; }}
+ header p {{ margin: 0; color: #94a3b8; font-size: 13px; }}
+ main {{ max-width: 900px; margin: 0 auto; padding: 22px; }}
+ .card {{ background: #fff; border-radius: 8px; padding: 16px 18px; margin: 0 0 14px;
+          box-shadow: 0 1px 3px rgba(15,23,42,.10); }}
+ .card h2 {{ font-size: 16px; margin: 0 0 8px; line-height: 1.35; }}
+ .card a {{ color: #1d4ed8; text-decoration: none; }}
+ .badge {{ color: #fff; font-size: 11px; padding: 2px 7px; border-radius: 4px;
+           vertical-align: 2px; letter-spacing: .04em; }}
+ .meta {{ color: #64748b; font-size: 12px; margin: 0 0 8px; }}
+ .ai {{ background: #f8fafc; border-left: 3px solid #cbd5e1; padding: 8px 12px; margin: 8px 0; }}
+ .entities {{ color: #334155; font-size: 13px; }}
+ ul {{ margin: 6px 0; padding-left: 20px; }}
+ .briefing {{ background:#fff; border-radius:8px; padding:16px 18px; margin-bottom:14px; }}
+ .briefing pre {{ white-space:pre-wrap; font: 14px/1.5 ui-monospace, monospace; margin:0; }}
+</style></head><body>
+<header><h1>{html.escape(title)}</h1>
+<p>{len(rows)} signal(s) · {counts['high']} high · {counts['medium']} medium ·
+{counts['low']} low · exported {datetime.now().strftime('%Y-%m-%d %H:%M')}</p></header>
+<main>{briefing_html}{"".join(cards)}</main></body></html>"""
+
+
+def _docx_paragraph(text, bold=False, size=20, space_after=100, bullet=False):
+    run_props = "<w:rPr>" + ("<w:b/>" if bold else "") + f'<w:sz w:val="{size}"/>' \
+                + '<w:szCs w:val="{}"/>'.format(size) + "</w:rPr>"
+    body = escape(text)
+    return (f'<w:p><w:pPr><w:spacing w:after="{space_after}"/></w:pPr>'
+            f'<w:r>{run_props}<w:t xml:space="preserve">{("• " if bullet else "")}{body}</w:t></w:r></w:p>')
+
+
+def render_docx(rows, path, title="HB Briefing", briefing=None):
+    """Write a minimal OOXML document; no third-party dependency required."""
+    counts = _export_counts(rows)
+    parts = [
+        _docx_paragraph(title, bold=True, size=32, space_after=80),
+        _docx_paragraph(f"{len(rows)} signal(s): {counts['high']} high, {counts['medium']} medium, "
+                        f"{counts['low']} low. Exported "
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M')}.", size=18),
+    ]
+    if briefing and briefing[0]:
+        parts.append(_docx_paragraph("Executive Briefing", bold=True, size=24, space_after=40))
+        parts.extend(_docx_paragraph(line, size=19, space_after=20)
+                     for line in briefing[0].splitlines() if line.strip())
+        parts.append(_docx_paragraph("", size=12))
+    for row in rows:
+        parts.append(_docx_paragraph(f"[{row['severity'].upper()}] {row['title']}",
+                                     bold=True, size=24, space_after=40))
+        meta = [row["category"], row["priority"], row["verification"]]
+        if row["published"]:
+            meta.append(f"published {row['published']}")
+        if row["confidence"]:
+            meta.append(f"confidence {row['confidence']}")
+        parts.append(_docx_paragraph(" · ".join(meta), size=17, space_after=40))
+        if row["analysis"]:
+            parts.append(_docx_paragraph(f"Assessment: {row['analysis']}", size=19, space_after=40))
+        for fact in row["facts"]:
+            parts.append(_docx_paragraph(fact, size=19, space_after=20, bullet=True))
+        if row["entities"]:
+            rendered = "; ".join(f"{k}: {', '.join(v)}" for k, v in row["entities"].items())
+            parts.append(_docx_paragraph(f"Entities: {rendered}", size=19, space_after=40))
+        if row["action"]:
+            parts.append(_docx_paragraph(f"Next step: {row['action']}", size=19, space_after=40))
+        if row["link"]:
+            parts.append(_docx_paragraph(row["link"], size=17, space_after=120))
+
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>" + "".join(parts) + "</w:body></w:document>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-'
+        'officedocument.wordprocessingml.document.main+xml"/></Types>'
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+        'relationships/officeDocument" Target="word/document.xml"/></Relationships>'
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("[Content_Types].xml", content_types)
+        package.writestr("_rels/.rels", relationships)
+        package.writestr("word/document.xml", document)
+    return len(rows)
+
+
+def export_items(conn, path, fmt=None, filters=None, title=None, log_callback=print):
+    """Write the current selection to disk. Returns (path, count)."""
+    path = Path(path)
+    fmt = (fmt or EXPORT_FORMATS.get(path.suffix.lower()) or "").lower()
+    if fmt not in ("markdown", "text", "html", "csv", "json", "docx"):
+        raise ValueError(f"unsupported export format: {path.suffix or fmt or '(none)'}")
+
+    rows = export_rows(conn, filters)
+    title = title or f"HB Briefing - {len(rows)} signals"
+    briefing = latest_briefing(conn)
+    if fmt == "docx":
+        render_docx(rows, path, title, briefing)
+    elif fmt == "csv":
+        path.write_text(render_csv(rows), encoding="utf-8")
+    else:
+        renderer = {"markdown": render_markdown, "text": render_text, "html": render_html,
+                    "json": render_json}[fmt]
+        path.write_text(renderer(rows, title, briefing), encoding="utf-8")
+    log_callback(f"  [EXPORT] {len(rows)} signal(s) -> {path} ({fmt})")
+    return path, len(rows)
+
 
 # --------------------------------------------------------------------------- reclassify
 
@@ -1627,6 +2281,29 @@ def check_api(log_callback=print, api_key=None):
 if __name__ == "__main__":
     if "--check" in sys.argv:
         sys.exit(check_api())
+    if "--export" in sys.argv:
+        try:
+            target = sys.argv[sys.argv.index("--export") + 1]
+        except IndexError:
+            print("usage: hbnscan.py --export OUT.(md|html|csv|json|docx|txt) [--format fmt]")
+            sys.exit(2)
+        fmt = None
+        if "--format" in sys.argv:
+            try:
+                fmt = sys.argv[sys.argv.index("--format") + 1]
+            except IndexError:
+                print("--format needs a value")
+                sys.exit(2)
+        conn = init_db()
+        try:
+            path, count = export_items(conn, target, fmt=fmt)
+        except ValueError as exc:
+            print(f"[FAIL] {exc}")
+            sys.exit(2)
+        finally:
+            conn.close()
+        print(f"[OK] {count} signal(s) written to {path}")
+        sys.exit(0)
     if "--reclassify" in sys.argv:
         dry_run = "--dry-run" in sys.argv
         conn = init_db()

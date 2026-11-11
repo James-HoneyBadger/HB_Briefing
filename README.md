@@ -180,6 +180,17 @@ without scrolling.
 saved as `table_limit` in `settings.json`. The table header always reports what you are
 looking at, e.g. `SEARCH 'metronet': showing 51 of 51 match(es), limit 100`.
 
+### Reading the grid
+
+- **Click a column header** (`Detected`, `Sev`, `Category`, `Headline`) to re-sort. It sets
+  the same `row_order` the Order menu uses, so the two never disagree.
+- **Select a row** to see the detail pane: assessment, next step, published date, key
+  facts, entities, confidence and whether the item was deep-read or only screened — the
+  fields the grid has no room for.
+- **`NEW`** marks signals that arrived after the previous scan (`meta.prev_scan_at`), and
+  the header counts them (`showing 100 of 186, limit 100, 2 new`). Nothing is marked on a
+  fresh install, where everything would be new.
+
 ### Filters and ordering
 
 A second row of controls narrows and sorts the grid. Every choice persists in
@@ -231,3 +242,66 @@ Every call's `usage` is counted, and a scan that spent model calls writes a row 
 ```sql
 SELECT started_at, ai_calls, prompt_tokens, completion_tokens FROM scan_runs ORDER BY id DESC LIMIT 10;
 ```
+
+### Notifications
+
+Email and SMS alerts fire at the end of a scan for signals above a threshold, and only for
+items that have not been sent before (`meta.last_notified_at` keeps the watermark).
+
+Configure in `.env` — nothing secret goes into `settings.json`:
+
+```dotenv
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURITY=starttls        # starttls | ssl | none
+SMTP_USER=me@example.com
+SMTP_PASSWORD=app-password
+SMTP_FROM=me@example.com
+NOTIFY_EMAIL_TO=me@example.com
+NOTIFY_SMS_TO=+15551234567
+SMS_GATEWAY_DOMAIN=vtext.com
+```
+
+**SMS uses the carrier's free email-to-SMS gateway**, so no Twilio account is needed —
+`+15551234567` becomes `15551234567@vtext.com`. Supported names: `verizon`, `att`,
+`tmobile`, `sprint`, `uscellular`, `googlefi`, `cricket`, `metro`; anything else is used
+verbatim as the domain. You can also put a full gateway address in `NOTIFY_SMS_TO` and
+skip `SMS_GATEWAY_DOMAIN`.
+
+Toggles live in **Settings → Notifications**: enable, minimum severity (`high` or
+`medium`), and **Send test**, which sends one fixed message through the same code path.
+Watchlist-pinned items can be excluded by setting `notify_include_watchlist` to false in
+`settings.json`.
+
+A failed send is logged and never fails the scan, and it does not advance the watermark, so
+the next scan retries those items.
+
+## Exporting
+
+Every export carries the full AI output — assessment, key facts, entities, confidence and
+whether the item was deep-read or only screened — plus the latest executive briefing when
+one exists.
+
+From the GUI, **⤓ Export** writes exactly what the grid is showing: the active search,
+severity/category/priority filters and the row limit all apply.
+
+From the CLI:
+
+```bash
+python3 hbnscan.py --export signals.html          # format from the extension
+python3 hbnscan.py --export signals.csv
+python3 hbnscan.py --export briefing.docx
+python3 hbnscan.py --export out.bin --format json # or state it explicitly
+```
+
+| Format | Notes |
+|---|---|
+| `.md` | Markdown, same shape as the daily report |
+| `.html` | Self-contained page: severity badges, facts, entities, briefing block, print-friendly |
+| `.csv` | One row per signal, 14 columns — spreadsheet and pivot friendly |
+| `.json` | Nested objects plus a top-level `briefing` field, for downstream tooling |
+| `.docx` | Word document, generated as OOXML directly — **no extra dependency** |
+| `.txt` | Plain text, for paste or mail |
+
+Only standard-library code is used: the `.docx` writer emits `[Content_Types].xml`,
+`_rels/.rels` and `word/document.xml` into a zip, which Word and LibreOffice both open.

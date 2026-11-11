@@ -3,12 +3,15 @@
 HB Briefing v1.0.0 - Standalone Desktop GUI
 Clean, dark-slate Tkinter interface built for Linux (XFCE/Arch/Fedora), macOS, and Windows.
 """
+import json
 import os
 import queue
+import re
 import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 
 import tkinter as tk
@@ -20,23 +23,53 @@ FEEDS_PATH = hbnscan.FEEDS_PATH
 REPORT_PATH = hbnscan.REPORT_PATH
 DB_PATH = hbnscan.DB_PATH
 
-# Palette
-BG_MAIN = "#12161f"
-BG_PANEL = "#1a202c"
-BG_ACCENT = "#252e3f"
-FG_TEXT = "#e2e8f0"
-FG_MUTED = "#94a3b8"
-AMBER = "#f59e0b"
-AMBER_HOVER = "#d97706"
-GREEN = "#10b981"
-RED = "#ef4444"
+# Themes. Widgets capture colours at creation time, so switching rebuilds the UI.
+THEMES = {
+    "dark": {
+        "bg_main": "#12161f", "bg_panel": "#1a202c", "bg_accent": "#252e3f",
+        "bg_input": "#0d1117", "bg_select": "#334155", "log_fg": "#cbd5e1",
+        "fg_text": "#e2e8f0", "fg_muted": "#94a3b8",
+        "accent": "#f59e0b", "accent_hover": "#d97706",
+        "green": "#10b981", "red": "#ef4444",
+    },
+    "light": {
+        "bg_main": "#eef2f6", "bg_panel": "#ffffff", "bg_accent": "#dfe6ee",
+        "bg_input": "#f8fafc", "bg_select": "#c7d3e0", "log_fg": "#1e293b",
+        "fg_text": "#0f172a", "fg_muted": "#475569",
+        "accent": "#b45309", "accent_hover": "#92400e",
+        "green": "#047857", "red": "#b91c1c",
+    },
+}
+
+BG_MAIN = BG_PANEL = BG_ACCENT = BG_INPUT = BG_SELECT = ""
+FG_TEXT = FG_MUTED = LOG_FG = AMBER = AMBER_HOVER = GREEN = RED = ""
+THEME_NAME = "dark"
+
+
+def apply_theme(name):
+    """Bind the module-level palette names used by every widget builder."""
+    global BG_MAIN, BG_PANEL, BG_ACCENT, BG_INPUT, BG_SELECT, FG_TEXT, FG_MUTED
+    global LOG_FG, AMBER, AMBER_HOVER, GREEN, RED, THEME_NAME
+    THEME_NAME = name if name in THEMES else "dark"
+    theme = THEMES[THEME_NAME]
+    BG_MAIN, BG_PANEL, BG_ACCENT = theme["bg_main"], theme["bg_panel"], theme["bg_accent"]
+    BG_INPUT, BG_SELECT, LOG_FG = theme["bg_input"], theme["bg_select"], theme["log_fg"]
+    FG_TEXT, FG_MUTED = theme["fg_text"], theme["fg_muted"]
+    AMBER, AMBER_HOVER = theme["accent"], theme["accent_hover"]
+    GREEN, RED = theme["green"], theme["red"]
+
+
+apply_theme("dark")
 
 
 class NewsScanApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.settings = hbnscan.load_settings()
+        apply_theme(self.settings["theme"])
+        self._apply_font_scale()
+
         self.title("HB Briefing v1.0.0")
-        self.geometry("1040x680")
         self.minsize(880, 560)
         self.configure(bg=BG_MAIN)
 
@@ -53,10 +86,45 @@ class NewsScanApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._setup_styles()
         self._build_ui()
+        self._restore_window()
         self.refresh_table()
         self.refresh_briefing()
         self._drain_ui_queue()
         self._schedule_auto_scan(initial=True)
+
+    def _apply_font_scale(self):
+        """Point sizes scale with Tk's points-per-pixel ratio, so one call covers every font."""
+        self.tk.call("tk", "scaling", 1.333 * self.settings["font_scale"] / 100.0)
+
+    def _restore_window(self):
+        geometry = self.settings["window_geometry"]
+        if geometry:
+            match = re.match(r"^(\d+)x(\d+)([+-]\d+)([+-]\d+)$", geometry)
+            if match:
+                _w, _h, x, y = (int(match.group(i)) for i in (1, 2, 3, 4))
+                # Only trust a saved position that still lands on this screen.
+                if (-50 < x < self.winfo_screenwidth() - 100
+                        and -50 < y < self.winfo_screenheight() - 100):
+                    self.geometry(geometry)
+                else:
+                    self.geometry(f"{match.group(1)}x{match.group(2)}")
+        else:
+            self.geometry("1040x680")
+        if self.settings["window_state"] == "zoomed":
+            try:
+                self.state("zoomed")
+            except tk.TclError:
+                pass
+        self.after(60, self._restore_sash)
+
+    def _restore_sash(self):
+        """Sash placement needs a mapped window; doing it in __init__ is a no-op."""
+        if not hasattr(self, "paned") or not self.winfo_exists():
+            return
+        try:
+            self.paned.sash_place(0, 0, self.settings["sash"])
+        except tk.TclError:
+            pass
 
     def _setup_styles(self):
         style = ttk.Style(self)
@@ -73,7 +141,7 @@ class NewsScanApp(tk.Tk):
                         foreground=AMBER,
                         font=("Sans", 10, "bold"),
                         relief="flat")
-        style.map("Treeview", background=[("selected", "#334155")])
+        style.map("Treeview", background=[("selected", BG_SELECT)])
         style.configure("TNotebook", background=BG_MAIN, borderwidth=0, tabmargins=(0, 4, 0, 0))
         style.configure("TNotebook.Tab", background=BG_ACCENT, foreground=FG_MUTED,
                         padding=(14, 6), borderwidth=0, font=("Sans", 9, "bold"))
@@ -110,27 +178,42 @@ class NewsScanApp(tk.Tk):
         self.run_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         tk.Button(toolbar, text="✎ Edit Feeds", command=self.open_feeds_editor,
-                  bg=BG_ACCENT, fg=FG_TEXT, activebackground="#334155",
+                  bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                   font=("Sans", 10), relief="flat", padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=4)
 
         tk.Button(toolbar, text="⚙ Settings", command=self.open_settings,
-                  bg=BG_ACCENT, fg=FG_TEXT, activebackground="#334155",
+                  bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                  font=("Sans", 10), relief="flat", padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=4)
+
+        tk.Button(toolbar, text="⤓ Export", command=self.export_data,
+                  bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                   font=("Sans", 10), relief="flat", padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=4)
 
         tk.Button(toolbar, text="📄 Open Report", command=self.open_report,
-                  bg=BG_ACCENT, fg=FG_TEXT, activebackground="#334155",
+                  bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                   font=("Sans", 10), relief="flat", padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=4)
 
         tk.Button(toolbar, text="🗑 Clear Logs", command=self.clear_logs,
-                  bg=BG_ACCENT, fg=FG_MUTED, activebackground="#334155",
+                  bg=BG_ACCENT, fg=FG_MUTED, activebackground=BG_SELECT,
                   font=("Sans", 10), relief="flat", padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=4)
+
+        self.cancel_btn = tk.Button(toolbar, text="■ Stop", command=self.cancel_scan,
+                                    bg=BG_ACCENT, fg=FG_MUTED, activebackground=BG_SELECT,
+                                    font=("Sans", 10), relief="flat", padx=12, pady=6,
+                                    state="disabled", cursor="hand2")
+        self.cancel_btn.pack(side=tk.LEFT, padx=4)
+
+        self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=120)
+        self._progress_packed = False
 
         tk.Checkbutton(toolbar, text="Auto-Poll (30m)", variable=self.auto_enabled,
                        bg=BG_MAIN, fg=FG_TEXT, selectcolor=BG_PANEL, activebackground=BG_MAIN,
                        font=("Sans", 10)).pack(side=tk.RIGHT)
 
         # Main Split Area
-        paned = tk.PanedWindow(self, orient=tk.VERTICAL, bg=BG_MAIN, sashwidth=6, sashrelief="flat")
+        paned = tk.PanedWindow(self, orient=tk.VERTICAL, bg=BG_MAIN, sashwidth=6,
+                               sashrelief="flat", sashcursor="sb_v_double_arrow")
+        self.paned = paned
         paned.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 14))
 
         # Top Pane: tabbed signal table + AI briefing
@@ -156,7 +239,7 @@ class NewsScanApp(tk.Tk):
         self.search_var = tk.StringVar()
         self._search_after = None
         self.search_entry = tk.Entry(search_bar, textvariable=self.search_var,
-                                     bg="#0d1117", fg=FG_TEXT, insertbackground=FG_TEXT,
+                                     bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT,
                                      relief="flat", font=("Sans", 10))
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
         self.search_entry.bind("<Escape>", lambda _e: self._clear_search())
@@ -166,7 +249,7 @@ class NewsScanApp(tk.Tk):
         limit_menu = tk.OptionMenu(search_bar, self.limit_var,
                                    *[str(v) for v in hbnscan.ROW_LIMITS],
                                    command=self._on_limit_changed)
-        limit_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground="#334155",
+        limit_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                              relief="flat", font=("Sans", 9), highlightthickness=0,
                              bd=0, indicatoron=False, padx=8, pady=3, cursor="hand2")
         limit_menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
@@ -174,7 +257,7 @@ class NewsScanApp(tk.Tk):
         limit_menu.pack(side=tk.LEFT)
 
         tk.Button(search_bar, text="Clear", command=self._clear_search,
-                  bg=BG_ACCENT, fg=FG_MUTED, activebackground="#334155",
+                  bg=BG_ACCENT, fg=FG_MUTED, activebackground=BG_SELECT,
                   font=("Sans", 9), relief="flat", padx=10, pady=3).pack(side=tk.LEFT, padx=(6, 0))
         self.search_var.trace_add("write", self._on_search_changed)
 
@@ -194,7 +277,7 @@ class NewsScanApp(tk.Tk):
             self.filter_vars[key] = var
             menu = tk.OptionMenu(filter_bar, var, *hbnscan.SETTING_CHOICES[key],
                                  command=lambda value, name=key: self._on_filter_changed(name, value))
-            menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground="#334155",
+            menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                            relief="flat", font=("Sans", 9), highlightthickness=0,
                            bd=0, indicatoron=False, padx=8, pady=3, cursor="hand2")
             menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
@@ -205,11 +288,12 @@ class NewsScanApp(tk.Tk):
         tree_wrap = tk.Frame(signals_tab, bg=BG_PANEL)
         tree_wrap.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
         self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", selectmode="browse")
-        self.tree.heading("time", text="Detected")
-        self.tree.heading("severity", text="Sev")
-        self.tree.heading("category", text="Category")
-        self.tree.heading("title", text="Headline")
-        self.tree.heading("analysis", text="AI Assessment")
+        self._heading_labels = {"time": "Detected", "severity": "Sev",
+                                "category": "Category", "title": "Headline",
+                                "analysis": "AI Assessment"}
+        for column, label in self._heading_labels.items():
+            self.tree.heading(column, text=label,
+                              command=lambda col=column: self._sort_by_column(col))
         self.tree.column("time", width=126, stretch=False)
         self.tree.column("severity", width=58, stretch=False, anchor="center")
         self.tree.column("category", width=138, stretch=False)
@@ -226,7 +310,7 @@ class NewsScanApp(tk.Tk):
         self.bind("<Control-f>", lambda _e: self.search_entry.focus_set())
         self.row_links = {}
 
-        self.brief_text = tk.Text(briefing_tab, bg="#0d1117", fg=FG_TEXT, insertbackground=FG_TEXT,
+        self.brief_text = tk.Text(briefing_tab, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT,
                                   font=("Sans", 10), relief="flat", padx=14, pady=12,
                                   wrap="word", state="disabled")
         brief_scroll = ttk.Scrollbar(briefing_tab, orient="vertical", command=self.brief_text.yview)
@@ -238,6 +322,16 @@ class NewsScanApp(tk.Tk):
         self.brief_text.tag_configure("body", spacing3=4)
         self.brief_text.tag_configure("muted", foreground=FG_MUTED)
 
+        detail = tk.Frame(signals_tab, bg=BG_INPUT)
+        detail.pack(fill=tk.X, padx=8, pady=(0, 8))
+        self.detail_text = tk.Text(detail, height=4, bg=BG_INPUT, fg=FG_TEXT,
+                                   insertbackground=FG_TEXT, font=("Sans", 9),
+                                   relief="flat", padx=10, pady=6, wrap="word",
+                                   state="disabled")
+        self.detail_text.pack(fill=tk.X, expand=True)
+        self.detail_text.tag_configure("key", foreground=AMBER, font=("Sans", 9, "bold"))
+        self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
+
         paned.add(top_frame, height=360)
 
         # Bottom Pane: Live Console Log
@@ -247,7 +341,7 @@ class NewsScanApp(tk.Tk):
 
         log_wrap = tk.Frame(bot_frame, bg=BG_PANEL)
         log_wrap.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
-        self.log_text = tk.Text(log_wrap, bg="#0d1117", fg="#cbd5e1", insertbackground=FG_TEXT,
+        self.log_text = tk.Text(log_wrap, bg=BG_INPUT, fg=LOG_FG, insertbackground=FG_TEXT,
                                 font=("Monospace", 9), relief="flat", padx=10, pady=8, state="disabled")
         log_scroll = ttk.Scrollbar(log_wrap, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scroll.set)
@@ -273,8 +367,11 @@ class NewsScanApp(tk.Tk):
                 callback(*args)
         except queue.Empty:
             pass
-        if not self._closing:
-            self._ui_after_id = self.after(80, self._drain_ui_queue)
+        except tk.TclError:
+            return  # interpreter is going away
+        if self._closing or not self.winfo_exists():
+            return
+        self._ui_after_id = self.after(80, self._drain_ui_queue)
 
     def log(self, msg):
         self._post(self._append_log, msg)
@@ -289,13 +386,25 @@ class NewsScanApp(tk.Tk):
         if self.is_scanning or self._closing:
             return
         self.is_scanning = True
+        self._cancel_event = threading.Event()
         self.run_btn.configure(state="disabled", text="⏳ Scanning...")
+        self.cancel_btn.configure(state="normal", fg=FG_TEXT)
         self.status_lbl.configure(text="● SCANNING FEEDS...", fg=AMBER)
+        if not self._progress_packed:
+            self.progress.pack(side=tk.RIGHT, padx=(0, 12))
+            self._progress_packed = True
+        self.progress.start(14)
         threading.Thread(target=self._run_worker, daemon=True).start()
+
+    def cancel_scan(self):
+        if self.is_scanning and self._cancel_event is not None:
+            self._cancel_event.set()
+            self.status_lbl.configure(text="● STOPPING...", fg=AMBER)
+            self.log("[INFO] Cancel requested; stopping after the current item.")
 
     def _run_worker(self):
         try:
-            hbnscan.run_scan(log_callback=self.log)
+            hbnscan.run_scan(log_callback=self.log, cancel=self._cancel_event)
         except Exception as exc:
             self.log(f"[ERROR] Scan failed: {exc}")
         finally:
@@ -303,12 +412,28 @@ class NewsScanApp(tk.Tk):
 
     def _scan_finished(self):
         self.is_scanning = False
+        self._stop_progress()
         if self._closing:
             return
         self.run_btn.configure(state="normal", text="▶ Run Scan Now")
-        self.status_lbl.configure(text="● IDLE  |  UPDATED", fg=GREEN)
+        self.cancel_btn.configure(state="disabled", fg=FG_MUTED)
+        cancelled = self._cancel_event is not None and self._cancel_event.is_set()
+        self.status_lbl.configure(text="● IDLE  |  STOPPED" if cancelled else "● IDLE  |  UPDATED",
+                                  fg=AMBER if cancelled else GREEN)
         self.refresh_table()
         self.refresh_briefing()
+
+    def _stop_progress(self):
+        self.progress.stop()
+        if self._progress_packed:
+            self.progress.pack_forget()
+            self._progress_packed = False
+
+    def _reset_scan_controls(self):
+        """Used after a UI rebuild: never leave a stale disabled button behind."""
+        if not self.is_scanning:
+            self.run_btn.configure(state="normal", text="▶ Run Scan Now")
+            self.cancel_btn.configure(state="disabled", fg=FG_MUTED)
 
     def _active_filters(self):
         if not hasattr(self, "filter_vars"):
@@ -373,6 +498,8 @@ class NewsScanApp(tk.Tk):
                         "SELECT COUNT(*), COALESCE(SUM(severity = 'high'), 0) "
                         "FROM seen_items WHERE flagged = 1"
                     ).fetchone()
+                    marker = conn.execute(
+                        "SELECT value FROM meta WHERE key = 'prev_scan_at'").fetchone()
                 finally:
                     conn.close()
             except sqlite3.Error as exc:
@@ -380,14 +507,18 @@ class NewsScanApp(tk.Tk):
                 rows = []
                 totals = (0, 0)
             flagged_total, high_total = totals
+            previous_scan = marker[0] if marker and marker[0] else ""
+            new_count = 0
             for idx, (seen_at, title, summary, link, severity, category) in enumerate(rows):
                 severity = (severity or "none").lower()
                 iid = f"row_{idx}"
                 tag = f"sev_{severity}" if severity in ("high", "medium", "low") else ""
+                is_new = bool(previous_scan) and seen_at > previous_scan
+                new_count += is_new
                 self.tree.insert(
                     "", tk.END, iid=iid,
-                    values=(seen_at.replace("T", " "), severity.upper(),
-                            category or "other", title, summary),
+                    values=(("NEW  " if is_new else "") + seen_at.replace("T", " "),
+                            severity.upper(), category or "other", title, summary),
                     tags=(tag,) if tag else ()
                 )
                 self.row_links[iid] = link
@@ -407,6 +538,7 @@ class NewsScanApp(tk.Tk):
         total = matched if (query or active) else flagged_total
         self.table_lbl.configure(
             text=f"{detail}: showing {len(rows)} of {total}, limit {limit}"
+                 + (f", {new_count} new" if new_count else "")
                  + ("" if (query or active) else " (double-click a row to open)")
         )
 
@@ -483,6 +615,84 @@ class NewsScanApp(tk.Tk):
             )
         self.brief_text.configure(state="disabled")
 
+    COLUMN_ORDERS = {"time": "newest", "severity": "severity",
+                     "category": "category", "title": "title"}
+
+    def _sort_by_column(self, column):
+        """Header clicks reuse the persisted row_order rather than a second scheme."""
+        order = self.COLUMN_ORDERS.get(column)
+        if not order or not hasattr(self, "filter_vars"):
+            return
+        self.filter_vars["row_order"].set(order)
+        self._on_filter_changed("row_order", order)
+
+    def _on_row_select(self, _event=None):
+        selection = self.tree.selection()
+        if not selection:
+            self._show_detail(None)
+            return
+        values = self.tree.item(selection[0], "values")
+        self._show_detail({"link": self.row_links.get(selection[0], ""),
+                           "title": values[3] if len(values) > 3 else ""})
+
+    def _show_detail(self, row):
+        """Surface the fields the grid cannot fit: facts, entities, confidence."""
+        self.detail_text.configure(state="normal")
+        self.detail_text.delete("1.0", tk.END)
+        if not row:
+            self.detail_text.insert(
+                tk.END, "Select a row for facts, entities, confidence and verification.", "key")
+            self.detail_text.configure(state="disabled")
+            return
+
+        record = None
+        if DB_PATH.exists():
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=5)
+                try:
+                    record = conn.execute(
+                        "SELECT summary, action, facts, entities, confidence, deep_read, "
+                        "published FROM seen_items WHERE link = ? ORDER BY rowid DESC LIMIT 1",
+                        (row["link"],),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                record = None
+
+        if not record:
+            self.detail_text.insert(tk.END, row["title"], "key")
+            self.detail_text.configure(state="disabled")
+            return
+
+        summary, action, facts, entities, confidence, deep_read, published = record
+
+        def field(label, value):
+            if value:
+                self.detail_text.insert(tk.END, f"{label}: ", "key")
+                self.detail_text.insert(tk.END, f"{value}\n")
+
+        field("Assessment", summary)
+        field("Next step", action)
+        field("Published", (published or "")[:10])
+        try:
+            fact_list = json.loads(facts or "[]")
+        except ValueError:
+            fact_list = []
+        if fact_list:
+            field("Facts", "; ".join(str(item) for item in fact_list))
+        try:
+            entity_map = json.loads(entities or "{}")
+        except ValueError:
+            entity_map = {}
+        if isinstance(entity_map, dict) and entity_map:
+            field("Entities", "; ".join(f"{key}: {', '.join(map(str, values))}"
+                                        for key, values in entity_map.items() if values))
+        if confidence is not None:
+            field("Confidence", f"{float(confidence):.2f}")
+        field("Verification", "deep read" if deep_read else "screened only")
+        self.detail_text.configure(state="disabled")
+
     def _on_row_double_click(self, _event):
         sel = self.tree.selection()
         if not sel:
@@ -499,7 +709,7 @@ class NewsScanApp(tk.Tk):
 
         tk.Label(win, text="RSS Feed URLs (one per line, # for comments):",
                  bg=BG_PANEL, fg=FG_TEXT, font=("Sans", 10, "bold")).pack(anchor="w", padx=12, pady=(10, 4))
-        txt = tk.Text(win, bg="#0d1117", fg=FG_TEXT, insertbackground=FG_TEXT, font=("Monospace", 10))
+        txt = tk.Text(win, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT, font=("Monospace", 10))
         txt.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
         if FEEDS_PATH.exists():
             txt.insert("1.0", FEEDS_PATH.read_text(encoding="utf-8"))
@@ -516,7 +726,7 @@ class NewsScanApp(tk.Tk):
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title("HB Briefing - Settings")
-        win.geometry("520x450")
+        win.geometry("560x680")
         win.configure(bg=BG_PANEL)
         win.transient(self)
 
@@ -536,7 +746,7 @@ class NewsScanApp(tk.Tk):
 
         since_var = tk.StringVar(value=settings["feed_since"])
         until_var = tk.StringVar(value=settings["feed_until"])
-        entry_opts = dict(bg="#0d1117", fg=FG_TEXT, insertbackground=FG_TEXT,
+        entry_opts = dict(bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT,
                           relief="flat", font=("Monospace", 10))
         tk.Label(form, text="From:", bg=BG_PANEL, fg=FG_TEXT).grid(row=0, column=0,
                                                                   sticky="w", pady=4)
@@ -566,7 +776,7 @@ class NewsScanApp(tk.Tk):
         tk.Entry(key_row, textvariable=key_var, show="\u2022", **entry_opts
                  ).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
         test_btn = tk.Button(key_row, text="Test key", bg=BG_ACCENT, fg=FG_TEXT,
-                             activebackground="#334155", font=("Sans", 9),
+                             activebackground=BG_SELECT, font=("Sans", 9),
                              relief="flat", padx=10, pady=3, cursor="hand2")
         test_btn.pack(side=tk.LEFT, padx=(8, 0))
 
@@ -596,6 +806,75 @@ class NewsScanApp(tk.Tk):
 
         test_btn.configure(command=test_key)
 
+        tk.Label(win, text="NOTIFICATIONS", bg=BG_PANEL, fg=AMBER,
+                 font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(10, 2))
+        notify_var = tk.BooleanVar(value=settings["notify_enabled"])
+        tk.Checkbutton(win, text="Email / SMS me new high-priority signals",
+                       variable=notify_var, bg=BG_PANEL, fg=FG_TEXT, selectcolor=BG_ACCENT,
+                       activebackground=BG_PANEL, activeforeground=FG_TEXT,
+                       font=("Sans", 9), anchor="w").pack(fill=tk.X, padx=16)
+        tk.Label(win, text=hbnscan.describe_notifications(), bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 8), anchor="w", justify="left",
+                 wraplength=470).pack(fill=tk.X, padx=16)
+        notify_row = tk.Frame(win, bg=BG_PANEL)
+        notify_row.pack(fill=tk.X, padx=16, pady=(4, 0))
+        severity_var = tk.StringVar(value=settings["notify_min_severity"])
+        tk.Label(notify_row, text="At least:", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
+        sev_menu = tk.OptionMenu(notify_row, severity_var,
+                                 *hbnscan.SETTING_CHOICES["notify_min_severity"])
+        sev_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                           relief="flat", font=("Sans", 9), highlightthickness=0,
+                           bd=0, indicatoron=False, padx=8, pady=3)
+        sev_menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                   activeforeground=AMBER, font=("Sans", 9))
+        sev_menu.pack(side=tk.LEFT)
+        notify_test_btn = tk.Button(notify_row, text="Send test", bg=BG_ACCENT, fg=FG_TEXT,
+                                    activebackground=BG_SELECT, font=("Sans", 9),
+                                    relief="flat", padx=10, pady=3, cursor="hand2")
+        notify_test_btn.pack(side=tk.LEFT, padx=(12, 0))
+
+        def finish_notify_test(ok, lines):
+            for line in lines:
+                self.log("  " + line)
+            notify_test_btn.configure(state="normal", text="Send test")
+            if ok:
+                messagebox.showinfo("Notifications", "Test message sent.", parent=win)
+            else:
+                messagebox.showerror("Notifications", "Send failed - see the log.", parent=win)
+
+        def test_notify():
+            notify_test_btn.configure(state="disabled", text="Sending...")
+
+            def worker():
+                lines = []
+                code = hbnscan.send_test_notification(log_callback=lines.append)
+                self._post(finish_notify_test, code == 0, lines)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        notify_test_btn.configure(command=test_notify)
+
+        tk.Label(win, text="APPEARANCE", bg=BG_PANEL, fg=AMBER,
+                 font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(10, 2))
+        look = tk.Frame(win, bg=BG_PANEL)
+        look.pack(fill=tk.X, padx=16)
+        theme_var = tk.StringVar(value=settings["theme"])
+        scale_var = tk.StringVar(value=str(settings["font_scale"]))
+        for label, var, choices in (
+            ("Theme", theme_var, hbnscan.SETTING_CHOICES["theme"]),
+            ("Text size", scale_var, ("90", "100", "110", "125", "150")),
+        ):
+            tk.Label(look, text=f"{label}:", bg=BG_PANEL, fg=FG_MUTED,
+                     font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
+            menu = tk.OptionMenu(look, var, *choices)
+            menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                           relief="flat", font=("Sans", 9), highlightthickness=0,
+                           bd=0, indicatoron=False, padx=8, pady=3, cursor="hand2")
+            menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                   activeforeground=AMBER, font=("Sans", 9))
+            menu.pack(side=tk.LEFT, padx=(0, 12))
+
         def clear():
             since_var.set("")
             until_var.set("")
@@ -612,8 +891,17 @@ class NewsScanApp(tk.Tk):
             if start and end and start > end:
                 messagebox.showerror("Settings", "'From' is after 'To'.", parent=win)
                 return
-            hbnscan.save_settings(feed_since=since, feed_until=until)
+            hbnscan.save_settings(feed_since=since, feed_until=until,
+                                  theme=theme_var.get(), font_scale=scale_var.get(),
+                                  notify_enabled=notify_var.get(),
+                                  notify_min_severity=severity_var.get())
             self.log(f"[INFO] Feed date window: {since or 'open'} to {until or 'open'}.")
+            if (theme_var.get() != self.settings["theme"]
+                    or int(scale_var.get()) != int(self.settings["font_scale"])):
+                self.log(f"[INFO] Appearance: {theme_var.get()}, text {scale_var.get()}%.")
+                win.destroy()
+                self._rebuild_ui()
+                return
             key = key_var.get().strip()
             if key:
                 if hbnscan.set_api_key(key):
@@ -629,6 +917,51 @@ class NewsScanApp(tk.Tk):
                   font=("Sans", 10), relief="flat", padx=12, pady=6).pack(side=tk.LEFT)
         tk.Button(buttons, text="Save", command=save, bg=AMBER, fg="#0f172a",
                   font=("Sans", 10, "bold"), relief="flat", padx=16, pady=6).pack(side=tk.RIGHT)
+
+    def export_data(self):
+        """Write exactly what the grid is showing, in any supported format."""
+        filters = self._active_filters()
+        query = self.search_var.get().strip()
+        try:
+            limit = int(self.limit_var.get())
+        except (ValueError, tk.TclError):
+            limit = hbnscan.load_settings()["table_limit"]
+        stamp = time.strftime("%Y%m%d-%H%M")
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Export signals", defaultextension=".md",
+            initialfile=f"hb-briefing-{stamp}.md", filetypes=hbnscan.EXPORT_TYPES,
+        )
+        if not path:
+            return
+        selection = {"severity": filters["filter_severity"],
+                     "category": filters["filter_category"],
+                     "group": filters["filter_group"],
+                     "query": query, "limit": limit}
+
+        def worker():
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=10)
+                try:
+                    saved, count = hbnscan.export_items(
+                        conn, path, filters=selection, log_callback=self.log)
+                finally:
+                    conn.close()
+                self._post(self._export_done, saved, count, None)
+            except Exception as exc:
+                self._post(self._export_done, path, 0, exc)
+
+        self.log(f"[INFO] Exporting {path} ...")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _export_done(self, path, count, error):
+        if self._closing:
+            return
+        if error is not None:
+            self.log(f"[ERROR] Export failed: {error}")
+            messagebox.showerror("Export", f"Export failed:\n{error}")
+            return
+        self.log(f"[OK] Exported {count} signal(s) to {path}")
+        messagebox.showinfo("Export", f"{count} signal(s) written to\n{path}")
 
     def open_report(self):
         if not REPORT_PATH.exists():
@@ -657,7 +990,33 @@ class NewsScanApp(tk.Tk):
             self.start_scan_thread()
         self._auto_after_id = self.after(self.auto_interval_sec * 1000, self._schedule_auto_scan)
 
+    def _rebuild_ui(self):
+        """Recreate every widget so a new palette or text size takes effect."""
+        for child in self.winfo_children():
+            child.destroy()
+        self.settings = hbnscan.load_settings()
+        apply_theme(self.settings["theme"])
+        self._apply_font_scale()
+        self.configure(bg=BG_MAIN)
+        self._setup_styles()
+        self._build_ui()
+        self.after(60, self._restore_sash)
+        self._reset_scan_controls()
+        self.refresh_table()
+        self.refresh_briefing()
+
+    def _persist_window_state(self):
+        try:
+            state = "zoomed" if self.state() == "zoomed" else "normal"
+            values = {"window_geometry": self.geometry(), "window_state": state}
+            if hasattr(self, "paned"):
+                values["sash"] = self.paned.sash_coord(0)[1]
+            hbnscan.save_settings(**values)
+        except (tk.TclError, ValueError):
+            pass
+
     def _on_close(self):
+        self._persist_window_state()
         self._closing = True
         for after_id in (self._ui_after_id, self._auto_after_id):
             if after_id is not None:
@@ -669,5 +1028,13 @@ class NewsScanApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    # One GUI only: a second copy would scan over the first.
+    instance_lock = hbnscan.acquire_lock(hbnscan.APP_DIR / ".hb-briefing-gui.lock")
+    if instance_lock is None:
+        _root = tk.Tk()
+        _root.withdraw()
+        messagebox.showwarning("HB Briefing", "HB Briefing is already running.")
+        _root.destroy()
+        sys.exit(0)
     app = NewsScanApp()
     app.mainloop()
