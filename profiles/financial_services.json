@@ -1,0 +1,241 @@
+{
+  "name": "Capital Watch",
+  "version": "1.0.0",
+  "focus": "regulatory action and litigation in financial services. That is its core: enforcement by the SEC, CFPB, FDIC, OCC and state regulators, plus lawsuits, settlements, consent orders and rulings against banks, lenders, brokers, insurers and payment firms",
+  "secondary": "consumer fee practices, mortgage and auto lending, crypto supervision, anti-money-laundering penalties, and data-privacy duties",
+  "briefing_interest": "who is being investigated, fined or sued in financial services, for what, and what the precedent means for the sector",
+  "deep_always_relevant": "A regulatory action or lawsuit involving a financial firm",
+  "severity_high": "an enforcement action, fine, consent order, injunction or ruling",
+  "severity_medium": "an investigation, exam finding, proposed rule or subpoena",
+  "severity_low": "market commentary or background analysis",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "consumer_finance",
+    "fraud",
+    "market_conduct",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation",
+    "consumer_finance"
+  ],
+  "category_hints": [
+    [
+      "consumer_finance",
+      [
+        "junk fee",
+        "overdraft",
+        "interest rate",
+        "mortgage",
+        "auto loan",
+        "credit reporting",
+        "debt collection",
+        "buy now pay later",
+        "student loan",
+        "predatory lending"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal",
+        "subpoena",
+        "whistleblower"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "sec",
+        "cfpb",
+        "fdic",
+        "occ",
+        "finra",
+        "ftc",
+        "regulator",
+        "enforcement action",
+        "investigation",
+        "consent order",
+        "attorney general",
+        "federal reserve",
+        "inquiry"
+      ]
+    ],
+    [
+      "fraud",
+      [
+        "fraud",
+        "ponzi",
+        "money laundering",
+        "sanctions evasion",
+        "insider",
+        "embezzle",
+        "misappropriat"
+      ]
+    ],
+    [
+      "market_conduct",
+      [
+        "disclosure",
+        "insider trading",
+        "market manipulation",
+        "recordkeeping",
+        "suitability",
+        "fiduciary"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "basel",
+        "rule"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "enforcement action",
+    "consent order",
+    "cease and desist",
+    "fined",
+    "settlement",
+    "class action",
+    "lawsuit",
+    "junk fee",
+    "overdraft",
+    "money laundering",
+    "insider trading",
+    "fraud",
+    "disgorgement",
+    "penalty"
+  ],
+  "weak_signals": [
+    "bank",
+    "lender",
+    "broker",
+    "insurer",
+    "fintech",
+    "payment",
+    "credit",
+    "loan",
+    "deposit",
+    "fee",
+    "complaint"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "fined",
+    "penalt",
+    "consent order",
+    "cease and desist",
+    "settlement",
+    "disgorgement",
+    "enforcement action",
+    "lawsuit",
+    "indict",
+    "charged",
+    "subpoena",
+    "sanction"
+  ],
+  "trusted_source_hosts": [
+    "sec.gov",
+    "consumerfinance.gov",
+    "fdic.gov",
+    "occ.gov",
+    "finra.org"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "junk fee rule",
+      "severity": "high",
+      "group": "Consumer finance"
+    },
+    {
+      "label": "overdraft fee practice",
+      "severity": "medium",
+      "group": "Consumer finance"
+    },
+    {
+      "label": "credit reporting accuracy",
+      "severity": "medium",
+      "group": "Consumer finance"
+    },
+    {
+      "label": "mortgage servicing misconduct",
+      "severity": "high",
+      "group": "Consumer finance"
+    },
+    {
+      "label": "buy now pay later regulation",
+      "severity": "medium",
+      "group": "Consumer finance"
+    },
+    {
+      "label": "crypto enforcement action",
+      "severity": "high",
+      "group": "Markets and conduct"
+    },
+    {
+      "label": "insider trading case",
+      "severity": "high",
+      "group": "Markets and conduct"
+    },
+    {
+      "label": "anti-money-laundering penalty",
+      "severity": "high",
+      "group": "Markets and conduct"
+    },
+    {
+      "label": "disclosure settlement",
+      "severity": "medium",
+      "group": "Markets and conduct"
+    },
+    {
+      "label": "bank merger approval",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "consumer class action",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "state attorney general action",
+      "severity": "high",
+      "group": "Regulation and courts"
+    }
+  ],
+  "targets": []
+}

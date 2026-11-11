@@ -1,0 +1,267 @@
+{
+  "name": "CVE Watch",
+  "version": "1.0.0",
+  "focus": "software vulnerability and exploitation. That is its core: disclosed vulnerabilities, exploited-in-the-wild reports, ransomware campaigns, supply-chain compromise, and the regulatory or legal consequences that follow an incident",
+  "secondary": "patch cadence, secure-by-design regulation, breach notification duties, bug bounty disclosures, and critical-infrastructure security directives",
+  "briefing_interest": "vulnerability and exploitation news: what is being exploited, how severe it is, who is affected, and what defenders must do next",
+  "deep_always_relevant": "A specific vulnerability, exploit, campaign or incident",
+  "severity_high": "active exploitation, a zero-day, a ransomware or supply-chain incident, or a regulator acting on a breach",
+  "severity_medium": "a disclosed vulnerability with public exploit code, or a proposed security rule",
+  "severity_low": "hardening advice, research write-ups or background analysis",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, certification advertisements, index/database pages and generic how-tos",
+  "categories": [
+    "vulnerability",
+    "exploitation",
+    "data_breach",
+    "regulatory_action",
+    "litigation",
+    "advisory",
+    "other"
+  ],
+  "core_categories": [
+    "vulnerability",
+    "exploitation"
+  ],
+  "category_hints": [
+    [
+      "exploitation",
+      [
+        "exploited in the wild",
+        "actively exploited",
+        "zero-day",
+        "zero day",
+        "ransomware",
+        "in the wild",
+        "exploit code",
+        "remote code execution",
+        "rce",
+        "weaponised",
+        "weaponized"
+      ]
+    ],
+    [
+      "vulnerability",
+      [
+        "vulnerability",
+        "cve-",
+        "patch",
+        "flaw",
+        "bug",
+        "cvss",
+        "privilege escalation",
+        "sql injection",
+        "deserialization"
+      ]
+    ],
+    [
+      "data_breach",
+      [
+        "breach",
+        "leaked",
+        "exposed",
+        "stolen credentials",
+        "data theft",
+        "unauthorised access",
+        "unauthorized access"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "cisa",
+        "ncsc",
+        "attorney general",
+        "regulator",
+        "ftc",
+        "sec disclosure",
+        "enforcement",
+        "directive",
+        "data protection authority"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "class action",
+        "settlement",
+        "court",
+        "ruling",
+        "indictment",
+        "charges",
+        "subpoena"
+      ]
+    ],
+    [
+      "advisory",
+      [
+        "advisory",
+        "bulletin",
+        "guidance",
+        "kev catalog",
+        "patch tuesday"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "zero-day",
+    "zero day",
+    "actively exploited",
+    "exploited in the wild",
+    "ransomware",
+    "remote code execution",
+    "supply chain attack",
+    "data breach",
+    "vulnerability",
+    "patch",
+    "cve-",
+    "backdoor",
+    "privilege escalation",
+    "botnet"
+  ],
+  "weak_signals": [
+    "malware",
+    "phishing",
+    "credential",
+    "firewall",
+    "encryption",
+    "attacker",
+    "threat actor",
+    "security",
+    "exploit",
+    "hardening"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "exploited in the wild",
+    "zero-day",
+    "ransomware",
+    "data breach",
+    "fined",
+    "penalt",
+    "directive",
+    "advisory",
+    "indict",
+    "charged",
+    "sanction"
+  ],
+  "trusted_source_hosts": [
+    "cisa.gov",
+    "nvd.nist.gov",
+    "bleepingcomputer.com",
+    "the-record.media",
+    "krebsonsecurity.com"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "zero-day exploit",
+      "severity": "high",
+      "group": "Exploitation"
+    },
+    {
+      "label": "actively exploited vulnerability",
+      "severity": "high",
+      "group": "Exploitation"
+    },
+    {
+      "label": "ransomware campaign",
+      "severity": "high",
+      "group": "Exploitation"
+    },
+    {
+      "label": "supply chain compromise",
+      "severity": "high",
+      "group": "Exploitation"
+    },
+    {
+      "label": "critical infrastructure attack",
+      "severity": "high",
+      "group": "Exploitation"
+    },
+    {
+      "label": "remote code execution",
+      "severity": "medium",
+      "group": "Exploitation"
+    },
+    {
+      "label": "data breach notification",
+      "severity": "medium",
+      "group": "Exploitation"
+    },
+    {
+      "label": "CISA advisory",
+      "severity": "medium",
+      "group": "Defence and disclosure"
+    },
+    {
+      "label": "patch tuesday",
+      "severity": "low",
+      "group": "Defence and disclosure"
+    },
+    {
+      "label": "bug bounty disclosure",
+      "severity": "low",
+      "group": "Defence and disclosure"
+    },
+    {
+      "label": "secure by design",
+      "severity": "low",
+      "group": "Defence and disclosure"
+    },
+    {
+      "label": "breach litigation",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "regulator data protection action",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "cyber insurance claim",
+      "severity": "low",
+      "group": "Commercial"
+    }
+  ],
+  "targets": [
+    {
+      "match": [
+        "lockbit"
+      ],
+      "category": "exploitation",
+      "severity": "high",
+      "note": "named ransomware operation"
+    },
+    {
+      "match": [
+        "cl0p"
+      ],
+      "category": "exploitation",
+      "severity": "high",
+      "note": "named ransomware operation"
+    },
+    {
+      "match": [
+        "scattered spider"
+      ],
+      "category": "exploitation",
+      "severity": "high",
+      "note": "named intrusion group"
+    }
+  ]
+}

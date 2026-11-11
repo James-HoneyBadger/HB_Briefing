@@ -1,0 +1,239 @@
+{
+  "name": "Silicon Watch",
+  "version": "1.0.0",
+  "focus": "regulatory action, litigation and market intervention in artificial intelligence and semiconductors. That is its core: export controls, antitrust cases, chip subsidies, AI safety rules, and suits over training data, licensing or market power",
+  "secondary": "foundry capacity, advanced packaging, data-centre build-out, model licensing disputes, and the power and water politics of compute",
+  "briefing_interest": "who is regulating, subsidising, suing or blocking AI and chip companies, and what it changes for supply, pricing and access",
+  "deep_always_relevant": "A regulatory, legal or subsidy decision touching AI or chips",
+  "severity_high": "an export control, antitrust action, subsidy award, injunction or ruling",
+  "severity_medium": "a consultation, investigation, proposed rule or funding round",
+  "severity_low": "market analysis, benchmarks or opinion",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "export_control",
+    "subsidy",
+    "market_action",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation",
+    "export_control"
+  ],
+  "category_hints": [
+    [
+      "export_control",
+      [
+        "export control",
+        "entity list",
+        "export ban",
+        "sanction",
+        "licence requirement",
+        "license requirement",
+        "chip ban",
+        "restricted export"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal",
+        "copyright claim",
+        "patent"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "ftc",
+        "doj",
+        "department of justice",
+        "european commission",
+        "regulator",
+        "enforcement action",
+        "investigation",
+        "antitrust",
+        "competition authority",
+        "ai act",
+        "inquiry"
+      ]
+    ],
+    [
+      "subsidy",
+      [
+        "chips act",
+        "subsidy",
+        "grant",
+        "incentive",
+        "fab funding",
+        "tax credit",
+        "award"
+      ]
+    ],
+    [
+      "market_action",
+      [
+        "acquisition",
+        "merger",
+        "stake",
+        "ipo",
+        "spinoff",
+        "buyback"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "framework",
+        "guidance"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "export control",
+    "entity list",
+    "antitrust",
+    "chips act",
+    "subsidy",
+    "lawsuit",
+    "settlement",
+    "injunction",
+    "merger",
+    "acquisition",
+    "training data",
+    "copyright",
+    "compute threshold",
+    "export licence",
+    "export license"
+  ],
+  "weak_signals": [
+    "chip",
+    "semiconductor",
+    "foundry",
+    "gpu",
+    "accelerator",
+    "wafer",
+    "data centre",
+    "data center",
+    "model",
+    "inference",
+    "training",
+    "capacity",
+    "supply"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "export control",
+    "entity list",
+    "antitrust",
+    "fined",
+    "penalt",
+    "injunction",
+    "subsidy",
+    "blocked",
+    "probe",
+    "investigation",
+    "sanction",
+    "lawsuit"
+  ],
+  "trusted_source_hosts": [
+    "ftc.gov",
+    "justice.gov",
+    "bis.doc.gov",
+    "europa.eu"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "export controls on advanced chips",
+      "severity": "high",
+      "group": "Trade and controls"
+    },
+    {
+      "label": "entity list designation",
+      "severity": "high",
+      "group": "Trade and controls"
+    },
+    {
+      "label": "chips act funding",
+      "severity": "high",
+      "group": "Trade and controls"
+    },
+    {
+      "label": "AI safety regulation",
+      "severity": "medium",
+      "group": "Trade and controls"
+    },
+    {
+      "label": "antitrust case against platform",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "merger review of chipmaker",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "training data copyright suit",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "AI act compliance deadline",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "data centre power interconnection",
+      "severity": "medium",
+      "group": "Build-out"
+    },
+    {
+      "label": "advanced packaging capacity",
+      "severity": "low",
+      "group": "Build-out"
+    },
+    {
+      "label": "foundry expansion",
+      "severity": "medium",
+      "group": "Build-out"
+    },
+    {
+      "label": "model licensing dispute",
+      "severity": "low",
+      "group": "Build-out"
+    }
+  ],
+  "targets": []
+}

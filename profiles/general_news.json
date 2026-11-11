@@ -1,0 +1,206 @@
+{
+  "name": "News Briefing",
+  "version": "1.0.0",
+  "focus": "policy, litigation and business decisions with public consequences. That is its core: government action, court rulings, enforcement, and corporate decisions that change what people can buy, do or rely on",
+  "secondary": "technology, markets, transport, energy, health and international affairs, treated as context around the core",
+  "briefing_interest": "the decisions that matter today: who acted, what changed, and what happens next",
+  "deep_always_relevant": "A decision by a government, court or major institution",
+  "severity_high": "a binding decision, ruling, enforcement action or settlement",
+  "severity_medium": "a proposal, investigation, announcement or negotiation",
+  "severity_low": "analysis, opinion or feature reporting",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "policy",
+    "litigation",
+    "business",
+    "technology",
+    "world",
+    "other"
+  ],
+  "core_categories": [
+    "policy",
+    "litigation"
+  ],
+  "category_hints": [
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "regulation",
+        "hearing",
+        "agency",
+        "government",
+        "ministry",
+        "parliament",
+        "congress"
+      ]
+    ],
+    [
+      "business",
+      [
+        "merger",
+        "acquisition",
+        "earnings",
+        "layoff",
+        "restructuring",
+        "bankruptcy",
+        "ipo",
+        "stake"
+      ]
+    ],
+    [
+      "technology",
+      [
+        "software",
+        "platform",
+        "chip",
+        "artificial intelligence",
+        "cybersecurity",
+        "network",
+        "device"
+      ]
+    ],
+    [
+      "world",
+      [
+        "treaty",
+        "sanction",
+        "election",
+        "border",
+        "conflict",
+        "summit"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "ruling",
+    "settlement",
+    "lawsuit",
+    "enforcement action",
+    "regulation",
+    "legislation",
+    "merger",
+    "acquisition",
+    "sanction",
+    "investigation",
+    "penalty",
+    "policy"
+  ],
+  "weak_signals": [
+    "market",
+    "company",
+    "industry",
+    "report",
+    "announcement",
+    "deal",
+    "growth",
+    "decline",
+    "consumer"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "fined",
+    "penalt",
+    "settlement",
+    "lawsuit",
+    "injunction",
+    "charged",
+    "sanction",
+    "order"
+  ],
+  "trusted_source_hosts": [
+    "reuters.com",
+    "apnews.com",
+    "bbc.co.uk"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "government policy announcement",
+      "severity": "medium",
+      "group": "Government and law"
+    },
+    {
+      "label": "court ruling",
+      "severity": "high",
+      "group": "Government and law"
+    },
+    {
+      "label": "regulatory investigation",
+      "severity": "high",
+      "group": "Government and law"
+    },
+    {
+      "label": "election administration",
+      "severity": "low",
+      "group": "Government and law"
+    },
+    {
+      "label": "merger and acquisition",
+      "severity": "medium",
+      "group": "Business and markets"
+    },
+    {
+      "label": "corporate restructuring",
+      "severity": "low",
+      "group": "Business and markets"
+    },
+    {
+      "label": "market regulation",
+      "severity": "medium",
+      "group": "Business and markets"
+    },
+    {
+      "label": "technology policy",
+      "severity": "medium",
+      "group": "Technology and society"
+    },
+    {
+      "label": "artificial intelligence rules",
+      "severity": "medium",
+      "group": "Technology and society"
+    },
+    {
+      "label": "data privacy",
+      "severity": "medium",
+      "group": "Technology and society"
+    },
+    {
+      "label": "climate policy",
+      "severity": "low",
+      "group": "Technology and society"
+    }
+  ],
+  "targets": []
+}

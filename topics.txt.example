@@ -1,0 +1,316 @@
+# ============================================================================
+#  HB Briefing - topics.txt
+# ============================================================================
+#  Standing topics are the fastest way to retarget the monitor. Add a subject,
+#  and HB Briefing treats it as always relevant: matching items are flagged even
+#  when no enforcement, filing or litigation language appears, they are graded
+#  at the interest level you give them, and the AI is told to prioritise them.
+#
+#  Unless "Search Google News for each topic" is switched off in Settings, each
+#  active topic also becomes its own Google News query feed, so a subject works
+#  without adding a single RSS URL.
+#
+#  LINE FORMAT - three forms, each a superset of the one above it:
+#
+#      Broadband overbuild                      subject only (medium interest)
+#      Broadband overbuild | high               subject + interest level
+#      Broadband overbuild | high | Telecom     subject + level + group
+#
+#  Interest level:  high | medium | low
+#      high    a hit is briefed near the top; treat as a headline matter
+#      medium  a hit is briefed normally (default)
+#      low     a hit is kept and reported, but ranked below other signals
+#
+#  GROUPS - a comment beginning with ## opens a group:
+#
+#      ## Telecom and broadband
+#      fiber overbuild
+#      municipal broadband
+#
+#  Everything below a heading belongs to that group until the next heading, so a
+#  whole area can be switched on or off by uncommenting a block. Groups are shown
+#  in the briefing, in reports and in the GUI topic editor.
+#
+#  Everything below is commented out on purpose: the file ships as a library you
+#  can switch on a block at a time, so a fresh install never starts by fetching a
+#  hundred feeds. Uncomment what you want, then run a scan.
+#
+#  Limits: 150 active topics, the first 20 also become Google News feeds.
+#  A topic is matched at a word start, so "chip fab" matches "chip fabs" but the
+#  topic "AI" will not match the word "said".
+# ============================================================================
+
+
+## Starter set - a small cross-industry sample, safe to switch on as-is
+# data center | medium | Starter set
+# merger review | medium | Starter set
+# class action settlement | medium | Starter set
+# rate increase | low | Starter set
+# consumer protection | medium | Starter set
+
+
+## Telecom, broadband and spectrum
+# broadband
+# fiber overbuild
+# municipal broadband
+# net neutrality
+# spectrum auction
+# universal service fund
+# pole attachment
+# interconnection agreement
+# 5G deployment
+# rural broadband subsidy
+# satellite internet
+# undersea cable
+
+
+## Antitrust and competition
+# antitrust
+# merger review
+# monopolisation
+# market concentration
+# exclusive dealing
+# price fixing
+# non-compete clause
+# most favoured nation clause
+# dominant position | high
+# consent decree
+
+
+## AI, chips and semiconductors
+# artificial intelligence
+# generative AI
+# foundation model
+# AI safety
+# algorithmic accountability
+# semiconductor fabrication
+# chip export controls | high
+# GPU supply
+# open source model
+# model training data
+# AI liability
+# automated decision making
+
+
+## Energy, utilities and data centres
+# data center | high
+# electricity demand
+# grid interconnection
+# rate case
+# capacity auction
+# nuclear power
+# small modular reactor
+# natural gas pipeline
+# hydrogen project
+# power purchase agreement
+# utility commission
+# water usage
+
+
+## Health care and life sciences
+# drug pricing
+# pharmacy benefit manager
+# clinical trial
+# medical device recall
+# hospital merger
+# prior authorization
+# telehealth
+# vaccine policy
+# off-label marketing
+# 340B program
+# biosimilar
+# health data breach
+
+
+## Financial services and fintech
+# consumer finance
+# unfair overdraft fees
+# mortgage servicing
+# credit reporting
+# payday lending
+# bank charter
+# open banking
+# payments network
+# money laundering
+# capital requirements
+# robo-adviser
+# insurance underwriting
+
+
+## Consumer products, retail and e-commerce
+# product recall
+# consumer safety
+# deceptive advertising
+# subscription cancellation
+# dark pattern
+# junk fee
+# supply chain pricing
+# marketplace liability
+# counterfeit goods
+# children's privacy
+# warranty terms
+# retail delivery fee
+
+
+## Automotive, mobility and transport
+# autonomous vehicle
+# electric vehicle
+# charging network
+# emissions standard
+# vehicle recall
+# dealership franchise
+# ride hailing
+# airline merger
+# freight rail
+# port congestion
+# toll road
+# drone delivery
+
+
+## Labour, employment and the workplace
+# union election
+# gig worker classification
+# wage and hour
+# workplace safety
+# return to office
+# layoff notice
+# paid leave
+# employee monitoring
+# h-1b visa
+# independent contractor rule
+# collective bargaining
+
+
+## Privacy, cybersecurity and data protection
+# data breach
+# privacy policy
+# data broker
+# cross-border data transfer
+# encryption backdoor
+# vulnerability disclosure
+# ransomware
+# critical infrastructure security
+# children's online safety
+# biometric data
+# ad tracking
+# security incident reporting
+
+
+## Environment, climate and permitting
+# emissions rule
+# environmental review
+# clean air act
+# water quality permit
+# wetlands permit
+# endangered species
+# carbon offset
+# climate disclosure
+# hazardous waste
+# pipeline permit
+# offshore wind
+# environmental justice
+
+
+## Media, platforms and content moderation
+# content moderation
+# section 230
+# copyright takedown
+# media ownership
+# streaming regulation
+# local news
+# misinformation
+# political advertising
+# age verification
+# platform transparency
+# sports rights
+# paywall
+
+
+## Real estate, housing and construction
+# housing supply
+# zoning reform
+# rent control
+# mortgage rate
+# construction defect
+# building code
+# property tax
+# short-term rental
+# affordable housing
+# title insurance
+# commercial vacancy
+# permitting delay
+
+
+## Education and research funding
+# student lending
+# accreditation
+# title ix
+# research grant
+# university endowment
+# online education
+# school district budget
+# apprenticeship program
+# curriculum standard
+# international students
+
+
+## Defence, space and public procurement
+# defense contract
+# protest of award
+# sole source contract
+# space launch license
+# export license
+# buy american
+# small business set-aside
+# cost overrun
+# satellite constellation
+# cybersecurity maturity model
+
+
+## Agriculture, food and drink
+# food safety
+# pesticide registration
+# country of origin labeling
+# dairy pricing
+# seed patent
+# irrigation rights
+# livestock disease
+# organic certification
+# sugar program
+# restaurant franchise
+
+
+## Crypto and digital assets
+# digital asset
+# stablecoin
+# crypto exchange
+# custody rule
+# token offering
+# crypto tax reporting
+# decentralized finance
+# blockchain settlement
+# mining regulation
+
+
+## Insurance and pensions
+# insurance rate filing
+# claims handling
+# pension funding
+# annuity sales
+# reinsurance
+# catastrophe model
+# workers compensation
+# fiduciary standard
+
+
+## Trade, tariffs and supply chains
+# tariff | high
+# export control
+# anti-dumping duty
+# customs classification
+# country of origin
+# forced labor import ban
+# sanctions compliance
+# supply chain due diligence
+# critical minerals
+# shipping alliance

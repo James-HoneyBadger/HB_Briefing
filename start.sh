@@ -69,10 +69,17 @@ have_module "$RUN_PYTHON" dotenv || die \
     "python-dotenv could not be installed. Try: $PYTHON_BIN -m pip install --user -r $REQUIREMENTS"
 
 # ----------------------------------------------------------------- first run
-if [ ! -f "$PROJECT_DIR/.env" ] && [ -f "$PROJECT_DIR/.env.example" ]; then
-    cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"
-    info "Created .env from .env.example - add DEEPSEEK_API_KEY to enable the AI stages."
-fi
+# Seed every local config from its committed example, so a fresh clone works
+# immediately while personal files stay out of git.
+for pair in ".env:.env.example" "feeds.txt:feeds.txt.example" \
+            "watchlist.txt:watchlist.txt.example" "topics.txt:topics.txt.example"; do
+    target="${pair%%:*}"
+    example="${pair##*:}"
+    if [ ! -f "$PROJECT_DIR/$target" ] && [ -f "$PROJECT_DIR/$example" ]; then
+        cp "$PROJECT_DIR/$example" "$PROJECT_DIR/$target"
+        info "Created $target from $example"
+    fi
+done
 
 info "Starting HB Briefing (interpreter: $RUN_PYTHON)"
 exec "$RUN_PYTHON" "$PROJECT_DIR/hbnscan_gui.py" "$@"

@@ -1,0 +1,319 @@
+{
+  "name": "HB Briefing",
+  "version": "1.0.0",
+  "focus": "regulatory action and litigation in telecoms and internet service provision. That is its core: enforcement by regulators (FCC, FTC, state attorneys general, public utility commissions), and lawsuits, settlements, rulings, consent orders and appeals involving ISPs, fibre builders, cable operators and their investors",
+  "secondary": "ISP billing disputes, unreturned-equipment scams, deceptive or hidden fees, municipal broadband politics, BEAD and universal-service funding, spectrum policy, and consumer data breaches",
+  "briefing_interest": "regulatory action and litigation affecting telecoms and ISPs: who is being investigated, sued, fined, forced into a settlement, or handed a ruling, and what it means next",
+  "deep_always_relevant": "A regulatory proceeding or lawsuit described in the text",
+  "severity_high": "a live proceeding or enforcement outcome (suit filed, ruling, fine, settlement, consent order)",
+  "severity_medium": "investigation, inquiry, proposed rule, or a named matter under watch",
+  "severity_low": "background analysis or opinion",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "billing_dispute",
+    "equipment_scam",
+    "deceptive_fees",
+    "data_breach",
+    "security",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation"
+  ],
+  "category_hints": [
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "consent order",
+        "class action",
+        "injunction",
+        "appeal",
+        "indict",
+        "trial",
+        "subpoena",
+        "arbitration"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "ftc",
+        "fcc",
+        "cfpb",
+        "doj",
+        "department of justice",
+        "attorney general",
+        "regulator",
+        "regulatory",
+        "enforcement action",
+        "investigation",
+        "inquiry",
+        "public utilities commission",
+        "commerce commission"
+      ]
+    ],
+    [
+      "equipment_scam",
+      [
+        "unreturned",
+        "equipment fee",
+        "router",
+        "modem",
+        "set-top"
+      ]
+    ],
+    [
+      "deceptive_fees",
+      [
+        "hidden fee",
+        "deceptive fee",
+        "unauthorized fee",
+        "overcharg",
+        "junk fee"
+      ]
+    ],
+    [
+      "billing_dispute",
+      [
+        "billing",
+        "invoice",
+        "bill",
+        "refund",
+        "charge"
+      ]
+    ],
+    [
+      "data_breach",
+      [
+        "breach",
+        "leaked",
+        "exposed"
+      ]
+    ],
+    [
+      "security",
+      [
+        "vulnerability",
+        "cve-",
+        "exploit",
+        "malware",
+        "ransomware"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "rulemaking",
+        "proposed rule",
+        "comment period"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "billing dispute",
+    "unreturned equipment",
+    "small claims",
+    "arbitration",
+    "consumer protection",
+    "deceptive",
+    "class action",
+    "data breach",
+    "overcharg",
+    "enforcement action",
+    "lawsuit",
+    "litigation",
+    "sue",
+    "settlement",
+    "refund"
+  ],
+  "weak_signals": [
+    "billing",
+    "telecom",
+    "fiber",
+    "isp",
+    "modem",
+    "router",
+    "equipment",
+    "contract",
+    "complaint",
+    "fraud",
+    "scam",
+    "fee"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "sue",
+    "lawsuit",
+    "litigation",
+    "enforcement action",
+    "settlement",
+    "consent order",
+    "class action",
+    "data breach",
+    "overcharg",
+    "fined",
+    "penalt",
+    "injunction",
+    "indict",
+    "verdict",
+    "ruling",
+    "subpoena",
+    "appeal",
+    "charged",
+    "charges"
+  ],
+  "trusted_source_hosts": [
+    "ftc.gov",
+    "consumerfinance.gov",
+    "fcc.gov"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "broadband overbuild",
+      "severity": "high",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "municipal broadband",
+      "severity": "high",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "fiber deployment",
+      "severity": "medium",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "fixed wireless access",
+      "severity": "medium",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "spectrum licensing",
+      "severity": "medium",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "net neutrality",
+      "severity": "medium",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "pole attachment",
+      "severity": "low",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "universal service fund",
+      "severity": "medium",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "BEAD funding",
+      "severity": "high",
+      "group": "Broadband and spectrum"
+    },
+    {
+      "label": "state attorney general action",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "federal trade commission enforcement",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "federal communications commission enforcement",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "public utility commission ruling",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "consumer class action",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "consent order",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "hidden fees",
+      "severity": "medium",
+      "group": "Consumer and billing"
+    },
+    {
+      "label": "unreturned equipment charge",
+      "severity": "medium",
+      "group": "Consumer and billing"
+    },
+    {
+      "label": "broadband price increase",
+      "severity": "low",
+      "group": "Consumer and billing"
+    }
+  ],
+  "targets": [
+    {
+      "match": [
+        "metronet"
+      ],
+      "category": "regulatory_action",
+      "severity": "high",
+      "note": "default target"
+    },
+    {
+      "match": [
+        "metronet",
+        "better business bureau"
+      ],
+      "category": "billing_dispute",
+      "severity": "high",
+      "note": "complaint pattern around the default target"
+    },
+    {
+      "match": [
+        "kkr"
+      ],
+      "category": "regulatory_action",
+      "severity": "medium",
+      "note": "MetroNet's investor"
+    }
+  ]
+}

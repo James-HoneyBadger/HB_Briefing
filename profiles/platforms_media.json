@@ -1,0 +1,224 @@
+{
+  "name": "Platform Watch",
+  "version": "1.0.0",
+  "focus": "regulatory action and litigation against online platforms and media companies. That is its core: antitrust cases, privacy and content-moderation enforcement, app-store and advertising rules, and suits over competition, speech or data",
+  "secondary": "the Digital Markets Act and Digital Services Act, children's safety duties, news bargaining rules, and AI-generated content labelling",
+  "briefing_interest": "who is regulating, suing or fining platforms, under which rule, and what it forces them to change",
+  "deep_always_relevant": "A regulatory or legal decision addressing a platform's conduct",
+  "severity_high": "an antitrust action, fine, injunction, ban or ruling",
+  "severity_medium": "an investigation, compliance deadline or proposed rule",
+  "severity_low": "product coverage or market analysis",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "competition",
+    "privacy",
+    "content_rules",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation",
+    "competition"
+  ],
+  "category_hints": [
+    [
+      "competition",
+      [
+        "antitrust",
+        "market power",
+        "self-preferencing",
+        "app store fee",
+        "gatekeeper",
+        "abuse of dominance",
+        "tying",
+        "interoperability"
+      ]
+    ],
+    [
+      "privacy",
+      [
+        "privacy",
+        "data protection",
+        "gdpr",
+        "tracking",
+        "consent",
+        "children's data",
+        "age verification",
+        "targeted advertising"
+      ]
+    ],
+    [
+      "content_rules",
+      [
+        "content moderation",
+        "takedown",
+        "section 230",
+        "dsa",
+        "illegal content",
+        "transparency report",
+        "recommender"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "ftc",
+        "doj",
+        "european commission",
+        "ofcom",
+        "regulator",
+        "enforcement action",
+        "investigation",
+        "inquiry",
+        "attorney general",
+        "penalty"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "rule",
+        "regulation"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "antitrust",
+    "self-preferencing",
+    "gatekeeper",
+    "fine",
+    "penalty",
+    "injunction",
+    "class action",
+    "lawsuit",
+    "settlement",
+    "age verification",
+    "content moderation",
+    "data protection"
+  ],
+  "weak_signals": [
+    "platform",
+    "app store",
+    "search",
+    "social media",
+    "advertising",
+    "algorithm",
+    "recommendation",
+    "streaming",
+    "publisher"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "fined",
+    "penalt",
+    "injunction",
+    "settlement",
+    "lawsuit",
+    "antitrust",
+    "enforcement action",
+    "order",
+    "ban",
+    "charged"
+  ],
+  "trusted_source_hosts": [
+    "ftc.gov",
+    "justice.gov",
+    "europa.eu",
+    "ofcom.org.uk"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "antitrust case against platform",
+      "severity": "high",
+      "group": "Competition"
+    },
+    {
+      "label": "app store fee rule",
+      "severity": "high",
+      "group": "Competition"
+    },
+    {
+      "label": "gatekeeper designation",
+      "severity": "high",
+      "group": "Competition"
+    },
+    {
+      "label": "interoperability requirement",
+      "severity": "medium",
+      "group": "Competition"
+    },
+    {
+      "label": "age verification rule",
+      "severity": "high",
+      "group": "Privacy and content"
+    },
+    {
+      "label": "children's data protection",
+      "severity": "medium",
+      "group": "Privacy and content"
+    },
+    {
+      "label": "content moderation transparency",
+      "severity": "medium",
+      "group": "Privacy and content"
+    },
+    {
+      "label": "targeted advertising restriction",
+      "severity": "medium",
+      "group": "Privacy and content"
+    },
+    {
+      "label": "news bargaining rule",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "AI content labelling duty",
+      "severity": "low",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "state attorney general action",
+      "severity": "high",
+      "group": "Regulation and courts"
+    }
+  ],
+  "targets": []
+}

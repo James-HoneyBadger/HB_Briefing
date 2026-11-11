@@ -1,0 +1,235 @@
+{
+  "name": "Health Watch",
+  "version": "1.0.0",
+  "focus": "regulatory action and litigation in healthcare and pharmaceuticals. That is its core: FDA approvals, withdrawals and warning letters, CMS payment and coverage decisions, FTC and DOJ enforcement, price litigation, and product-liability suits",
+  "secondary": "drug pricing and pharmacy benefit managers, clinical-trial disclosures, device recalls, telehealth rules, and hospital merger review",
+  "briefing_interest": "what regulators and courts are deciding about medicines, devices, payments and providers, and who it affects",
+  "deep_always_relevant": "A regulatory or legal decision about a medicine, device or payer",
+  "severity_high": "an approval, withdrawal, recall, payment rule, penalty or ruling",
+  "severity_medium": "a warning letter, investigation, proposed rule or coverage decision",
+  "severity_low": "trial results, market analysis or background",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "product_safety",
+    "pricing",
+    "coverage",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation",
+    "product_safety"
+  ],
+  "category_hints": [
+    [
+      "product_safety",
+      [
+        "recall",
+        "withdrawal",
+        "warning letter",
+        "safety signal",
+        "adverse event",
+        "contamination",
+        "defect"
+      ]
+    ],
+    [
+      "pricing",
+      [
+        "drug price",
+        "price cap",
+        "pricing",
+        "rebate",
+        "pharmacy benefit",
+        "pbm",
+        "inflation reduction act",
+        "most favoured nation",
+        "most favored nation"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal",
+        "product liability",
+        "subpoena"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "fda",
+        "cms",
+        "hhs",
+        "ftc",
+        "doj",
+        "regulator",
+        "enforcement action",
+        "investigation",
+        "approval",
+        "authorisation",
+        "authorization",
+        "attorney general"
+      ]
+    ],
+    [
+      "coverage",
+      [
+        "coverage",
+        "reimbursement",
+        "formulary",
+        "medicare",
+        "medicaid",
+        "prior authorisation",
+        "prior authorization"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "guidance",
+        "rule"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "warning letter",
+    "recall",
+    "withdrawal",
+    "approval",
+    "drug price",
+    "settlement",
+    "class action",
+    "lawsuit",
+    "fined",
+    "penalty",
+    "coverage decision",
+    "product liability"
+  ],
+  "weak_signals": [
+    "drug",
+    "device",
+    "clinical trial",
+    "hospital",
+    "insurer",
+    "payer",
+    "pharmacy",
+    "prescription",
+    "patient",
+    "provider"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "warning letter",
+    "fined",
+    "penalt",
+    "settlement",
+    "lawsuit",
+    "recall",
+    "withdrawal",
+    "injunction",
+    "charged",
+    "subpoena",
+    "enforcement action"
+  ],
+  "trusted_source_hosts": [
+    "fda.gov",
+    "cms.gov",
+    "hhs.gov",
+    "ftc.gov"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "drug price negotiation",
+      "severity": "high",
+      "group": "Pricing and coverage"
+    },
+    {
+      "label": "pharmacy benefit manager reform",
+      "severity": "high",
+      "group": "Pricing and coverage"
+    },
+    {
+      "label": "medicare coverage decision",
+      "severity": "medium",
+      "group": "Pricing and coverage"
+    },
+    {
+      "label": "prior authorisation rule",
+      "severity": "low",
+      "group": "Pricing and coverage"
+    },
+    {
+      "label": "device recall",
+      "severity": "high",
+      "group": "Safety"
+    },
+    {
+      "label": "warning letter",
+      "severity": "medium",
+      "group": "Safety"
+    },
+    {
+      "label": "adverse event signal",
+      "severity": "medium",
+      "group": "Safety"
+    },
+    {
+      "label": "hospital merger review",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "product liability suit",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "off-label marketing settlement",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "telehealth prescribing rule",
+      "severity": "low",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "clinical trial disclosure",
+      "severity": "low",
+      "group": "Regulation and courts"
+    }
+  ],
+  "targets": []
+}

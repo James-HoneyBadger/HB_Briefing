@@ -1,0 +1,230 @@
+{
+  "name": "Utility Watch",
+  "version": "1.0.0",
+  "focus": "regulatory action and litigation in energy and water utilities. That is its core: rate cases, prudence and cost-recovery proceedings, grid and interconnection rules, reliability enforcement, and suits over siting, wildfire liability or consumer protection",
+  "secondary": "data-centre load growth, generation interconnection queues, transmission planning, utility mergers, and affordability politics",
+  "briefing_interest": "what regulators and courts are deciding about utility rates, grid access, reliability and liability, and who pays for it",
+  "deep_always_relevant": "A rate, siting, reliability or liability decision",
+  "severity_high": "a commission order, rate decision, penalty, injunction or settlement",
+  "severity_medium": "a filing, docket opening, investigation or proposed rule",
+  "severity_low": "forecasts, market commentary or background",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "rate_case",
+    "reliability",
+    "interconnection",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation",
+    "rate_case"
+  ],
+  "category_hints": [
+    [
+      "rate_case",
+      [
+        "rate case",
+        "rate increase",
+        "rate hike",
+        "cost recovery",
+        "prudence",
+        "tariff",
+        "rider",
+        "revenue requirement"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal",
+        "wildfire liability",
+        "subpoena"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "public utility commission",
+        "public service commission",
+        "ferc",
+        "regulator",
+        "enforcement action",
+        "investigation",
+        "docket",
+        "order",
+        "inquiry",
+        "attorney general"
+      ]
+    ],
+    [
+      "reliability",
+      [
+        "reliability",
+        "outage",
+        "grid failure",
+        "reserve margin",
+        "emergency order",
+        "curtailment"
+      ]
+    ],
+    [
+      "interconnection",
+      [
+        "interconnection",
+        "queue",
+        "transmission",
+        "capacity",
+        "grid access",
+        "load growth"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "standard",
+        "rule"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "rate case",
+    "rate increase",
+    "commission order",
+    "cost recovery",
+    "prudence",
+    "interconnection",
+    "reliability",
+    "wildfire liability",
+    "settlement",
+    "lawsuit",
+    "penalty",
+    "docket",
+    "tariff"
+  ],
+  "weak_signals": [
+    "utility",
+    "grid",
+    "transmission",
+    "substation",
+    "generation",
+    "capacity",
+    "load",
+    "megawatt",
+    "power plant",
+    "water",
+    "affordability"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "order",
+    "fined",
+    "penalt",
+    "injunction",
+    "settlement",
+    "lawsuit",
+    "investigation",
+    "prudence",
+    "disallowance",
+    "sanction"
+  ],
+  "trusted_source_hosts": [
+    "ferc.gov",
+    "ferc.gov",
+    "energy.gov",
+    "epa.gov"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "rate case",
+      "severity": "high",
+      "group": "Rates and recovery"
+    },
+    {
+      "label": "cost recovery disallowance",
+      "severity": "high",
+      "group": "Rates and recovery"
+    },
+    {
+      "label": "wildfire liability",
+      "severity": "high",
+      "group": "Rates and recovery"
+    },
+    {
+      "label": "affordability of utility bills",
+      "severity": "medium",
+      "group": "Rates and recovery"
+    },
+    {
+      "label": "data centre load interconnection",
+      "severity": "high",
+      "group": "Grid and build-out"
+    },
+    {
+      "label": "transmission planning",
+      "severity": "medium",
+      "group": "Grid and build-out"
+    },
+    {
+      "label": "reliability standard violation",
+      "severity": "high",
+      "group": "Grid and build-out"
+    },
+    {
+      "label": "generation interconnection queue",
+      "severity": "medium",
+      "group": "Grid and build-out"
+    },
+    {
+      "label": "utility merger review",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "public utility commission order",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "consumer advocate challenge",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "municipal utility formation",
+      "severity": "low",
+      "group": "Regulation and courts"
+    }
+  ],
+  "targets": []
+}

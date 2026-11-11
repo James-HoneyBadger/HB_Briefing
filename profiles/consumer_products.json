@@ -1,0 +1,219 @@
+{
+  "name": "Recall & Consumer Watch",
+  "version": "1.0.0",
+  "focus": "regulatory action and litigation over consumer products. That is its core: CPSC recalls, FTC and state enforcement against deceptive practices, and lawsuits, settlements and rulings about safety, warranties or hidden charges",
+  "secondary": "product-safety standards, subscription traps, refund and warranty disputes, marketplace liability, and children's product rules",
+  "briefing_interest": "what is being recalled, banned, fined or sued over in consumer products, and what a buyer or seller must do about it",
+  "deep_always_relevant": "A recall, safety warning, enforcement action or product lawsuit",
+  "severity_high": "a recall, ban, penalty, injunction or settlement",
+  "severity_medium": "a safety warning, investigation, proposed rule or class action filing",
+  "severity_low": "reviews, buying guides or background",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "recall",
+    "deceptive_fees",
+    "product_safety",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation",
+    "recall"
+  ],
+  "category_hints": [
+    [
+      "recall",
+      [
+        "recall",
+        "withdrawn from sale",
+        "stop using",
+        "safety notice",
+        "market withdrawal",
+        "hazard"
+      ]
+    ],
+    [
+      "deceptive_fees",
+      [
+        "hidden fee",
+        "junk fee",
+        "subscription trap",
+        "auto-renew",
+        "unauthorized charge",
+        "dark pattern",
+        "refund"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal",
+        "product liability"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "cpsc",
+        "ftc",
+        "attorney general",
+        "regulator",
+        "enforcement action",
+        "investigation",
+        "inquiry",
+        "consumer protection",
+        "penalty"
+      ]
+    ],
+    [
+      "product_safety",
+      [
+        "burn",
+        "fire",
+        "choking",
+        "injury",
+        "defect",
+        "battery",
+        "strangulation",
+        "electrical shock"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "standard",
+        "rule"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "recall",
+    "safety notice",
+    "junk fee",
+    "hidden fee",
+    "class action",
+    "settlement",
+    "lawsuit",
+    "penalty",
+    "injunction",
+    "consumer protection",
+    "deceptive"
+  ],
+  "weak_signals": [
+    "product",
+    "warranty",
+    "refund",
+    "retailer",
+    "marketplace",
+    "subscription",
+    "pricing",
+    "complaint",
+    "defect"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "recall",
+    "fined",
+    "penalt",
+    "settlement",
+    "lawsuit",
+    "injunction",
+    "cease and desist",
+    "enforcement action",
+    "charged"
+  ],
+  "trusted_source_hosts": [
+    "cpsc.gov",
+    "ftc.gov",
+    "consumerfinance.gov"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "product recall",
+      "severity": "high",
+      "group": "Safety"
+    },
+    {
+      "label": "button battery hazard",
+      "severity": "medium",
+      "group": "Safety"
+    },
+    {
+      "label": "lithium battery fire",
+      "severity": "medium",
+      "group": "Safety"
+    },
+    {
+      "label": "children's product safety rule",
+      "severity": "medium",
+      "group": "Safety"
+    },
+    {
+      "label": "subscription trap",
+      "severity": "high",
+      "group": "Fees and selling practices"
+    },
+    {
+      "label": "junk fee rule",
+      "severity": "high",
+      "group": "Fees and selling practices"
+    },
+    {
+      "label": "auto-renewal disclosure",
+      "severity": "medium",
+      "group": "Fees and selling practices"
+    },
+    {
+      "label": "marketplace liability",
+      "severity": "medium",
+      "group": "Fees and selling practices"
+    },
+    {
+      "label": "warranty class action",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "state attorney general action",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "refund policy dispute",
+      "severity": "low",
+      "group": "Regulation and courts"
+    }
+  ],
+  "targets": []
+}

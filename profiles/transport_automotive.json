@@ -1,0 +1,220 @@
+{
+  "name": "Transport Watch",
+  "version": "1.0.0",
+  "focus": "regulatory action and litigation in transport. That is its core: NHTSA and FAA safety actions, recalls, airline consumer rules, rail and trucking enforcement, and suits over safety defects, delays or pricing",
+  "secondary": "autonomous-vehicle rules, emissions and fuel-economy standards, airport and port capacity, and freight-rate disputes",
+  "briefing_interest": "what regulators and courts are ordering across road, air, rail and sea, and what it costs operators and travellers",
+  "deep_always_relevant": "A safety, recall or consumer-protection decision in transport",
+  "severity_high": "a recall, grounding, penalty, injunction or settlement",
+  "severity_medium": "an investigation, proposed rule or enforcement sweep",
+  "severity_low": "reviews, launch coverage or background",
+  "excluded": "Vendor marketing, product reviews, comparison listicles, index/database pages, login pages and generic how-tos",
+  "categories": [
+    "regulatory_action",
+    "litigation",
+    "recall",
+    "consumer_fees",
+    "safety",
+    "policy",
+    "other"
+  ],
+  "core_categories": [
+    "regulatory_action",
+    "litigation",
+    "recall"
+  ],
+  "category_hints": [
+    [
+      "recall",
+      [
+        "recall",
+        "grounding",
+        "grounded",
+        "stop-sale",
+        "safety defect",
+        "airworthiness directive"
+      ]
+    ],
+    [
+      "consumer_fees",
+      [
+        "refund",
+        "cancellation policy",
+        "junk fee",
+        "baggage fee",
+        "change fee",
+        "hidden fee",
+        "price gouging"
+      ]
+    ],
+    [
+      "litigation",
+      [
+        "lawsuit",
+        "litigation",
+        "sue",
+        "court",
+        "judge",
+        "ruling",
+        "verdict",
+        "settlement",
+        "class action",
+        "injunction",
+        "appeal"
+      ]
+    ],
+    [
+      "regulatory_action",
+      [
+        "nhtsa",
+        "faa",
+        "fmcsa",
+        "fta",
+        "dot",
+        "regulator",
+        "enforcement action",
+        "investigation",
+        "inquiry",
+        "attorney general",
+        "penalty"
+      ]
+    ],
+    [
+      "safety",
+      [
+        "crash",
+        "derailment",
+        "near miss",
+        "fatality",
+        "fire",
+        "defect",
+        "autopilot",
+        "driver assistance"
+      ]
+    ],
+    [
+      "policy",
+      [
+        "policy",
+        "bill",
+        "legislation",
+        "hearing",
+        "standard",
+        "rule"
+      ]
+    ]
+  ],
+  "strong_signals": [
+    "recall",
+    "grounding",
+    "safety defect",
+    "class action",
+    "settlement",
+    "lawsuit",
+    "penalty",
+    "injunction",
+    "crash",
+    "derailment",
+    "airworthiness directive",
+    "refund"
+  ],
+  "weak_signals": [
+    "vehicle",
+    "airline",
+    "flight",
+    "rail",
+    "trucking",
+    "freight",
+    "port",
+    "autonomous",
+    "emissions",
+    "fare",
+    "route"
+  ],
+  "noise_title_signals": [
+    "complaints -",
+    "form -",
+    "station information",
+    "about the fcc",
+    "about the ftc",
+    "database",
+    "site map",
+    "contact us",
+    "login",
+    "sign in"
+  ],
+  "enforcement_signals": [
+    "recall",
+    "grounding",
+    "fined",
+    "penalt",
+    "settlement",
+    "lawsuit",
+    "injunction",
+    "investigation",
+    "charged",
+    "order"
+  ],
+  "trusted_source_hosts": [
+    "nhtsa.gov",
+    "faa.gov",
+    "fmcsa.dot.gov",
+    "transportation.gov"
+  ],
+  "aggregator_hosts": [
+    "news.google.com"
+  ],
+  "topics": [
+    {
+      "label": "vehicle recall",
+      "severity": "high",
+      "group": "Safety"
+    },
+    {
+      "label": "autonomous vehicle rule",
+      "severity": "medium",
+      "group": "Safety"
+    },
+    {
+      "label": "airline consumer rule",
+      "severity": "high",
+      "group": "Consumer and competition"
+    },
+    {
+      "label": "flight cancellation refund",
+      "severity": "medium",
+      "group": "Consumer and competition"
+    },
+    {
+      "label": "baggage fee disclosure",
+      "severity": "low",
+      "group": "Consumer and competition"
+    },
+    {
+      "label": "airline merger review",
+      "severity": "high",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "rail safety rule",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "trucking enforcement action",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "emissions standard",
+      "severity": "medium",
+      "group": "Regulation and courts"
+    },
+    {
+      "label": "port capacity dispute",
+      "severity": "low",
+      "group": "Regulation and courts"
+    }
+  ],
+  "targets": []
+}

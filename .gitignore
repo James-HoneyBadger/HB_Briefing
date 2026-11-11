@@ -7,6 +7,10 @@ watchdog_state.db-wal
 watchdog_state.db-shm
 latest_report.md
 /settings.json
+/profile.json
+feeds.txt
+watchlist.txt
+topics.txt
 
 # Python
 __pycache__/

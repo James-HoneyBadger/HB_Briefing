@@ -15,11 +15,13 @@ import time
 import webbrowser
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from pathlib import Path
+from tkinter import ttk, messagebox, filedialog
 
 import hbnscan
 
 FEEDS_PATH = hbnscan.FEEDS_PATH
+TOPICS_PATH = hbnscan.TOPICS_PATH
 REPORT_PATH = hbnscan.REPORT_PATH
 DB_PATH = hbnscan.DB_PATH
 
@@ -157,7 +159,12 @@ class NewsScanApp(tk.Tk):
         title_box.pack(side=tk.LEFT)
         tk.Label(title_box, text="HB BRIEFING", bg=BG_PANEL, fg=AMBER,
                  font=("Sans", 14, "bold")).pack(anchor="w")
-        tk.Label(title_box, text="v1.0.0  |  Two-stage AI triage, deep reads & daily briefing",
+        profile_label = hbnscan.profile_summary(
+            hbnscan.active_profile_path().stem
+            if hbnscan.active_profile_path().exists() else "")["name"]
+        tk.Label(title_box,
+                 text=f"v1.0.0  |  {profile_label}  |  Two-stage AI triage, deep reads & "
+                      "daily briefing",
                  bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9)).pack(anchor="w")
 
         # Status Badge
@@ -177,6 +184,10 @@ class NewsScanApp(tk.Tk):
         self.run_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         tk.Button(toolbar, text="✎ Edit Feeds", command=self.open_feeds_editor,
+                  bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                  font=("Sans", 10), relief="flat", padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=4)
+
+        tk.Button(toolbar, text="🎯 Topics", command=self.open_topics_editor,
                   bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                   font=("Sans", 10), relief="flat", padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=4)
 
@@ -463,35 +474,20 @@ class NewsScanApp(tk.Tk):
         except (AttributeError, ValueError, tk.TclError):
             limit = hbnscan.load_settings()["table_limit"]
 
-        clauses = ["flagged = 1"]
-        params = []
-        severity_filter = filters["filter_severity"]
-        category_filter = filters["filter_category"]
-        group_filter = filters["filter_group"]
-        if severity_filter != "all":
-            clauses.append("severity = ?")
-            params.append(severity_filter)
-        if category_filter != "all":
-            clauses.append("category = ?")
-            params.append(category_filter)
-        if group_filter == "watchlist":
-            clauses.append("summary LIKE '[Watchlist]%'")
-        elif group_filter == "core":
-            clauses.append("summary NOT LIKE '[Watchlist]%'")
-            clauses.append("category IN ('regulatory_action', 'litigation')")
-        elif group_filter == "context":
-            clauses.append("summary NOT LIKE '[Watchlist]%'")
-            clauses.append("category NOT IN ('regulatory_action', 'litigation')")
-        if query:
-            like = f"%{query}%"
-            clauses.append("(title LIKE ? OR summary LIKE ? OR category LIKE ? OR link LIKE ?)")
-            params.extend([like, like, like, like])
-        where = " AND ".join(clauses)
-        order = hbnscan.ROW_ORDERS.get(filters["row_order"], hbnscan.ROW_ORDERS["priority"])
+        # One builder for the grid and the exports, so a filter cannot mean two things.
+        where, params, limit = hbnscan._export_filters({
+            "severity": filters["filter_severity"],
+            "category": filters["filter_category"],
+            "group": filters["filter_group"],
+            "query": query,
+            "limit": limit,
+        })
+        order = hbnscan.row_order(filters["row_order"])
 
         flagged_total = 0
         high_total = 0
         matched = 0
+        new_count = 0
         rows = []
         if DB_PATH.exists():
             try:
@@ -799,14 +795,166 @@ class NewsScanApp(tk.Tk):
         tk.Button(win, text="Save Feeds", command=save_feeds, bg=AMBER, fg="#0f172a",
                   font=("Sans", 10, "bold"), relief="flat", padx=14, pady=6).pack(pady=10)
 
+    def open_topics_editor(self):
+        """Edit topics.txt: the standing subjects the monitor watches for."""
+        win = tk.Toplevel(self)
+        win.title("HB Briefing - Standing Topics")
+        win.geometry("760x620")
+        win.configure(bg=BG_PANEL)
+        win.transient(self)
+
+        tk.Label(win, text="STANDING TOPICS", bg=BG_PANEL, fg=AMBER,
+                 font=("Sans", 11, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
+        tk.Label(win,
+                 text="One subject per line. A matching item is flagged on subject alone,\n"
+                      "before any enforcement, filing or litigation language is considered.\n\n"
+                      "    broadband                     medium interest\n"
+                      "    broadband | high              chose an interest level\n"
+                      "    broadband | high | Telecom    chose a level and a group\n\n"
+                      "A comment beginning ## opens a group: every topic below it until the\n"
+                      "next heading belongs to that group, so a block can be switched on or\n"
+                      "off by commenting it out. Line comments use a single #.\n\n"
+                      "The active profile contributes its own topics first; a line here with\n"
+                      "the same wording replaces the profile's version, so you can re-grade\n"
+                      "or re-group a shipped topic without copying the whole set.",
+                 bg=BG_PANEL, fg=FG_MUTED, font=("Monospace", 9), justify="left", anchor="w"
+                 ).pack(fill=tk.X, padx=14)
+
+        txt = tk.Text(win, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT,
+                      font=("Monospace", 10), wrap="none", undo=True)
+        txt.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 4))
+        if TOPICS_PATH.exists():
+            txt.insert("1.0", TOPICS_PATH.read_text(encoding="utf-8"))
+
+        def current_text():
+            return txt.get("1.0", tk.END).strip() + "\n"
+
+        as_feeds = tk.BooleanVar(value=bool(hbnscan.load_settings()["topics_as_feeds"]))
+        count_lbl = tk.Label(win, text="", bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9), anchor="w")
+
+        def update_count():
+            text = current_text()
+            active = [ln for ln in text.splitlines()
+                      if ln.strip() and not ln.lstrip().startswith("#")]
+            feeds = min(len(active), hbnscan.TOPIC_FEED_LIMIT)
+            count_lbl.config(
+                text=f"{len(active)} active topic(s) - {feeds} Google News feed(s) - "
+                     f"limit {hbnscan.TOPIC_LIMIT} topics",
+                fg=RED if len(active) > hbnscan.TOPIC_LIMIT else FG_MUTED,
+            )
+
+        def insert_library():
+            """Append the shipped topic library, skipping anything already present."""
+            example = hbnscan.APP_DIR / "topics.txt.example"
+            if not example.exists():
+                messagebox.showwarning("HB Briefing", "topics.txt.example is not installed.",
+                                       parent=win)
+                return
+            existing = {ln.strip().lstrip("#").strip().lower()
+                        for ln in current_text().splitlines() if ln.strip()}
+            added = 0
+            block = []
+            for line in example.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("# =") or stripped.startswith("# -"):
+                    continue
+                if stripped and stripped.lstrip("#").strip().lower() in existing:
+                    continue
+                block.append(line)
+                if stripped and not (stripped.startswith("#") and
+                                     not stripped.lstrip("# ").strip()):
+                    added += 1
+            if not block:
+                self.log("[INFO] Topic library already present.")
+                return
+            txt.insert(tk.END, ("\n\n" if txt.get("1.0", tk.END).strip() else "") +
+                       "\n".join(block) + "\n")
+            update_count()
+            self.log(f"[INFO] Added the topic library ({added} line(s)). Uncomment what you want.")
+
+        def save_topics():
+            text = current_text()
+            TOPICS_PATH.write_text(text, encoding="utf-8")
+            hbnscan.save_settings(topics_as_feeds=bool(as_feeds.get()))
+            hbnscan.load_topics()  # refresh cache and warnings
+            for warning in hbnscan.topic_warnings():
+                self.log(f"[WARN] topics.txt {warning}")
+            topics = hbnscan.load_topics()
+            groups = hbnscan.topic_groups(topics)
+            detail = ", ".join(f"{name} ({len(members)})" for name, members in groups[:6])
+            self.log(f"[INFO] Saved topics.txt: {len(topics)} active topic(s)"
+                     + (f" - {detail}" if detail else ""))
+            self.refresh_table()
+            win.destroy()
+
+        footer = tk.Frame(win, bg=BG_PANEL)
+        footer.pack(fill=tk.X, padx=14, pady=(0, 12))
+        tk.Checkbutton(footer, text="Search Google News for each active topic",
+                       variable=as_feeds, command=update_count,
+                       bg=BG_PANEL, fg=FG_TEXT, selectcolor=BG_INPUT, activebackground=BG_PANEL,
+                       font=("Sans", 9), anchor="w").pack(side=tk.LEFT)
+        tk.Button(footer, text="Insert Topic Library", command=insert_library,
+                  bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                  font=("Sans", 9), relief="flat", padx=10, pady=5).pack(side=tk.RIGHT, padx=4)
+        tk.Button(footer, text="Save Topics", command=save_topics, bg=AMBER, fg="#0f172a",
+                  font=("Sans", 10, "bold"), relief="flat", padx=14, pady=6).pack(side=tk.RIGHT, padx=4)
+        count_lbl.pack(fill=tk.X, padx=14, pady=(0, 4))
+        update_count()
+        txt.bind("<KeyRelease>", lambda _event: update_count())
+
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title("HB Briefing - Settings")
-        win.geometry("560x780")
+        win.geometry("600x900")
         win.configure(bg=BG_PANEL)
         win.transient(self)
 
         settings = hbnscan.load_settings()
+
+        tk.Label(win, text="PROFILE", bg=BG_PANEL, fg=AMBER,
+                 font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
+        tk.Label(win,
+                 text="A profile bundles the domain rules (categories, prompts, keywords), "
+                      "the topic set and the standing targets.\n"
+                      "Add your own .json to the profiles/ folder to extend this list; "
+                      "topics.txt and watchlist.txt still layer on top.",
+                 bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9), justify="left", anchor="w",
+                 wraplength=560).pack(fill=tk.X, padx=16)
+
+        profile_choices = hbnscan.available_profiles()
+        profile_paths = {name: path for name, path in profile_choices}
+        profile_var = tk.StringVar()
+        active_path = hbnscan.active_profile_path()
+        current_profile = ""
+        for name, path in profile_choices:
+            if path and Path(path) == active_path:
+                current_profile = name
+                break
+        profile_var.set(current_profile or profile_choices[0][0])
+
+        profile_row = tk.Frame(win, bg=BG_PANEL)
+        profile_row.pack(fill=tk.X, padx=16, pady=(6, 0))
+        profile_menu = tk.OptionMenu(profile_row, profile_var,
+                                     *[name for name, _path in profile_choices])
+        profile_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                               relief="flat", font=("Sans", 9), highlightthickness=0, bd=0,
+                               indicatoron=False, padx=8, pady=3, cursor="hand2")
+        profile_menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                       activeforeground=AMBER, font=("Sans", 9))
+        profile_menu.pack(side=tk.LEFT)
+        profile_info = tk.Label(win, text="", bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9),
+                                justify="left", anchor="w", wraplength=560)
+        profile_info.pack(fill=tk.X, padx=16, pady=(4, 0))
+
+        def describe_profile(*_args):
+            summary = hbnscan.profile_summary(profile_paths.get(profile_var.get(), ""))
+            profile_info.configure(
+                text=f"{summary['name']} - {len(summary['categories'])} categories, "
+                     f"{summary['topics']} topic(s), {summary['targets']} target(s)"
+                     + (f"\n{summary['focus']}" if summary["focus"] else ""))
+
+        profile_var.trace_add("write", describe_profile)
+        describe_profile()
 
         tk.Label(win, text="FEED DATE RANGE", bg=BG_PANEL, fg=AMBER,
                  font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
@@ -833,45 +981,94 @@ class NewsScanApp(tk.Tk):
         tk.Entry(form, textvariable=until_var, **entry_opts).grid(row=1, column=1,
                                                                  sticky="we", padx=(8, 0), ipady=4)
 
-        tk.Label(win, text="DEEPSEEK API KEY", bg=BG_PANEL, fg=AMBER,
-                 font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(6, 2))
+        tk.Label(win, text="LLM / AI PROVIDER", bg=BG_PANEL, fg=AMBER,
+                 font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(8, 2))
         if hbnscan.deepseek_configured():
-            key_status = (f"Configured ({hbnscan.DEEPSEEK_API_KEY[:6]}…"
-                          f"{hbnscan.DEEPSEEK_API_KEY[-4:]}). Leave blank to keep it.")
+            key_status = (f"Configured ({hbnscan.LLM_API_KEY[:6]}…"
+                          f"{hbnscan.LLM_API_KEY[-4:]}) - {hbnscan.LLM_MODEL}")
             status_colour = GREEN
         else:
-            key_status = "Not configured - running on the offline heuristic only."
+            key_status = "No key - running on the offline heuristic only."
             status_colour = AMBER
-        key_status_lbl = tk.Label(win, text=key_status, bg=BG_PANEL, fg=status_colour,
-                                  font=("Sans", 9), anchor="w", justify="left")
-        key_status_lbl.pack(fill=tk.X, padx=16)
+        tk.Label(win, text=key_status, bg=BG_PANEL, fg=status_colour, font=("Sans", 9),
+                 anchor="w", justify="left", wraplength=500).pack(fill=tk.X, padx=16)
+
+        provider_row = tk.Frame(win, bg=BG_PANEL)
+        provider_row.pack(fill=tk.X, padx=16, pady=(6, 0))
+        current = "Custom"
+        for preset, (url, model) in hbnscan.LLM_PRESETS.items():
+            if url and url == hbnscan.LLM_BASE_URL and model == hbnscan.LLM_MODEL:
+                current = preset
+                break
+        provider_var = tk.StringVar(value=current)
+        tk.Label(provider_row, text="Provider:", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
+        provider_menu = tk.OptionMenu(provider_row, provider_var, *hbnscan.LLM_PRESETS)
+        provider_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                                relief="flat", font=("Sans", 9), highlightthickness=0,
+                                bd=0, indicatoron=False, padx=8, pady=3, cursor="hand2")
+        provider_menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                        activeforeground=AMBER, font=("Sans", 9))
+        provider_menu.pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(provider_row, text="Model:", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
+        model_var = tk.StringVar(value=hbnscan.LLM_MODEL)
+        tk.Entry(provider_row, textvariable=model_var, width=22, bg=BG_INPUT, fg=FG_TEXT,
+                 insertbackground=FG_TEXT, relief="flat",
+                 font=("Monospace", 9)).pack(side=tk.LEFT, ipady=3)
+
+        url_row = tk.Frame(win, bg=BG_PANEL)
+        url_row.pack(fill=tk.X, padx=16, pady=(4, 0))
+        tk.Label(url_row, text="Base URL:", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
+        url_var = tk.StringVar(value=hbnscan.LLM_BASE_URL)
+        tk.Entry(url_row, textvariable=url_var, bg=BG_INPUT, fg=FG_TEXT,
+                 insertbackground=FG_TEXT, relief="flat",
+                 font=("Monospace", 9)).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
 
         key_row = tk.Frame(win, bg=BG_PANEL)
-        key_row.pack(fill=tk.X, padx=16, pady=8)
+        key_row.pack(fill=tk.X, padx=16, pady=6)
+        tk.Label(key_row, text="API key:", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
         key_var = tk.StringVar()
-        tk.Entry(key_row, textvariable=key_var, show="\u2022", **entry_opts
-                 ).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
-        test_btn = tk.Button(key_row, text="Test key", bg=BG_ACCENT, fg=FG_TEXT,
+        tk.Entry(key_row, textvariable=key_var, show="\u2022", bg=BG_INPUT, fg=FG_TEXT,
+                 insertbackground=FG_TEXT, relief="flat",
+                 font=("Monospace", 9)).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+        test_btn = tk.Button(key_row, text="Test", bg=BG_ACCENT, fg=FG_TEXT,
                              activebackground=BG_SELECT, font=("Sans", 9),
                              relief="flat", padx=10, pady=3, cursor="hand2")
         test_btn.pack(side=tk.LEFT, padx=(8, 0))
 
+        def apply_provider(*_args):
+            url, model = hbnscan.LLM_PRESETS.get(provider_var.get(), ("", ""))
+            if url:
+                url_var.set(url)
+                model_var.set(model)
+
+        provider_var.trace_add("write", apply_provider)
+
         def finish_test(ok, lines):
             for line in lines:
                 self.log("  " + line)
-            test_btn.configure(state="normal", text="Test key")
+            test_btn.configure(state="normal", text="Test")
             if ok:
-                messagebox.showinfo("API key", "Key works. AI stages are live.", parent=win)
+                messagebox.showinfo("LLM provider", "Connection works. AI stages are live.",
+                                    parent=win)
             else:
-                messagebox.showerror("API key", "The test failed - see the log.", parent=win)
+                messagebox.showerror("LLM provider", "The test failed - see the log.", parent=win)
 
         def test_key():
-            candidate = key_var.get().strip() or hbnscan.DEEPSEEK_API_KEY
+            candidate = key_var.get().strip() or hbnscan.LLM_API_KEY
             if not candidate:
-                messagebox.showwarning("API key", "Enter a key first.", parent=win)
+                messagebox.showwarning("LLM provider", "Enter an API key first.", parent=win)
                 return
+            base = url_var.get().strip()
+            if not base:
+                messagebox.showwarning("LLM provider", "Enter a base URL.", parent=win)
+                return
+            hbnscan.set_llm_config(base_url=base, model=model_var.get().strip(), api_key=candidate)
             test_btn.configure(state="disabled", text="Testing...")
-            self.log("[TEST] Calling DeepSeek to validate the key...")
+            self.log(f"[TEST] Calling {base} ({model_var.get().strip()})...")
 
             def worker():
                 lines = []
@@ -1006,6 +1203,8 @@ class NewsScanApp(tk.Tk):
                     messagebox.showerror("Settings", f"{label} must be HH:MM.", parent=win)
                     return
             before = hbnscan.load_settings()
+            chosen_profile = profile_paths.get(profile_var.get(), "")
+            profile_changed = chosen_profile != before["profile"]
             hbnscan.save_settings(feed_since=since, feed_until=until,
                                   theme=theme_var.get(), font_scale=scale_var.get(),
                                   notify_enabled=notify_var.get(),
@@ -1013,7 +1212,16 @@ class NewsScanApp(tk.Tk):
                                   auto_scan=scan_var.get(),
                                   scan_interval_minutes=interval_var.get(),
                                   scan_window_start=window_start_var.get().strip(),
-                                  scan_window_end=window_end_var.get().strip())
+                                  scan_window_end=window_end_var.get().strip(),
+                                  profile=chosen_profile)
+            if profile_changed:
+                active = hbnscan.apply_profile()
+                source = hbnscan.active_profile_path()
+                self.log(f"[INFO] Profile: {active['name']} "
+                         f"({source.name if source.exists() else 'built-in default'}) - "
+                         f"{len(hbnscan.CATEGORIES)} categories, "
+                         f"{len(hbnscan.load_topics())} topic(s), "
+                         f"{len(hbnscan.load_watchlist())} target(s).")
             after = hbnscan.load_settings()
             self.auto_enabled.set(after["auto_scan"])
             if any(before[key] != after[key] for key in
@@ -1027,12 +1235,23 @@ class NewsScanApp(tk.Tk):
                 win.destroy()
                 self._rebuild_ui()
                 return
+            base = url_var.get().strip()
+            model = model_var.get().strip()
+            if base or model:
+                hbnscan.set_llm_config(base_url=base or hbnscan.LLM_BASE_URL,
+                                       model=model or hbnscan.LLM_MODEL)
+                self.log(f"[INFO] Provider: {model or hbnscan.LLM_MODEL} at "
+                         f"{base or hbnscan.LLM_BASE_URL}")
             key = key_var.get().strip()
             if key:
                 if hbnscan.set_api_key(key):
-                    self.log("[INFO] DeepSeek key saved to .env; AI stages are live.")
+                    self.log("[INFO] LLM key saved to .env; AI stages are live.")
                 else:
                     self.log("[WARN] Key looks like the placeholder; AI stays offline.")
+            if profile_changed:
+                win.destroy()
+                self._rebuild_ui()
+                return
             self.refresh_table()
             win.destroy()
 

@@ -2,7 +2,7 @@
 
 An autonomous, open-source RSS/Atom intelligence monitor with two-stage DeepSeek AI triage and a standalone desktop GUI. It started as a single Python script; 1.0.0 is its first packaged release.
 
-**HB Briefing tracks regulatory action and litigation.** That is the core of the product: who is being investigated, sued, fined, settled or ruled against, and what happens next. Billing disputes, fee complaints and security notes are context around that core — they are still screened, but they never outrank a proceeding. Items are classified as `regulatory_action` or `litigation` before any other category is considered, the report orders those two ahead of everything else at the same severity, and all three AI stages are prompted to prefer them. The only thing that outranks the core is an explicit watchlist hit — a matter the operator declared important by name.
+**HB Briefing tracks regulatory action and litigation.** That is the core of the product: who is being investigated, sued, fined, settled or ruled against, and what happens next. The default profile narrows that to **telecoms and ISPs, with MetroNet as a standing target**; ten profiles and a topic library retarget the same engine to cybersecurity, chips, energy, health, finance, transport, platforms or general news — see [Profiles and topics](#profiles-and-topics). Billing disputes, fee complaints and security notes are context around that core — they are still screened, but they never outrank a proceeding. Items are classified as `regulatory_action` or `litigation` before any other category is considered, the report orders those two ahead of everything else at the same severity, and all three AI stages are prompted to prefer them. The only thing that outranks the core is an explicit watchlist hit — a matter the operator declared important by name.
 
 ## What's in 1.0.0
 
@@ -12,6 +12,18 @@ An autonomous, open-source RSS/Atom intelligence monitor with two-stage DeepSeek
 - **Executive briefing (stage 3).** One call per scan ranks the flagged set, merges syndicated duplicates across feeds, and writes a digest shown in the **AI Briefing** tab. Skipped when nothing new has arrived since the last briefing.
 - **Cross-feed dedupe.** The same story carried by two publishers is triaged once and marked `[Deduped]`.
 - **Offline heuristic fallback** with graded severity, so the tool stays useful with no API key.
+
+**Generalisation**
+- **Profiles bundle the domain.** Categories, keyword signals, prompt framing, trusted sources,
+  a topic set and standing targets live in one JSON file; ten ship in `profiles/` and one is
+  selected in Settings, by `WATCHDOG_PROFILE`, or by `profile.json`.
+- **Topics retarget without JSON.** `topics.txt` holds plain-language subjects with an interest
+  level and a group; a bundled library covers 20 interest areas, and active topics optionally
+  become Google News queries.
+- **Targets beat inference.** `watchlist.txt` and a profile's `targets` pin a named party to a
+  category and severity; neither the model nor a deep read can downgrade or dismiss it.
+- **Provider-agnostic AI.** DeepSeek, OpenAI, Ollama or any OpenAI-compatible endpoint, chosen
+  in the GUI, with retries, JSON-mode fallback and truncated-answer retry.
 
 **Reliability**
 - **Hardened feed fetching:** conditional GET (ETag / Last-Modified), a browser-compatible `Accept` header, DTD/entity rejection, and an 8 MiB payload cap.
@@ -64,6 +76,53 @@ Manual equivalent:
    ./install_autostart.sh
    ```
 
+## Profiles and topics
+
+Two layers decide what counts as interesting, and they stack.
+
+A **profile** bundles the domain rules — categories, keyword signals, prompt framing, trusted
+sources — *with* a topic set and standing targets. Ten ship in `profiles/`, and choosing one in
+**Settings → Profile** switches the whole engine at once:
+
+| Profile | Focus |
+| --- | --- |
+| *(built-in)* + `regulatory.json` | regulatory action and litigation in telecoms and ISPs — **MetroNet** target |
+| `cybersecurity.json` | vulnerabilities, exploitation, ransomware crews |
+| `ai_and_silicon.json` | AI and chip regulation, export controls, antitrust |
+| `energy_utilities.json` | rate cases, grid access, reliability, wildfire liability |
+| `financial_services.json` | banking, lending and payment enforcement |
+| `healthcare_pharma.json` | FDA/CMS action, pricing, recalls, product liability |
+| `consumer_products.json` | recalls, junk fees, consumer class actions |
+| `transport_automotive.json` | vehicle recalls, airline consumer rules, rail and trucking |
+| `platforms_media.json` | platform antitrust, privacy, content rules |
+| `general_news.json` | policy, litigation and business across beats |
+
+A **topic** is a standing subject that is relevant on its own — no enforcement verb needed.
+Add one in **🎯 Topics** (`topics.txt`), or take them from the bundled library of ~210 subjects
+in 20 interest groups:
+
+```
+## Broadband and spectrum
+municipal broadband | high
+BEAD funding | high | Funding
+pole attachment | low
+```
+
+A topic is matched at a word start, graded no lower than its interest level, marked `[Topic]`
+and ranked with your watchlist hits. Switch on **Search Google News for each active topic** in
+the topics editor and the first 20 topics also become query feeds, so a new subject produces
+items on the next scan with no feed editing (off by default, so a profile's topic set cannot
+multiply the feed count on a fresh install). Your own `topics.txt`
+and `watchlist.txt` layer on top of whichever profile is active, so a local edit is never lost
+by switching profile.
+
+```bash
+python3 hbnscan.py --check                  # prints the active profile, categories, topics, targets
+WATCHDOG_PROFILE=cybersecurity python3 hbnscan.py
+```
+
+---
+
 ## The AI pipeline
 
 | Stage | Runs on | Cost | Output |
@@ -71,6 +130,10 @@ Manual equivalent:
 | 1. Screen | every new item | 1 call, ~400 tokens | `flagged`, `category`, `severity`, `entities`, `action` |
 | 2. Verify | flagged items only, max 8/scan | 1 call + 1 page fetch | `facts`, `confidence`, refined `severity` |
 | 3. Brief | once per scan | 1 call | `headline`, `summary`, `top_stories`, `watchlist` |
+
+Any OpenAI-compatible endpoint works — DeepSeek by default, with OpenAI, Ollama/local and a
+custom URL selectable in **Settings → LLM / AI Provider** (`LLM_BASE_URL`, `LLM_MODEL`,
+`LLM_API_KEY`; the older `DEEPSEEK_*` names still work as fallbacks).
 
 Stage 2 is what makes the verdicts trustworthy: the model reads the article, not just the headline. It can confirm, promote or reject a screened signal; a rejection is stored with `dismissed = 1` (never deleted) and is hidden from the report and briefing. Stage 3 is what makes the output usable: one ranked digest instead of a wall of rows.
 
@@ -121,10 +184,12 @@ iowa attorney general             | regulatory_action | high
 - The same list is appended to the model prompt as a standing watchlist, so AI mode
   honours it too, and watchlist items are never downgraded by a deep read's doubt.
 
-The default file tracks, in this order: the operator's own identifiers
-(`james@honey-badger.org`, `James Temple`, and `Honey Badger` in spaced, hyphenated and
-unspaced spellings), MetroNet (always `high`, including BBB complaints), its investor KKR,
-the Iowa Attorney General, and the FCC.
+The shipped `watchlist.txt.example` — copied to `watchlist.txt` on first run — leaves a
+commented block at the top for your own identifiers and then tracks MetroNet (always `high`,
+including BBB complaints), its investor KKR, the Iowa Attorney General and the FCC. Your
+`watchlist.txt` is untracked, so personal names, addresses and case numbers never reach git.
+The default profile carries the same MetroNet target inside `profiles/` JSON, so the pin holds
+even with an empty watchlist file.
 
 A watchlist hit outranks everything else in the report: ordering is severity first, then
 watchlist hit, then core category, then recency.
@@ -230,7 +295,7 @@ A second row of controls narrows and sorts the grid. Every choice persists in
 |---|---|---|
 | Severity | `all`, `high`, `medium`, `low` | `filter_severity` |
 | Category | `all` or any pipeline category | `filter_category` |
-| Priority | `all`, `watchlist`, `core`, `context` | `filter_group` |
+| Priority | `all`, `watchlist`, `topic`, `core`, `context` | `filter_group` |
 | Order | `priority`, `newest`, `oldest`, `severity`, `title`, `category` | `row_order` |
 
 - `watchlist` shows only explicit watchlist hits; `core` shows non-watchlist regulatory
@@ -360,3 +425,17 @@ python3 hbnscan.py --export out.bin --format json # or state it explicitly
 
 Only standard-library code is used: the `.docx` writer emits `[Content_Types].xml`,
 `_rels/.rels` and `word/document.xml` into a zip, which Word and LibreOffice both open.
+
+---
+
+## Documentation
+
+| Document | For |
+| --- | --- |
+| [Instructions](./docs/INSTRUCTIONS.md) | Short, task-oriented steps: install, scan, tune, schedule, notify, export |
+| [User Manual](./docs/USER-MANUAL.md) | Every screen, setting and file, with the reasoning behind it |
+| [Technical Reference](./docs/TECHNICAL-REFERENCE.md) | Architecture, profiles, scoring ladder, AI contract, schema, security, runbook |
+
+Runtime defaults for `feeds.txt`, `watchlist.txt` and `topics.txt` ship as `*.example` twins and
+are copied into place on first run, so a fresh clone works immediately while your own lists stay
+out of git.
