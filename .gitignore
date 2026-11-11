@@ -1,0 +1,15 @@
+# Local configuration (never commit API keys)
+.env
+
+# Runtime state
+watchdog_state.db
+watchdog_state.db-wal
+watchdog_state.db-shm
+latest_report.md
+/settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
