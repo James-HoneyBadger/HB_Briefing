@@ -276,6 +276,31 @@ Watchlist-pinned items can be excluded by setting `notify_include_watchlist` to 
 A failed send is logged and never fails the scan, and it does not advance the watermark, so
 the next scan retries those items.
 
+## The daily report
+
+`latest_report.md` is rewritten after every scan and is rendered through the same code path
+as the exports, so the two never drift. It opens with a summary block rather than dropping
+straight into items:
+
+```markdown
+## Summary
+
+- **186** flagged · 79 high · 90 medium · 17 low
+- **180** regulatory/litigation · **110** watchlist matches
+- **15** sources configured (8 direct, 7 search)
+- Last scan: 2026-11-11 05:10:56
+- AI: offline heuristic (no model calls)
+```
+
+Then, when anything arrived since the previous scan, a **New since the previous scan** list
+of just those items; the executive briefing (fresh, or explicitly labelled as carried over);
+and finally the top 50 signals ordered by severity → watchlist hit → core → recency, each
+with category, priority, detected/published dates, verification state, assessment, facts,
+entities and confidence.
+
+The offline heuristic's catch-all next step ("Open the source item and confirm the details.")
+is suppressed — repeated 180 times it was just noise.
+
 ## Exporting
 
 Every export carries the full AI output — assessment, key facts, entities, confidence and

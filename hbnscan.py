@@ -1728,6 +1728,9 @@ def send_test_notification(log_callback=print):
 
 # ----------------------------------------------------------------------------- export
 
+# The offline heuristic's catch-all advice; repeating it 180 times is noise.
+BOILERPLATE_ACTION = "Open the source item and confirm the details."
+
 EXPORT_FORMATS = {
     ".md": "markdown", ".markdown": "markdown", ".txt": "text",
     ".html": "html", ".htm": "html", ".csv": "csv", ".json": "json", ".docx": "docx",
@@ -1803,6 +1806,8 @@ def export_rows(conn, filters=None):
             entity_map = json.loads(entities or "{}")
         except ValueError:
             entity_map = {}
+        if (action or "").strip() == BOILERPLATE_ACTION:
+            action = ""
         out.append({
             "detected": seen_at or "",
             "published": (published or "")[:10],
@@ -1872,11 +1877,13 @@ def render_text(rows, title="HB Briefing", briefing=None):
     return "\n".join(lines)
 
 
-def render_markdown(rows, title="HB Briefing", briefing=None):
+def render_markdown(rows, title="HB Briefing", briefing=None, masthead=True):
     counts = _export_counts(rows)
-    lines = [f"# {title}", "",
-             f"_Exported {datetime.now().strftime('%Y-%m-%d %H:%M')} · {len(rows)} signal(s): "
-             + ", ".join(f"{k} {v}" for k, v in counts.items() if v) + "_", ""]
+    lines = []
+    if masthead:
+        lines = [f"# {title}", "",
+                 f"_Exported {datetime.now().strftime('%Y-%m-%d %H:%M')} · {len(rows)} signal(s): "
+                 + ", ".join(f"{k} {v}" for k, v in counts.items() if v) + "_", ""]
     if briefing and briefing[0]:
         lines.extend(["## Executive Briefing", "",
                       f"_Briefed {briefing[1]}_" if briefing[1] else "", briefing[0], ""])
@@ -2156,79 +2163,112 @@ def _md_url(url):
     return url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
 
 
-def write_report(conn, briefing_text=None):
-    rows = conn.execute(
-        "SELECT title, link, summary, severity, category, action, facts, seen_at, deep_read, "
-        "published "
-        "FROM seen_items WHERE flagged = 1 "
-        f"ORDER BY {ROW_ORDERS['priority']} LIMIT 50"
-    ).fetchall()
-    total_flagged = conn.execute(
-        "SELECT COUNT(*) FROM seen_items WHERE flagged = 1"
-    ).fetchone()[0]
-    briefing = conn.execute(
-        "SELECT content, created_at FROM briefings ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+def _report_summary(conn):
+    """One compact block: what is flagged, what is new, what produced it."""
+    counts = dict(conn.execute(
+        "SELECT severity, COUNT(*) FROM seen_items WHERE flagged = 1 GROUP BY severity"))
+    total = sum(counts.values())
+    core = conn.execute(
+        "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
+        "AND category IN ('regulatory_action', 'litigation')").fetchone()[0]
+    watchlist = conn.execute(
+        "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
+        "AND summary LIKE '[Watchlist]%'").fetchone()[0]
+    last_scan = conn.execute(
+        "SELECT value FROM meta WHERE key = 'last_scan_at'").fetchone()
+    usage = conn.execute(
+        "SELECT ai_calls, prompt_tokens, completion_tokens FROM scan_runs "
+        "ORDER BY id DESC LIMIT 1").fetchone()
 
+    feeds = load_feeds()
+    direct = sum(1 for url in feeds if "news.google.com" not in url)
+    lines = [
+        "## Summary",
+        "",
+        f"- **{total}** flagged · {counts.get('high', 0)} high · "
+        f"{counts.get('medium', 0)} medium · {counts.get('low', 0)} low",
+        f"- **{core}** regulatory/litigation · **{watchlist}** watchlist matches",
+        f"- **{len(feeds)}** sources configured ({direct} direct, {len(feeds) - direct} search)",
+    ]
+    if last_scan and last_scan[0]:
+        lines.append(f"- Last scan: {last_scan[0].replace('T', ' ')}")
+    if usage and usage[0]:
+        lines.append(f"- Last AI spend: {usage[0]} calls, {usage[1]} tokens in / "
+                     f"{usage[2]} out ({DEEPSEEK_MODEL})")
+    else:
+        lines.append("- AI: offline heuristic (no model calls)")
+    return lines
+
+
+def _report_new_section(conn):
+    """Signals that arrived after the previous scan, so the diff is obvious."""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'prev_scan_at'").fetchone()
+    previous = row[0] if row and row[0] else ""
+    if not previous:
+        return []
+    items = conn.execute(
+        "SELECT title, link, severity FROM seen_items "
+        "WHERE flagged = 1 AND seen_at > ? "
+        f"ORDER BY {ROW_ORDERS['priority']} LIMIT 15",
+        (previous,),
+    ).fetchall()
+    if not items:
+        return []
+    lines = [f"## New since the previous scan ({len(items)})", ""]
+    for title, link, severity in items:
+        safe = safe_link(link)
+        rendered = (f"[{_md_text(title)}]({_md_url(safe)})" if safe else _md_text(title))
+        lines.append(f"- **{severity or 'none'}** — {rendered}")
+    lines.append("")
+    return lines
+
+
+def write_report(conn, briefing_text=None):
+    """Rendered with the same code path as the exports, plus report-only context."""
+    briefing = conn.execute(
+        "SELECT content, created_at FROM briefings ORDER BY id DESC LIMIT 1").fetchone()
     settings = load_settings()
+
     lines = [
         "# HB Briefing v1.0.0 — Intelligence Report",
         f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_",
     ]
     if settings["feed_since"] or settings["feed_until"]:
-        lines.append(
-            f"_Feed window: {settings['feed_since'] or 'open'} to "
-            f"{settings['feed_until'] or 'open'}_"
-        )
+        lines.append(f"_Feed window: {settings['feed_since'] or 'open'} to "
+                     f"{settings['feed_until'] or 'open'}_")
     lines.append("")
+
+    lines.extend(_report_summary(conn))
+    lines.append("")
+
     if briefing_text:
         lines.extend([
-            "## Executive Briefing",
-            "",
+            "## Executive Briefing", "",
             f"_Briefed {datetime.now().strftime('%Y-%m-%d %H:%M')} from the current signal set._",
-            "",
-            briefing_text,
-            "",
+            "", briefing_text, "",
         ])
     elif briefing:
         lines.extend([
-            "## Last Executive Briefing",
-            "",
+            "## Last Executive Briefing", "",
             f"_No new briefing this scan; showing the digest from {briefing[1]}._",
-            "",
-            briefing[0],
-            "",
+            "", briefing[0], "",
         ])
 
-    shown = f", showing top {len(rows)} by severity" if total_flagged > len(rows) else ""
-    lines.extend([f"## Flagged Priority Items ({total_flagged}{shown})", ""])
-    if not rows:
-        lines.append("No flagged items recorded yet.")
-    else:
-        for (title, link, summary, severity, category, action, facts, seen_at, deep_read,
-             published) in rows:
-            safe = safe_link(link)
-            heading = (f"### [{_md_text(title)}]({_md_url(safe)})" if safe
-                       else f"### {_md_text(title)}")
-            lines.append(heading)
-            lines.append(
-                f"- **Severity:** {severity or 'none'} · **Category:** {category or 'other'}"
-                + (" · **Verified:** deep read" if deep_read else "")
-            )
-            lines.append(f"- **Detected:** {seen_at}")
-            if published:
-                lines.append(f"- **Published:** {published[:10]}")
-            lines.append(f"- **Assessment:** {_md_text(summary)}")
-            if action:
-                lines.append(f"- **Next step:** {_md_text(action)}")
-            try:
-                fact_list = json.loads(facts or "[]")
-            except (TypeError, ValueError):
-                fact_list = []
-            if isinstance(fact_list, list) and fact_list:
-                lines.append("- **Key facts:** " + "; ".join(_md_text(f) for f in fact_list))
-            lines.append("")
-    REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
+    lines.extend(_report_new_section(conn))
+
+    total = conn.execute(
+        "SELECT COUNT(*) FROM seen_items WHERE flagged = 1").fetchone()[0]
+    rows = export_rows(conn, {"limit": 50})
+    shown = f", showing top {len(rows)}" if total > len(rows) else ""
+    lines.extend([
+        f"## Flagged signals ({total}{shown})",
+        "",
+        "_Ordered by severity, then watchlist hit, then regulatory/litigation core, then recency._",
+        "",
+    ])
+    body = render_markdown(rows, masthead=False)
+    lines.append(body if body.strip() else "No flagged items recorded yet.")
+    REPORT_PATH.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
 
 
 def check_api(log_callback=print, api_key=None):
