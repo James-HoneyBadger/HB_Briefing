@@ -136,6 +136,7 @@ Set these in `.env` to control spend and depth:
 ```dotenv
 WATCHDOG_DEEP_READ=1          # 0 disables article fetching (stage 2)
 WATCHDOG_MAX_DEEP_READS=8     # article fetches per scan
+WATCHDOG_MAX_TRIAGE=40        # screening calls per scan; the remainder score offline
 WATCHDOG_BRIEFING=1           # 0 disables the executive briefing (stage 3)
 WATCHDOG_BRIEF_HOURS=24       # how far back the briefing looks for signals
 ```

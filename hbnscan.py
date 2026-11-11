@@ -184,6 +184,7 @@ def _env_flag(name, default=True):
 DEEP_READ_ENABLED = _env_flag("WATCHDOG_DEEP_READ", True)
 BRIEFING_ENABLED = _env_flag("WATCHDOG_BRIEFING", True)
 DEEP_READ_BUDGET = _env_int("WATCHDOG_MAX_DEEP_READS", MAX_DEEP_READS)
+TRIAGE_BUDGET = _env_int("WATCHDOG_MAX_TRIAGE", 40)
 BRIEF_WINDOW_HOURS = _env_int("WATCHDOG_BRIEF_HOURS", 24)
 
 # A deep read may only discard a screened signal when the model is reasonably
@@ -1385,6 +1386,8 @@ def _run_scan(log_callback=print, cancel=None):
     flagged_count = 0
     deep_count = 0
     deep_budget = DEEP_READ_BUDGET if (DEEP_READ_ENABLED and deepseek_configured()) else 0
+    triage_used = 0
+    triage_capped = False
     scan_verdicts = {}
 
     try:
@@ -1450,7 +1453,19 @@ def _run_scan(log_callback=print, cancel=None):
                     verdict["facts"] = []
                     verdict["deep_read"] = 0
                 else:
-                    verdict = analyze_item(item, url, log_callback)
+                    if deepseek_configured() and triage_used >= TRIAGE_BUDGET:
+                        if not triage_capped:
+                            triage_capped = True
+                            log_callback(
+                                f"     (AI triage budget of {TRIAGE_BUDGET} reached; "
+                                "scoring the rest offline)"
+                            )
+                        verdict = _apply_watchlist(
+                            heuristic_verdict(item["title"], item["description"], url), item)
+                    else:
+                        verdict = analyze_item(item, url, log_callback)
+                        if deepseek_configured():
+                            triage_used += 1
                     if verdict["flagged"] and deep_budget > 0:
                         verdict = deep_read_item(item, verdict, log_callback)
                         if verdict["deep_read"]:
