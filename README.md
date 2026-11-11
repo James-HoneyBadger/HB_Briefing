@@ -18,7 +18,10 @@ An autonomous, open-source RSS/Atom intelligence monitor with two-stage DeepSeek
 - **Honest AI fallback:** when the DeepSeek request fails, items are scored by the offline heuristic instead of being silently marked "not flagged".
 - **No silent item loss:** new items beyond the per-scan cap roll over to the next scan instead of being skipped.
 - **Safer output:** links are restricted to `http(s)`, report text is escaped, and the report is ordered by severity before truncation.
-- **Feed list repaired:** FTC and CFPB resolve directly; FCC is sourced via Google News (its own feeds are JavaScript-walled).
+- **Direct sources where they exist:** FTC, CFPB newsroom, CFPB enforcement actions, SEC
+  press releases, Federal Register rules for the FCC and FTC, Broadband Breakfast and
+  Telecompetitor are fetched from their own feeds. Google News queries cover FCC news,
+  state attorneys general and MetroNet/KKR, where no usable feed exists.
 
 **Desktop**
 - **Standalone GUI (`hbnscan_gui.py`):** non-blocking threaded scans, live telemetry log, interactive feed editor, and double-click URL launcher.
@@ -82,7 +85,20 @@ Without a key, screening uses local keyword matching instead of the model:
 - **Signals match at word starts, not mid-word,** so `sues` no longer fires on `Issues` and `fined` no longer fires on `defined`.
 - Outside the core, severity is graded rather than flat: two or more strong headline signals → `high`; one strong signal, or corroborated summary evidence → `medium`; weak words alone → `low`. Releases from `ftc.gov`, `consumerfinance.gov` and `fcc.gov` are in scope by definition and land at `medium` as `regulatory_action`.
 
-Deep reads cannot follow Google News item links: they are encrypted redirects that only resolve in a browser. Items from those feeds are still screened and briefed, but never marked *Verified* in the report. Point `feeds.txt` at publisher feeds when you need stage 2 on them.
+### Sources
+
+`feeds.txt` mixes two kinds of source, and it matters for stage 2:
+
+| Kind | Example | Deep read |
+|---|---|---|
+| `direct` — the publisher's own feed | `ftc.gov`, `consumerfinance.gov/enforcement/actions`, `sec.gov`, `federalregister.gov`, `broadbandbreakfast.com` | works |
+| `query` — a Google News search | `site:fcc.gov`, state AG, MetroNet/KKR | impossible: links are encrypted redirects |
+
+Roughly half the configured sources are direct, so stage 2 covers the material it matters
+most on. fcc.gov and justice.gov publish HTML or dead endpoints rather than feeds (both
+were probed), which is why FCC coverage still runs through search. The Federal Register
+feeds are filtered to `RULE` and `PRORULE` documents — the unfiltered agency feed is almost
+entirely procedural notices ("information collections") that would drown the digest.
 
 ## Watchlist
 
