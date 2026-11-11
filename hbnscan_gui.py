@@ -516,7 +516,7 @@ class NewsScanApp(tk.Tk):
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title("HB Briefing - Settings")
-        win.geometry("480x280")
+        win.geometry("520x450")
         win.configure(bg=BG_PANEL)
         win.transient(self)
 
@@ -547,6 +547,55 @@ class NewsScanApp(tk.Tk):
         tk.Entry(form, textvariable=until_var, **entry_opts).grid(row=1, column=1,
                                                                  sticky="we", padx=(8, 0), ipady=4)
 
+        tk.Label(win, text="DEEPSEEK API KEY", bg=BG_PANEL, fg=AMBER,
+                 font=("Sans", 10, "bold")).pack(anchor="w", padx=16, pady=(6, 2))
+        if hbnscan.deepseek_configured():
+            key_status = (f"Configured ({hbnscan.DEEPSEEK_API_KEY[:6]}…"
+                          f"{hbnscan.DEEPSEEK_API_KEY[-4:]}). Leave blank to keep it.")
+            status_colour = GREEN
+        else:
+            key_status = "Not configured - running on the offline heuristic only."
+            status_colour = AMBER
+        key_status_lbl = tk.Label(win, text=key_status, bg=BG_PANEL, fg=status_colour,
+                                  font=("Sans", 9), anchor="w", justify="left")
+        key_status_lbl.pack(fill=tk.X, padx=16)
+
+        key_row = tk.Frame(win, bg=BG_PANEL)
+        key_row.pack(fill=tk.X, padx=16, pady=8)
+        key_var = tk.StringVar()
+        tk.Entry(key_row, textvariable=key_var, show="\u2022", **entry_opts
+                 ).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+        test_btn = tk.Button(key_row, text="Test key", bg=BG_ACCENT, fg=FG_TEXT,
+                             activebackground="#334155", font=("Sans", 9),
+                             relief="flat", padx=10, pady=3, cursor="hand2")
+        test_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+        def finish_test(ok, lines):
+            for line in lines:
+                self.log("  " + line)
+            test_btn.configure(state="normal", text="Test key")
+            if ok:
+                messagebox.showinfo("API key", "Key works. AI stages are live.", parent=win)
+            else:
+                messagebox.showerror("API key", "The test failed - see the log.", parent=win)
+
+        def test_key():
+            candidate = key_var.get().strip() or hbnscan.DEEPSEEK_API_KEY
+            if not candidate:
+                messagebox.showwarning("API key", "Enter a key first.", parent=win)
+                return
+            test_btn.configure(state="disabled", text="Testing...")
+            self.log("[TEST] Calling DeepSeek to validate the key...")
+
+            def worker():
+                lines = []
+                code = hbnscan.check_api(log_callback=lines.append, api_key=candidate)
+                self._post(finish_test, code == 0, lines)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        test_btn.configure(command=test_key)
+
         def clear():
             since_var.set("")
             until_var.set("")
@@ -565,6 +614,12 @@ class NewsScanApp(tk.Tk):
                 return
             hbnscan.save_settings(feed_since=since, feed_until=until)
             self.log(f"[INFO] Feed date window: {since or 'open'} to {until or 'open'}.")
+            key = key_var.get().strip()
+            if key:
+                if hbnscan.set_api_key(key):
+                    self.log("[INFO] DeepSeek key saved to .env; AI stages are live.")
+                else:
+                    self.log("[WARN] Key looks like the placeholder; AI stays offline.")
             self.refresh_table()
             win.destroy()
 

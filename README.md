@@ -190,3 +190,28 @@ Validate the configured key without running a scan (it prints a masked fingerpri
 ```bash
 python3 hbnscan.py --check
 ```
+
+### AI key and spend
+
+**Settings → DeepSeek API key** saves the key to `.env` (mode `0600`, comments and other
+keys preserved) and applies it to the running process, so no restart is needed. **Test
+key** spends one live call and reports the verdict plus token usage in the log.
+
+Transient failures are retried rather than degrading the scan:
+
+- `408`, `429`, `500`, `502`, `503`, `504` and connection/timeout errors are retried up
+  to 3 times with exponential backoff and jitter.
+- `Retry-After` is honoured and capped at 20 s.
+- `401`/`402`/`403` and other 4xx fail immediately — a bad key should not burn attempts.
+
+Every call's `usage` is counted, and a scan that spent model calls writes a row to
+`scan_runs` (`ai_calls`, `prompt_tokens`, `completion_tokens`, `new_items`, `flagged`,
+`deep_reads`, `model`). The scan log ends with the same figures:
+
+```
+[22:35:49] Scan complete. New: 2 | Flagged: 2 | Deep reads: 0 | AI: 2 calls, 400 in / 120 out
+```
+
+```sql
+SELECT started_at, ai_calls, prompt_tokens, completion_tokens FROM scan_runs ORDER BY id DESC LIMIT 10;
+```

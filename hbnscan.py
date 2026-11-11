@@ -10,9 +10,11 @@ Two-stage AI triage:
 import hashlib
 import json
 import os
+import random
 import re
 import sqlite3
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -55,6 +57,8 @@ MAX_DEEP_READS = 8
 MAX_BRIEF_SIGNALS = 30
 FETCH_TIMEOUT = 15
 AI_TIMEOUT = 25
+AI_MAX_ATTEMPTS = 3
+AI_MAX_RETRY_DELAY = 20.0
 RETENTION_DAYS = 90
 
 AI_TRIAGE_MAX_TOKENS = 320
@@ -177,6 +181,69 @@ BRIEF_WINDOW_HOURS = _env_int("WATCHDOG_BRIEF_HOURS", 24)
 # A deep read may only discard a screened signal when the model is reasonably
 # sure; a truncated or paywalled article must not silently clear the flag.
 REJECT_MIN_CONFIDENCE = 0.5
+
+
+USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
+
+ENV_PATH = APP_DIR / ".env"
+
+
+def update_env_file(**values):
+    """Merge keys into .env, keeping unrelated lines and comments intact."""
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    written = set()
+    merged = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in values:
+                merged.append(f"{key}={values[key]}")
+                written.add(key)
+                continue
+        merged.append(line)
+    for key, value in values.items():
+        if key not in written:
+            merged.append(f"{key}={value}")
+    ENV_PATH.write_text("\n".join(merged).rstrip("\n") + "\n", encoding="utf-8")
+    try:
+        os.chmod(ENV_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def set_api_key(value):
+    """Persist the key to .env and apply it to this process immediately."""
+    global DEEPSEEK_API_KEY
+    DEEPSEEK_API_KEY = (value or "").strip()
+    update_env_file(DEEPSEEK_API_KEY=DEEPSEEK_API_KEY)
+    return deepseek_configured()
+
+
+def reset_usage():
+    for key in USAGE:
+        USAGE[key] = 0
+
+
+def _record_usage(data):
+    usage = data.get("usage") or {}
+    USAGE["calls"] += 1
+    USAGE["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+    USAGE["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+
+
+def _retry_delay(exc, attempt):
+    """Exponential backoff with jitter, honouring Retry-After when the API sends one."""
+    if exc is not None:
+        header = getattr(exc, "headers", None)
+        value = header.get("Retry-After") if header else None
+        if value:
+            try:
+                return min(float(value), AI_MAX_RETRY_DELAY)
+            except ValueError:
+                pass
+    return min(1.5 * 2 ** (attempt - 1), AI_MAX_RETRY_DELAY) + random.uniform(0, 0.4)
 
 
 def deepseek_configured():
@@ -375,6 +442,20 @@ def init_db():
             etag TEXT,
             last_modified TEXT,
             checked_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT,
+            finished_at TEXT,
+            model TEXT,
+            ai_calls INTEGER DEFAULT 0,
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            new_items INTEGER DEFAULT 0,
+            flagged INTEGER DEFAULT 0,
+            deep_reads INTEGER DEFAULT 0
         )
     """)
     conn.execute("""
@@ -726,8 +807,15 @@ def _normalise_verdict(parsed):
     )
 
 
-def _call_deepseek(system_prompt, user_prompt, max_tokens, temperature=0.2):
-    """Single JSON-mode chat completion. The stable system prefix is cache-friendly."""
+RETRYABLE_STATUS = (408, 429, 500, 502, 503, 504)
+
+
+def _call_deepseek(system_prompt, user_prompt, max_tokens, temperature=0.2, api_key=None):
+    """JSON-mode chat completion, retried on transient failures.
+
+    The stable system prefix is cache-friendly. A rate limit or upstream blip is
+    retried with backoff instead of degrading the whole scan to the heuristic.
+    """
     payload = json.dumps({
         "model": DEEPSEEK_MODEL,
         "messages": [
@@ -744,12 +832,27 @@ def _call_deepseek(system_prompt, user_prompt, max_tokens, temperature=0.2):
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer " + DEEPSEEK_API_KEY,
+            "Authorization": "Bearer " + (api_key or DEEPSEEK_API_KEY),
             "User-Agent": USER_AGENT,
         },
     )
-    with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+
+    data = None
+    for attempt in range(1, AI_MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_STATUS or attempt == AI_MAX_ATTEMPTS:
+                raise
+            time.sleep(_retry_delay(exc, attempt))
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == AI_MAX_ATTEMPTS:
+                raise
+            time.sleep(_retry_delay(None, attempt))
+
+    _record_usage(data)
     message = ((data.get("choices") or [{}])[0].get("message") or {})
     return _extract_json(message.get("content") or "{}")
 
@@ -1184,6 +1287,8 @@ INSERT_SQL = (
 
 
 def run_scan(log_callback=print):
+    reset_usage()
+    scan_started = datetime.now().isoformat(timespec="seconds")
     conn = init_db()
     feeds = load_feeds()
     load_watchlist()
@@ -1292,9 +1397,30 @@ def run_scan(log_callback=print):
     finally:
         conn.close()
 
+    if USAGE["calls"]:
+        try:
+            store = init_db()
+            try:
+                store.execute(
+                    "INSERT INTO scan_runs (started_at, finished_at, model, ai_calls, "
+                    "prompt_tokens, completion_tokens, new_items, flagged, deep_reads) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (scan_started, datetime.now().isoformat(timespec="seconds"), DEEPSEEK_MODEL,
+                     USAGE["calls"], USAGE["prompt_tokens"], USAGE["completion_tokens"],
+                     new_count, flagged_count, deep_count),
+                )
+                store.commit()
+            finally:
+                store.close()
+        except sqlite3.Error as exc:
+            log_callback(f"  [!] Could not record usage: {exc}")
+
+    usage_text = (f" | AI: {USAGE['calls']} calls, {USAGE['prompt_tokens']} in"
+                  f" / {USAGE['completion_tokens']} out") if USAGE["calls"] else ""
     log_callback(
         f"[{_now_hms()}] Scan complete. New: {new_count} | Flagged: {flagged_count} "
-        f"| Deep reads: {deep_count}" + (f" | Out of window: {out_of_range}" if out_of_range else "")
+        f"| Deep reads: {deep_count}" + usage_text
+        + (f" | Out of window: {out_of_range}" if out_of_range else "")
     )
     return new_count, flagged_count
 
@@ -1451,15 +1577,15 @@ def write_report(conn, briefing_text=None):
     REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
 
 
-def check_api(log_callback=print):
-    """`--check`: validate the configured key with one live triage call."""
-    if not deepseek_configured():
+def check_api(log_callback=print, api_key=None):
+    """Validate a key with one live triage call. `--check` passes none, the GUI passes one."""
+    key = (api_key if api_key is not None else DEEPSEEK_API_KEY).strip()
+    if key in PLACEHOLDER_API_KEYS:
         log_callback("No API key configured. Add DEEPSEEK_API_KEY to .env.")
         log_callback("HB Briefing still runs in offline heuristic mode without one.")
         return 1
 
-    masked = (f"{DEEPSEEK_API_KEY[:6]}...{DEEPSEEK_API_KEY[-4:]}"
-              if len(DEEPSEEK_API_KEY) > 12 else "<set>")
+    masked = f"{key[:6]}...{key[-4:]}" if len(key) > 12 else "<set>"
     log_callback(f"Endpoint: {DEEPSEEK_URL}")
     log_callback(f"Model:    {DEEPSEEK_MODEL}")
     log_callback(f"Key:      {masked}")
@@ -1475,6 +1601,7 @@ def check_api(log_callback=print):
                 TRIAGE_SYSTEM + _watchlist_prompt_block(),
                 _item_block(sample, "self-test"),
                 AI_TRIAGE_MAX_TOKENS,
+                api_key=key,
             )
         )
     except urllib.error.HTTPError as exc:
@@ -1491,6 +1618,9 @@ def check_api(log_callback=print):
         f"severity={verdict['severity']}"
     )
     log_callback(f"     {verdict['analysis']}")
+    log_callback(
+        f"     usage: {USAGE['prompt_tokens']} prompt + {USAGE['completion_tokens']} completion tokens"
+    )
     return 0
 
 
