@@ -143,8 +143,63 @@ class NewsScanApp(tk.Tk):
         notebook.add(signals_tab, text="  Flagged Signals  ")
         notebook.add(briefing_tab, text="  AI Briefing  ")
 
-        tk.Label(signals_tab, text="FLAGGED INTELLIGENCE SIGNALS (Double-click row to open URL)",
-                 bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9, "bold"), anchor="w", padx=10, pady=6).pack(fill=tk.X)
+        self.table_lbl = tk.Label(signals_tab,
+                                  text="FLAGGED INTELLIGENCE SIGNALS (Double-click row to open URL)",
+                                  bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9, "bold"),
+                                  anchor="w", padx=10, pady=6)
+        self.table_lbl.pack(fill=tk.X)
+
+        search_bar = tk.Frame(signals_tab, bg=BG_PANEL)
+        search_bar.pack(fill=tk.X, padx=10, pady=(0, 6))
+        tk.Label(search_bar, text="🔍", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 10)).pack(side=tk.LEFT, padx=(0, 6))
+        self.search_var = tk.StringVar()
+        self._search_after = None
+        self.search_entry = tk.Entry(search_bar, textvariable=self.search_var,
+                                     bg="#0d1117", fg=FG_TEXT, insertbackground=FG_TEXT,
+                                     relief="flat", font=("Sans", 10))
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+        self.search_entry.bind("<Escape>", lambda _e: self._clear_search())
+        tk.Label(search_bar, text="Rows:", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.LEFT, padx=(10, 4))
+        self.limit_var = tk.StringVar(value=str(hbnscan.load_settings()["table_limit"]))
+        limit_menu = tk.OptionMenu(search_bar, self.limit_var,
+                                   *[str(v) for v in hbnscan.ROW_LIMITS],
+                                   command=self._on_limit_changed)
+        limit_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground="#334155",
+                             relief="flat", font=("Sans", 9), highlightthickness=0,
+                             bd=0, indicatoron=False, padx=8, pady=3, cursor="hand2")
+        limit_menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                     activeforeground=AMBER, font=("Sans", 9))
+        limit_menu.pack(side=tk.LEFT)
+
+        tk.Button(search_bar, text="Clear", command=self._clear_search,
+                  bg=BG_ACCENT, fg=FG_MUTED, activebackground="#334155",
+                  font=("Sans", 9), relief="flat", padx=10, pady=3).pack(side=tk.LEFT, padx=(6, 0))
+        self.search_var.trace_add("write", self._on_search_changed)
+
+        saved = hbnscan.load_settings()
+        filter_bar = tk.Frame(signals_tab, bg=BG_PANEL)
+        filter_bar.pack(fill=tk.X, padx=10, pady=(0, 6))
+        self.filter_vars = {}
+        for position, (key, label) in enumerate((
+            ("filter_severity", "Severity"),
+            ("filter_category", "Category"),
+            ("filter_group", "Priority"),
+            ("row_order", "Order"),
+        )):
+            tk.Label(filter_bar, text=f"{label}:", bg=BG_PANEL, fg=FG_MUTED,
+                     font=("Sans", 9)).pack(side=tk.LEFT, padx=(0 if position == 0 else 12, 4))
+            var = tk.StringVar(value=saved[key])
+            self.filter_vars[key] = var
+            menu = tk.OptionMenu(filter_bar, var, *hbnscan.SETTING_CHOICES[key],
+                                 command=lambda value, name=key: self._on_filter_changed(name, value))
+            menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground="#334155",
+                           relief="flat", font=("Sans", 9), highlightthickness=0,
+                           bd=0, indicatoron=False, padx=8, pady=3, cursor="hand2")
+            menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                   activeforeground=AMBER, font=("Sans", 9))
+            menu.pack(side=tk.LEFT)
 
         cols = ("time", "severity", "category", "title", "analysis")
         tree_wrap = tk.Frame(signals_tab, bg=BG_PANEL)
@@ -168,6 +223,7 @@ class NewsScanApp(tk.Tk):
         self.tree.tag_configure("sev_medium", foreground=AMBER)
         self.tree.tag_configure("sev_low", foreground=FG_MUTED)
         self.tree.bind("<Double-1>", self._on_row_double_click)
+        self.bind("<Control-f>", lambda _e: self.search_entry.focus_set())
         self.row_links = {}
 
         self.brief_text = tk.Text(briefing_tab, bg="#0d1117", fg=FG_TEXT, insertbackground=FG_TEXT,
@@ -254,29 +310,65 @@ class NewsScanApp(tk.Tk):
         self.refresh_table()
         self.refresh_briefing()
 
+    def _active_filters(self):
+        if not hasattr(self, "filter_vars"):
+            return {key: hbnscan.DEFAULT_SETTINGS[key] for key in hbnscan.SETTING_CHOICES}
+        return {key: var.get() for key, var in self.filter_vars.items()}
+
     def refresh_table(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.row_links.clear()
         feeds_count = len(hbnscan.load_feeds())
+        query = self.search_var.get().strip() if hasattr(self, "search_var") else ""
+        filters = self._active_filters()
+        try:
+            limit = int(self.limit_var.get())
+        except (AttributeError, ValueError, tk.TclError):
+            limit = hbnscan.load_settings()["table_limit"]
+
+        clauses = ["flagged = 1"]
+        params = []
+        severity_filter = filters["filter_severity"]
+        category_filter = filters["filter_category"]
+        group_filter = filters["filter_group"]
+        if severity_filter != "all":
+            clauses.append("severity = ?")
+            params.append(severity_filter)
+        if category_filter != "all":
+            clauses.append("category = ?")
+            params.append(category_filter)
+        if group_filter == "watchlist":
+            clauses.append("summary LIKE '[Watchlist]%'")
+        elif group_filter == "core":
+            clauses.append("summary NOT LIKE '[Watchlist]%'")
+            clauses.append("category IN ('regulatory_action', 'litigation')")
+        elif group_filter == "context":
+            clauses.append("summary NOT LIKE '[Watchlist]%'")
+            clauses.append("category NOT IN ('regulatory_action', 'litigation')")
+        if query:
+            like = f"%{query}%"
+            clauses.append("(title LIKE ? OR summary LIKE ? OR category LIKE ? OR link LIKE ?)")
+            params.extend([like, like, like, like])
+        where = " AND ".join(clauses)
+        order = hbnscan.ROW_ORDERS.get(filters["row_order"], hbnscan.ROW_ORDERS["priority"])
+
         flagged_total = 0
         high_total = 0
-
+        matched = 0
+        rows = []
         if DB_PATH.exists():
             try:
                 conn = sqlite3.connect(DB_PATH, timeout=5)
                 try:
-                    # Same priority order as the report: severity, then a watchlist
-                    # hit, then the regulatory/litigation core, then recency.
                     rows = conn.execute(
                         "SELECT seen_at, title, summary, link, severity, category "
-                        "FROM seen_items WHERE flagged = 1 "
-                        "ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 "
-                        "WHEN 'low' THEN 2 ELSE 3 END, "
-                        "CASE WHEN summary LIKE '[Watchlist]%' THEN 0 ELSE 1 END, "
-                        "CASE WHEN category IN ('regulatory_action', 'litigation') "
-                        "THEN 0 ELSE 1 END, seen_at DESC LIMIT 100"
+                        f"FROM seen_items WHERE {where} ORDER BY {order} LIMIT ?",
+                        (*params, limit),
                     ).fetchall()
+                    matched = conn.execute(
+                        f"SELECT COUNT(*) FROM seen_items WHERE {where}", tuple(params)
+                    ).fetchone()[0]
                     totals = conn.execute(
                         "SELECT COUNT(*), COALESCE(SUM(severity = 'high'), 0) "
                         "FROM seen_items WHERE flagged = 1"
@@ -300,6 +392,24 @@ class NewsScanApp(tk.Tk):
                 )
                 self.row_links[iid] = link
 
+        active = [
+            f"{key.split('_', 1)[1]}={value}"
+            for key, value in filters.items() if value != "all" and key != "row_order"
+        ]
+        if filters["row_order"] != "priority":
+            active.append(f"order={filters['row_order']}")
+        parts = []
+        if query:
+            parts.append(f"SEARCH '{query}'")
+        if active:
+            parts.append("FILTERED " + ", ".join(active))
+        detail = " — ".join(parts) or "FLAGGED INTELLIGENCE SIGNALS"
+        total = matched if (query or active) else flagged_total
+        self.table_lbl.configure(
+            text=f"{detail}: showing {len(rows)} of {total}, limit {limit}"
+                 + ("" if (query or active) else " (double-click a row to open)")
+        )
+
         ai_mode = (f"DeepSeek ({hbnscan.DEEPSEEK_MODEL})"
                    if hbnscan.deepseek_configured() else "Offline heuristic")
         window = hbnscan.load_settings()
@@ -312,6 +422,27 @@ class NewsScanApp(tk.Tk):
                  f"({high_total} high)  |  AI: {ai_mode}{window_text}"
                  f"  |  MIT License — James-HoneyBadger"
         )
+
+    def _on_filter_changed(self, key, value):
+        hbnscan.save_settings(**{key: value})
+        self.refresh_table()
+
+    def _on_search_changed(self, *_):
+        """Debounce typing so a fast query does not hit SQLite per keystroke."""
+        if self._search_after is not None:
+            try:
+                self.after_cancel(self._search_after)
+            except tk.TclError:
+                pass
+        self._search_after = self.after(250, self.refresh_table)
+
+    def _clear_search(self):
+        self.search_var.set("")
+        self.search_entry.focus_set()
+
+    def _on_limit_changed(self, value):
+        hbnscan.save_settings(table_limit=value)
+        self.refresh_table()
 
     def refresh_briefing(self):
         content, stamped = "", ""

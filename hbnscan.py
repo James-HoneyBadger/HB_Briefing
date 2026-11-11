@@ -214,19 +214,65 @@ def _parse_pubdate(value):
         return ""
 
 
+TABLE_LIMIT_MIN, TABLE_LIMIT_MAX = 10, 5000
+ROW_LIMITS = (50, 100, 250, 500, 1000, 5000)
+
+# Whitelists for the GUI's row controls. Only these values ever reach SQL.
+SETTING_CHOICES = {
+    "filter_severity": ("all",) + SEVERITIES[:-1],
+    "filter_category": ("all",) + CATEGORIES,
+    "filter_group": ("all", "watchlist", "core", "context"),
+    "row_order": ("priority", "newest", "oldest", "severity", "title", "category"),
+}
+
+# Order fragments are fixed strings, never interpolated from user input.
+_GROUP_RANK = ("CASE WHEN summary LIKE '[Watchlist]%' THEN 0 ELSE 1 END, "
+               "CASE WHEN category IN ('regulatory_action', 'litigation') THEN 0 ELSE 1 END")
+_SEVERITY_RANK = ("CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 "
+                  "WHEN 'low' THEN 2 ELSE 3 END")
+ROW_ORDERS = {
+    "priority": f"{_SEVERITY_RANK}, {_GROUP_RANK}, seen_at DESC",
+    "newest": "seen_at DESC",
+    "oldest": "seen_at ASC",
+    "severity": f"{_SEVERITY_RANK}, seen_at DESC",
+    "title": "title COLLATE NOCASE ASC",
+    "category": "category ASC, seen_at DESC",
+}
+
+DEFAULT_SETTINGS = {
+    "feed_since": "",
+    "feed_until": "",
+    "table_limit": 100,
+    "filter_severity": "all",
+    "filter_category": "all",
+    "filter_group": "all",
+    "row_order": "priority",
+}
+
+
 def load_settings():
-    """GUI-editable runtime settings; malformed or missing values fall back to open."""
-    settings = {"feed_since": "", "feed_until": ""}
+    """GUI-editable runtime settings; anything malformed falls back to its default."""
+    settings = dict(DEFAULT_SETTINGS)
     if not SETTINGS_PATH.exists():
         return settings
     try:
         stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return settings
-    if isinstance(stored, dict):
-        for key in settings:
-            if _parse_date(stored.get(key)):
-                settings[key] = _parse_date(stored[key]).isoformat()
+    if not isinstance(stored, dict):
+        return settings
+    for key, default in DEFAULT_SETTINGS.items():
+        value = stored.get(key)
+        if isinstance(default, int):
+            try:
+                settings[key] = max(TABLE_LIMIT_MIN, min(TABLE_LIMIT_MAX, int(value)))
+            except (TypeError, ValueError):
+                pass
+        elif key in SETTING_CHOICES:
+            if value in SETTING_CHOICES[key]:
+                settings[key] = value
+        elif _parse_date(value):
+            settings[key] = _parse_date(value).isoformat()
     return settings
 
 
@@ -236,10 +282,19 @@ def parse_setting_date(value):
 
 
 def save_settings(**values):
-    """Merge values into settings.json; dates must be YYYY-MM-DD or blank."""
+    """Merge values into settings.json; invalid values are reset to their default."""
     settings = load_settings()
     for key, value in values.items():
-        if key in settings:
+        if key not in DEFAULT_SETTINGS:
+            continue
+        if isinstance(DEFAULT_SETTINGS[key], int):
+            try:
+                settings[key] = max(TABLE_LIMIT_MIN, min(TABLE_LIMIT_MAX, int(value)))
+            except (TypeError, ValueError):
+                settings[key] = DEFAULT_SETTINGS[key]
+        elif key in SETTING_CHOICES:
+            settings[key] = value if value in SETTING_CHOICES[key] else DEFAULT_SETTINGS[key]
+        else:
             settings[key] = value if _parse_date(value) else ""
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     return settings
@@ -1326,11 +1381,7 @@ def write_report(conn, briefing_text=None):
         "SELECT title, link, summary, severity, category, action, facts, seen_at, deep_read, "
         "published "
         "FROM seen_items WHERE flagged = 1 "
-        "ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 "
-        "WHEN 'low' THEN 2 ELSE 3 END, "
-        "CASE WHEN summary LIKE '[Watchlist]%' THEN 0 ELSE 1 END, "
-        "CASE WHEN category IN ('regulatory_action', 'litigation') THEN 0 ELSE 1 END, "
-        "seen_at DESC LIMIT 50"
+        f"ORDER BY {ROW_ORDERS['priority']} LIMIT 50"
     ).fetchall()
     total_flagged = conn.execute(
         "SELECT COUNT(*) FROM seen_items WHERE flagged = 1"

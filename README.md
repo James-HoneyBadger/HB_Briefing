@@ -134,7 +134,8 @@ items published inside a date range:
 ```json
 {
   "feed_since": "2026-11-01",
-  "feed_until": "2026-11-30"
+  "feed_until": "2026-11-30",
+  "table_limit": 100
 }
 ```
 
@@ -151,6 +152,36 @@ Both keys are optional; blank or missing means open-ended. Rules:
 
 This is separate from `WATCHDOG_BRIEF_HOURS`, which bounds how far back the *briefing*
 looks among items already collected.
+
+### Searching signals
+
+The **Flagged Signals** tab has a search box (`Ctrl+F`) that filters as you type, after a
+250 ms debounce. It matches against headline, assessment, category and source URL, and
+queries the whole database — not just the rows on screen — so an old signal is reachable
+without scrolling.
+
+`Rows` next to the search box controls how many rows are returned (50 → 5000) and is
+saved as `table_limit` in `settings.json`. The table header always reports what you are
+looking at, e.g. `SEARCH 'metronet': showing 51 of 51 match(es), limit 100`.
+
+### Filters and ordering
+
+A second row of controls narrows and sorts the grid. Every choice persists in
+`settings.json`:
+
+| Control | Values | Setting |
+|---|---|---|
+| Severity | `all`, `high`, `medium`, `low` | `filter_severity` |
+| Category | `all` or any pipeline category | `filter_category` |
+| Priority | `all`, `watchlist`, `core`, `context` | `filter_group` |
+| Order | `priority`, `newest`, `oldest`, `severity`, `title`, `category` | `row_order` |
+
+- `watchlist` shows only explicit watchlist hits; `core` shows non-watchlist regulatory
+  and litigation items; `context` is everything else. Together they partition the set.
+- Only whitelisted values are accepted — anything else in the file falls back to the
+  default, and the SQL order fragments are fixed strings, never interpolated input.
+- Filters combine with search and with the row limit; the header names every active
+  filter and reports `showing N of M`.
 
 Without an API key every stage degrades to the offline keyword heuristic — no network calls, no briefing, and the UI footer says `AI: Offline heuristic`.
 
