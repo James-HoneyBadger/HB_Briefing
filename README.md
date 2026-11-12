@@ -2,7 +2,7 @@
 
 An autonomous, open-source RSS/Atom intelligence monitor with two-stage DeepSeek AI triage and a standalone desktop GUI. It started as a single Python script; 1.0.0 is its first packaged release.
 
-**HB Briefing tracks regulatory action and litigation.** That is the core of the product: who is being investigated, sued, fined, settled or ruled against, and what happens next. The default profile narrows that to **telecoms and ISPs, with MetroNet as a standing target**; ten profiles and a topic library retarget the same engine to cybersecurity, chips, energy, health, finance, transport, platforms or general news — see [Profiles and topics](#profiles-and-topics). Billing disputes, fee complaints and security notes are context around that core — they are still screened, but they never outrank a proceeding. Items are classified as `regulatory_action` or `litigation` before any other category is considered, the report orders those two ahead of everything else at the same severity, and all three AI stages are prompted to prefer them. The only thing that outranks the core is an explicit watchlist hit — a matter the operator declared important by name.
+**HB Briefing tracks regulatory action and litigation.** That is the core of the product: who is being investigated, sued, fined, settled or ruled against, and what happens next. The default profile narrows that to **telecoms and ISPs**, with a sample standing target you replace with the companies *you* watch; ten profiles and a topic library retarget the same engine to cybersecurity, chips, energy, health, finance, transport, platforms or general news — see [Profiles and topics](#profiles-and-topics). Billing disputes, fee complaints and security notes are context around that core — they are still screened, but they never outrank a proceeding. Items are classified as `regulatory_action` or `litigation` before any other category is considered, the report orders those two ahead of everything else at the same severity, and all three AI stages are prompted to prefer them. The only thing that outranks the core is an explicit watchlist hit — a matter the operator declared important by name.
 
 ## What's in 1.0.0
 
@@ -33,7 +33,8 @@ An autonomous, open-source RSS/Atom intelligence monitor with two-stage DeepSeek
 - **Direct sources where they exist:** FTC, CFPB newsroom, CFPB enforcement actions, SEC
   press releases, Federal Register rules for the FCC and FTC, and Broadband Breakfast are
   fetched from their own feeds. Google News queries cover FCC news, state attorneys general,
-  MetroNet/KKR and Telecompetitor, where no usable feed is reachable from a plain HTTP client.
+  the companies you track, and Telecompetitor, where no usable feed is reachable from a plain
+  HTTP client.
 
 **Desktop**
 - **Standalone GUI (`hbnscan_gui.py`):** non-blocking threaded scans, live telemetry log, interactive feed editor, and double-click URL launcher.
@@ -86,7 +87,7 @@ sources — *with* a topic set and standing targets. Ten ship in `profiles/`, an
 
 | Profile | Focus |
 | --- | --- |
-| *(built-in)* + `regulatory.json` | regulatory action and litigation in telecoms and ISPs — **MetroNet** target |
+| *(built-in)* + `regulatory.json` | regulatory action and litigation in telecoms and ISPs, with a sample standing target to replace with your own |
 | `cybersecurity.json` | vulnerabilities, exploitation, ransomware crews |
 | `ai_and_silicon.json` | AI and chip regulation, export controls, antitrust |
 | `energy_utilities.json` | rate cases, grid access, reliability, wildfire liability |
@@ -155,7 +156,7 @@ Without a key, screening uses local keyword matching instead of the model:
 | Kind | Example | Deep read |
 |---|---|---|
 | `direct` — the publisher's own feed | `ftc.gov`, `consumerfinance.gov/enforcement/actions`, `sec.gov`, `federalregister.gov`, `broadbandbreakfast.com` | works |
-| `query` — a Google News search | `site:fcc.gov`, `site:telecompetitor.com`, state AG, MetroNet/KKR | works once the redirect is resolved to the publisher URL — unless that publisher refuses automated clients |
+| `query` — a Google News search | `site:fcc.gov`, `site:telecompetitor.com`, state AG, your tracked companies | works once the redirect is resolved to the publisher URL — unless that publisher refuses automated clients |
 
 Google News item links are encrypted redirects, so HB Briefing decodes the payload (or runs
 the `batchexecute` handshake) to recover the publisher URL before the deep read, and caches the
@@ -177,27 +178,27 @@ rule pins a subject to a category and a status, ahead of keyword scoring and reg
 of topic:
 
 ```
-metronet & better business bureau | billing_dispute   | high
-metronet                          | regulatory_action | high
-kkr                               | regulatory_action | medium
-iowa attorney general             | regulatory_action | high
+acme fiber & better business bureau | billing_dispute   | high
+acme fiber                          | regulatory_action | high
+acme capital                        | regulatory_action | medium
+state attorney general              | regulatory_action | high
 ```
 
 - Every `&`-joined phrase must appear at a word start in the item's title or summary.
 - Rules are evaluated top to bottom and the first match wins, so narrow rules go above
-  broad ones (`metronet & bbb` above `metronet`).
+  broad ones (`acme fiber & bbb` above `acme fiber`).
 - `category` must be one of the categories the pipeline knows; `status` is `high`,
   `medium` or `low`. Malformed lines are skipped and reported in the scan log.
 - The same list is appended to the model prompt as a standing watchlist, so AI mode
   honours it too, and watchlist items are never downgraded by a deep read's doubt.
 
 The shipped `watchlist.txt.example` — copied to `watchlist.txt` on first run — leaves a
-commented block at the top for your own identifiers and then tracks MetroNet (always `high`,
-including BBB complaints), its investor KKR, the Iowa Attorney General and the FCC. Your
-`watchlist.txt` is git-ignored and not tracked, so personal names, addresses and case numbers
-stay out of the repository — verify with `git ls-files watchlist.txt`, which must print nothing.
-The default profile carries the same MetroNet target inside `profiles/` JSON, so the pin holds
-even with an empty watchlist file.
+commented block at the top for your own identifiers and then shows a worked example: one named
+target, a related party, and the regulators that cover it. Replace those phrases with the
+companies and agencies you actually follow. Your `watchlist.txt` is git-ignored and not tracked,
+so personal names, addresses and case numbers stay out of the repository — verify with
+`git ls-files watchlist.txt`, which must print nothing. A profile can carry its own `targets`
+in the same form, so the pin holds even with an empty watchlist file.
 
 A watchlist hit outranks everything else in the report: ordering is severity first, then
 watchlist hit, then core category, then recency.
@@ -276,7 +277,7 @@ without scrolling.
 
 `Rows` next to the search box controls how many rows are returned (50 → 5000) and is
 saved as `table_limit` in `settings.json`. The table header always reports what you are
-looking at, e.g. `SEARCH 'metronet': showing 51 of 51 match(es), limit 100`.
+looking at, e.g. `SEARCH 'acme fiber': showing 51 of 51 match(es), limit 100`.
 
 ### Reading the grid
 
