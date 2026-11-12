@@ -194,7 +194,8 @@ iowa attorney general             | regulatory_action | high
 The shipped `watchlist.txt.example` — copied to `watchlist.txt` on first run — leaves a
 commented block at the top for your own identifiers and then tracks MetroNet (always `high`,
 including BBB complaints), its investor KKR, the Iowa Attorney General and the FCC. Your
-`watchlist.txt` is untracked, so personal names, addresses and case numbers never reach git.
+`watchlist.txt` is git-ignored and not tracked, so personal names, addresses and case numbers
+stay out of the repository — verify with `git ls-files watchlist.txt`, which must print nothing.
 The default profile carries the same MetroNet target inside `profiles/` JSON, so the pin holds
 even with an empty watchlist file.
 

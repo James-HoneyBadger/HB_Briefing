@@ -1030,8 +1030,15 @@ Mechanics worth knowing:
 
 Known acceptances: profile JSON and `topics.txt` are trusted input (they are the operator's own
 files), the LLM endpoint is trusted with item text, and carrier SMS gateways are trusted with
-message content. Personal identifiers should stay in the untracked `watchlist.txt`, not in
+message content. Personal identifiers should stay in `watchlist.txt`, not in
 `watchlist.txt.example`.
+
+`feeds.txt`, `watchlist.txt`, `topics.txt`, `settings.json`, `profile.json` and `.env` are the
+private set. They are git-ignored **and untracked**: `git ls-files <name>` must print nothing for
+each of them. Adding one to `.gitignore` after it was committed does not remove it from the index
+or from history, which is how the operator's own `watchlist.txt` ended up published in this
+repository's early commits; `git rm --cached <name>` is the fix, and purging history needs a
+rewrite.
 
 ---
 
