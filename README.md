@@ -31,9 +31,9 @@ An autonomous, open-source RSS/Atom intelligence monitor with two-stage DeepSeek
 - **No silent item loss:** new items beyond the per-scan cap roll over to the next scan instead of being skipped.
 - **Safer output:** links are restricted to `http(s)`, report text is escaped, and the report is ordered by severity before truncation.
 - **Direct sources where they exist:** FTC, CFPB newsroom, CFPB enforcement actions, SEC
-  press releases, Federal Register rules for the FCC and FTC, Broadband Breakfast and
-  Telecompetitor are fetched from their own feeds. Google News queries cover FCC news,
-  state attorneys general and MetroNet/KKR, where no usable feed exists.
+  press releases, Federal Register rules for the FCC and FTC, and Broadband Breakfast are
+  fetched from their own feeds. Google News queries cover FCC news, state attorneys general,
+  MetroNet/KKR and Telecompetitor, where no usable feed is reachable from a plain HTTP client.
 
 **Desktop**
 - **Standalone GUI (`hbnscan_gui.py`):** non-blocking threaded scans, live telemetry log, interactive feed editor, and double-click URL launcher.
@@ -150,18 +150,25 @@ Without a key, screening uses local keyword matching instead of the model:
 
 ### Sources
 
-`feeds.txt` mixes two kinds of source, and it matters for stage 2:
+`feeds.txt` mixes two kinds of source:
 
 | Kind | Example | Deep read |
 |---|---|---|
 | `direct` — the publisher's own feed | `ftc.gov`, `consumerfinance.gov/enforcement/actions`, `sec.gov`, `federalregister.gov`, `broadbandbreakfast.com` | works |
-| `query` — a Google News search | `site:fcc.gov`, state AG, MetroNet/KKR | impossible: links are encrypted redirects |
+| `query` — a Google News search | `site:fcc.gov`, `site:telecompetitor.com`, state AG, MetroNet/KKR | works once the redirect is resolved to the publisher URL — unless that publisher refuses automated clients |
 
-Roughly half the configured sources are direct, so stage 2 covers the material it matters
-most on. fcc.gov and justice.gov publish HTML or dead endpoints rather than feeds (both
-were probed), which is why FCC coverage still runs through search. The Federal Register
-feeds are filtered to `RULE` and `PRORULE` documents — the unfiltered agency feed is almost
-entirely procedural notices ("information collections") that would drown the digest.
+Google News item links are encrypted redirects, so HB Briefing decodes the payload (or runs
+the `batchexecute` handshake) to recover the publisher URL before the deep read, and caches the
+result. Some publishers sit behind a bot filter that refuses every automated request — Telecompetitor
+answers HTTP 403 to both its own feed and its articles — so the scan logs one line for that host
+and stops retrying it for the rest of the scan. Triage still works from the feed summary; only the
+article-level verification is lost.
+
+fcc.gov and justice.gov publish HTML or dead endpoints rather than feeds (both were probed),
+which is why FCC coverage runs through search. The Federal Register feeds are filtered to `RULE`
+and `PRORULE` documents — the unfiltered agency feed is almost entirely procedural notices
+("information collections") that would drown the digest. A feed that starts failing prints its
+HTTP status and a hint (blocked, gone, rate limited) rather than a bare error.
 
 ## Watchlist
 
@@ -298,10 +305,12 @@ A second row of controls narrows and sorts the grid. Every choice persists in
 | Priority | `all`, `watchlist`, `topic`, `core`, `context` | `filter_group` |
 | Order | `priority`, `newest`, `oldest`, `severity`, `title`, `category` | `row_order` |
 
-- `watchlist` shows only explicit watchlist hits; `core` shows non-watchlist regulatory
-  and litigation items; `context` is everything else. Together they partition the set.
-- Only whitelisted values are accepted — anything else in the file falls back to the
-  default, and the SQL order fragments are fixed strings, never interpolated input.
+- `watchlist` shows only watchlist/target rules; `topic` shows only topic matches; `core` shows
+  everything else whose category is core **for the active profile**; `context` is the rest.
+  Together they partition the set, and the category list follows whichever profile is active.
+- Only whitelisted values are accepted — anything else in the file falls back to the default, a
+  category that belongs to a different profile resets to `all`, and the SQL order fragments are
+  fixed strings built from the active profile's own category names, never interpolated input.
 - Filters combine with search and with the row limit; the header names every active
   filter and reports `showing N of M`.
 
@@ -365,8 +374,9 @@ skip `SMS_GATEWAY_DOMAIN`.
 
 Toggles live in **Settings → Notifications**: enable, minimum severity (`high` or
 `medium`), and **Send test**, which sends one fixed message through the same code path.
-Watchlist-pinned items can be excluded by setting `notify_include_watchlist` to false in
-`settings.json`.
+Declared-interest items — watchlist *and* topic matches — can be excluded from the digest by
+setting `notify_include_watchlist` to false in `settings.json`. Messages are prefixed with the
+active profile's name.
 
 A failed send is logged and never fails the scan, and it does not advance the watermark, so
 the next scan retries those items.
@@ -374,24 +384,28 @@ the next scan retries those items.
 ## The daily report
 
 `latest_report.md` is rewritten after every scan and is rendered through the same code path
-as the exports, so the two never drift. It opens with a summary block rather than dropping
-straight into items:
+as the exports, so the two never drift. Its title is the active profile's name, and it opens
+with a summary block rather than dropping straight into items:
 
 ```markdown
+# HB Briefing — Intelligence Report
+
 ## Summary
 
 - **186** flagged · 79 high · 90 medium · 17 low
-- **180** regulatory/litigation · **110** watchlist matches
-- **15** sources configured (8 direct, 7 search)
+- **180** regulatory action/litigation · **110** watchlist · **38** topic matches
+- **15** sources configured (7 direct, 8 search)
 - Last scan: 2026-11-11 05:10:56
 - AI: offline heuristic (no model calls)
 ```
 
-Then, when anything arrived since the previous scan, a **New since the previous scan** list
-of just those items; the executive briefing (fresh, or explicitly labelled as carried over);
-and finally the top 50 signals ordered by severity → watchlist hit → core → recency, each
-with category, priority, detected/published dates, verification state, assessment, facts,
-entities and confidence.
+The `<n>` in the second line is counted against the **active profile's** core categories, so a
+`cybersecurity` report counts exploitation and vulnerability items instead. Then, when anything
+arrived since the previous scan, a **New since the previous scan** list (with the true total when
+it exceeds the 15 shown); the executive briefing (fresh, or explicitly labelled as carried over);
+and finally the top 50 signals ordered by severity → declared interest (watchlist or topic) →
+core → recency, each with category, priority, detected/published dates, verification state,
+assessment, facts, entities and confidence.
 
 The offline heuristic's catch-all next step ("Open the source item and confirm the details.")
 is suppressed — repeated 180 times it was just noise.
@@ -400,7 +414,9 @@ is suppressed — repeated 180 times it was just noise.
 
 Every export carries the full AI output — assessment, key facts, entities, confidence and
 whether the item was deep-read or only screened — plus the latest executive briefing when
-one exists.
+one exists. The document title is the active profile's name, and the provenance prefix
+(`[Watchlist]`, `[Topic]`, `[Local Heuristic]`) is stripped from the assessment because the
+**Priority** column already states it.
 
 From the GUI, **⤓ Export** writes exactly what the grid is showing: the active search,
 severity/category/priority filters and the row limit all apply.
@@ -412,6 +428,7 @@ python3 hbnscan.py --export signals.html          # format from the extension
 python3 hbnscan.py --export signals.csv
 python3 hbnscan.py --export briefing.docx
 python3 hbnscan.py --export out.bin --format json # or state it explicitly
+python3 hbnscan.py --export signals.md --format md # suffix aliases work too
 ```
 
 | Format | Notes |

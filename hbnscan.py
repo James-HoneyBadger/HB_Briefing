@@ -31,7 +31,7 @@ import html
 from html.parser import HTMLParser
 from xml.sax.saxutils import escape
 from pathlib import Path
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, urlencode, urlparse
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -100,7 +100,6 @@ TOPIC_DEFAULT_GROUP = "General"
 
 def _topic_line(raw):
     return " ".join(raw.strip().split())
-
 
 
 AI_TRIAGE_MAX_TOKENS = 320
@@ -257,6 +256,24 @@ class FeedNotModified(Exception):
     """Raised when a conditional GET returns HTTP 304."""
 
 
+def write_atomic(path, text, mode=None):
+    """Replace a file through a temp sibling, so a crash cannot truncate config.
+
+    Every small config file here (settings.json, .env, feeds/topics, the report) is
+    rewritten in place, and an interrupted write would otherwise leave the next load
+    reading a half file and silently falling back to defaults.
+    """
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    if mode is not None:
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
 def _env_int(name, default):
     try:
         return int(os.getenv(name, "").strip() or default)
@@ -305,11 +322,7 @@ def update_env_file(**values):
     for key, value in values.items():
         if key not in written:
             merged.append(f"{key}={value}")
-    ENV_PATH.write_text("\n".join(merged).rstrip("\n") + "\n", encoding="utf-8")
-    try:
-        os.chmod(ENV_PATH, 0o600)
-    except OSError:
-        pass
+    write_atomic(ENV_PATH, "\n".join(merged).rstrip("\n") + "\n", mode=0o600)
 
 
 def set_api_key(value):
@@ -451,12 +464,7 @@ def profile_summary(value=""):
     `value` is a name in profiles/, a path, or "" for the built-in default. Used by the
     UI to preview a selection before the user commits to it.
     """
-    path = None
-    if value:
-        candidate = Path(value).expanduser()
-        path = candidate if candidate.is_file() else APP_DIR / "profiles" / f"{value}.json"
-        if not path.is_file():
-            path = None
+    path = resolve_profile_path(value)
     data = dict(DEFAULT_PROFILE)
     if path is not None:
         try:
@@ -499,20 +507,36 @@ def _profile_setting_name():
     return value.strip() if isinstance(value, str) else ""
 
 
+def resolve_profile_path(value):
+    """Map a profile name or path to a file, or None when nothing matches.
+
+    A path is tried against the working directory *and* the app directory, so
+    `WATCHDOG_PROFILE=profiles/cybersecurity.json` works from a .env, a desktop
+    launcher or a cron job without depending on where the process was started.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    candidate = Path(value).expanduser()
+    for path in (candidate, APP_DIR / candidate) if not candidate.is_absolute() else (candidate,):
+        if path.is_file():
+            return path
+    if candidate.suffix.lower() != ".json":
+        named = APP_DIR / "profiles" / f"{value}.json"
+        if named.is_file():
+            return named
+    return None
+
+
 def active_profile_path():
     """Resolve the profile: WATCHDOG_PROFILE env > `profile` setting > profile.json.
 
-    Both the env value and the setting accept either a name in profiles/ or a path.
+    Both the env value and the setting accept a name in profiles/ or a path.
     """
     for name in (os.getenv("WATCHDOG_PROFILE", "").strip(), _profile_setting_name()):
-        if not name:
-            continue
-        explicit = Path(name).expanduser()
-        if explicit.is_file():
-            return explicit
-        named = APP_DIR / "profiles" / f"{name}.json"
-        if named.is_file():
-            return named
+        path = resolve_profile_path(name)
+        if path is not None:
+            return path
     return PROFILE_PATH
 
 
@@ -524,7 +548,7 @@ def load_profile():
         return dict(DEFAULT_PROFILE)
     try:
         stat = path.stat()
-        key = (stat.st_mtime_ns, stat.st_size)
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
         if _profile_cache["key"] == key:
             return _profile_cache["profile"]
         stored = json.loads(path.read_text(encoding="utf-8"))
@@ -547,7 +571,13 @@ def load_profile():
     if "other" not in categories:
         categories.append("other")
     profile["categories"] = categories
-    profile["core_categories"] = [c for c in profile["core_categories"] if c in categories]
+    profile["core_categories"] = [
+        str(c).strip().lower() for c in profile["core_categories"]
+        if str(c).strip().lower() in categories
+    ]
+    for name in ("strong_signals", "weak_signals", "noise_title_signals",
+                 "enforcement_signals", "trusted_source_hosts", "aggregator_hosts"):
+        profile[name] = [str(item).strip() for item in profile[name] if str(item).strip()]
 
     hints = []
     for entry in profile["category_hints"]:
@@ -584,7 +614,7 @@ def apply_profile(profile=None):
 
     hints = dict((name, tuple(values)) for name, values in profile["category_hints"])
     cores = list(CORE_CATEGORIES)
-    LITIGATION_SIGNALS = hints.get("litigation", hints.get("litigation", ()))
+    LITIGATION_SIGNALS = hints.get("litigation", ())
     REGULATOR_SIGNALS = hints.get("regulatory_action", ())
     if not LITIGATION_SIGNALS:
         LITIGATION_SIGNALS = tuple(DEFAULT_PROFILE["category_hints"][0][1])
@@ -722,10 +752,11 @@ def _parse_pubdate(value):
 TABLE_LIMIT_MIN, TABLE_LIMIT_MAX = 10, 5000
 ROW_LIMITS = (50, 100, 250, 500, 1000, 5000)
 
-# Whitelists for the GUI's row controls. Only these values ever reach SQL.
+# Whitelists for the GUI's row controls. Only these values ever reach SQL. The category
+# list is profile-dependent, so it is served by setting_choices() rather than stored here:
+# a frozen copy would silently reject another profile's categories.
 SETTING_CHOICES = {
     "filter_severity": ("all",) + SEVERITIES[:-1],
-    "filter_category": ("all",) + CATEGORIES,
     "filter_group": ("all", "watchlist", "topic", "core", "context"),
     "row_order": ("priority", "newest", "oldest", "severity", "title", "category"),
     "theme": ("dark", "light"),
@@ -733,6 +764,15 @@ SETTING_CHOICES = {
     "notify_min_severity": ("high", "medium"),
     "scan_interval_minutes": ("5", "10", "15", "30", "60", "120", "240"),
 }
+
+FILTER_SETTING_KEYS = ("filter_severity", "filter_category", "filter_group", "row_order")
+
+
+def setting_choices(key):
+    """Allowed values for one setting, resolved against the active profile."""
+    if key == "filter_category":
+        return ("all",) + tuple(CATEGORIES)
+    return SETTING_CHOICES.get(key, ())
 
 # key -> (minimum, maximum) for numeric settings.
 INT_SETTINGS = {
@@ -822,8 +862,8 @@ def _coerce_setting(key, value, default):
             return default
     if key in ("scan_window_start", "scan_window_end"):
         return value if _parse_clock(value) is not None else default
-    if key in SETTING_CHOICES:
-        return value if value in SETTING_CHOICES[key] else default
+    if key in SETTING_CHOICES or key == "filter_category":
+        return value if value in setting_choices(key) else default
     if key == "window_geometry":
         return value if isinstance(value, str) and WINDOW_GEOMETRY_RE.match(value) else default
     if key == "profile":
@@ -861,7 +901,7 @@ def save_settings(**values):
     for key, value in values.items():
         if key in DEFAULT_SETTINGS:
             settings[key] = _coerce_setting(key, value, DEFAULT_SETTINGS[key])
-    SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    write_atomic(SETTINGS_PATH, json.dumps(settings, indent=2) + "\n")
     return settings
 
 
@@ -901,13 +941,18 @@ def safe_link(link):
     return link
 
 
+def is_aggregator_host(url):
+    """True when the URL belongs to a redirect aggregator (e.g. news.google.com)."""
+    host = (urlparse((url or "").strip()).hostname or "").lower()
+    return bool(host) and any(host == h or host.endswith("." + h) for h in AGGREGATOR_HOSTS)
+
+
 def is_aggregator_link(url):
-    """True for Google News item links, which cannot be read without running JS."""
-    parsed = urlparse((url or "").strip())
-    host = (parsed.hostname or "").lower()
-    if not any(host == h or host.endswith("." + h) for h in AGGREGATOR_HOSTS):
+    """True for aggregator *item* links, which cannot be read without running JS."""
+    if not is_aggregator_host(url):
         return False
-    return "/rss/articles/" in parsed.path or "/articles/" in parsed.path
+    path = urlparse((url or "").strip()).path
+    return "/rss/articles/" in path or "/articles/" in path
 
 
 GOOGLE_BATCHEXECUTE = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
@@ -948,7 +993,7 @@ def _decode_google_batchexecute(article_id, timeout=FETCH_TIMEOUT):
         "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0],
         article_id, stamp.group(1), signature.group(1)]
     envelope = [[["Fbv4je", json.dumps(payload), None, "generic"]]]
-    body = urllib.parse.urlencode({"f.req": json.dumps(envelope)}).encode("utf-8")
+    body = urlencode({"f.req": json.dumps(envelope)}).encode("utf-8")
     post = urllib.request.Request(
         GOOGLE_BATCHEXECUTE, data=body,
         headers={"User-Agent": GOOGLE_UA, "Content-Type": "application/x-www-form-urlencoded"})
@@ -1002,22 +1047,35 @@ def _aggregator_cache():
 
 
 def _persist_aggregator_cache(key, value):
+    # sqlite3's context manager commits but never closes: a scan resolving many links
+    # would leak one connection per resolution.
     try:
-        with sqlite3.connect(DB_PATH, timeout=5) as conn:
-            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
     except sqlite3.Error:
         pass
+    finally:
+        conn.close()
 
 
 def aggregator_cache():
     """Load cached aggregator resolutions from the meta table."""
     loaded = {}
     try:
-        with sqlite3.connect(DB_PATH, timeout=5) as conn:
-            for key, value in conn.execute("SELECT key, value FROM meta WHERE key LIKE 'gnurl:%'"):
-                loaded[key] = value
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+    except sqlite3.Error:
+        return loaded
+    try:
+        for key, value in conn.execute("SELECT key, value FROM meta WHERE key LIKE 'gnurl:%'"):
+            loaded[key] = value
     except sqlite3.Error:
         pass
+    finally:
+        conn.close()
     return loaded
 
 
@@ -1455,7 +1513,53 @@ def _parse_feed(raw, source):
                     or entry.findtext("atom:updated", "", ATOM_NS)
                 ),
             })
-    return items
+    if not items:
+        # Namespace-tolerant fallback. Feeds that declare Atom without a prefix, or use
+        # a vendor namespace, parsed to zero items and looked "unchanged" forever.
+        items = [_parse_foreign_entry(entry) for entry in root.iter()
+                 if _local_name(entry.tag) in ("item", "entry")]
+    return [item for item in items if item["title"] or item["link"]]
+
+
+def _local_name(tag):
+    """Element tag without its {namespace} prefix, lower-cased."""
+    return str(tag).rsplit("}", 1)[-1].lower()
+
+
+def _parse_foreign_entry(entry):
+    """Extract one item from any item/entry element, whatever its namespace."""
+    fields = {}
+    link = ""
+    for child in entry:
+        name = _local_name(child.tag)
+        if name == "link":
+            href = child.attrib.get("href", "")
+            if href and child.attrib.get("rel", "alternate") == "alternate":
+                link = link or href
+            elif not href:
+                link = link or (child.text or "").strip()
+            continue
+        if name in fields or not "".join(child.itertext()).strip():
+            continue
+        if name in ("title", "description", "summary", "content", "pubdate", "date",
+                    "published", "updated"):
+            fields[name] = child
+    # ElementTree elements are falsey when they have no children, so membership tests
+    # replace truthiness checks: `fields.get("description") or fallback` silently
+    # dropped every leaf element here.
+    def first(*names):
+        for name in names:
+            if name in fields:
+                return fields[name]
+        return None
+
+    stamp = first("pubdate", "date", "published", "updated")
+    return {
+        "title": _element_text(first("title"), 300),
+        "link": safe_link(link),
+        "description": _element_text(first("description", "summary", "content")),
+        "published": _parse_pubdate("".join(stamp.itertext()) if stamp is not None else ""),
+    }
 
 
 def fetch_feed(url, etag=None, last_modified=None, timeout=FETCH_TIMEOUT):
@@ -1513,10 +1617,10 @@ class _TextExtractor(HTMLParser):
         return "\n".join(line for line in lines if line)[:limit]
 
 
-def _html_to_text(html, limit=MAX_ARTICLE_CHARS):
+def _html_to_text(markup, limit=MAX_ARTICLE_CHARS):
     parser = _TextExtractor()
     try:
-        parser.feed(html)
+        parser.feed(markup)
         parser.close()
     except Exception:
         return ""
@@ -1907,23 +2011,47 @@ def analyze_with_deepseek(title, description, link, log_callback=print):
     return verdict["flagged"], verdict["analysis"]
 
 
+# Hosts that answered 401/403 during this scan. One blocked publisher can supply a
+# whole feed's worth of items, and retrying every article wastes a request per item.
+_BLOCKED_HOSTS = {}
+
+
+def _reset_blocked_hosts():
+    _BLOCKED_HOSTS.clear()
+
+
 def deep_read_item(item, verdict, log_callback=print):
     """Stage 2: fetch the article and re-judge the candidate signal against its text."""
     if not verdict.get("flagged"):
         return verdict
-    if is_aggregator_link(item["link"]) and not resolve_aggregator_link(item["link"]):
-        log_callback(
-            "  [!] Deep read unavailable for aggregator link "
-            f"(Google News redirect could not be resolved): {item['title'][:70]}"
-        )
+    link = item["link"]
+    if is_aggregator_link(link):
+        link = resolve_aggregator_link(link)
+        if not link:
+            log_callback(
+                "  [!] Deep read unavailable for aggregator link "
+                f"(Google News redirect could not be resolved): {item['title'][:70]}"
+            )
+            return verdict
+    host = (urlparse(link).hostname or "").lower()
+    if host in _BLOCKED_HOSTS:
         return verdict
     try:
-        article = fetch_article(item["link"])
+        article = fetch_article(link)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            _BLOCKED_HOSTS[host] = exc.code
+            log_callback(
+                f"  [!] {host} blocks automated fetches (HTTP {exc.code}); "
+                "deep reads skipped for that source for the rest of this scan")
+        else:
+            log_callback(f"  [!] Deep read skipped ({exc})")
+        return verdict
     except Exception as exc:
         log_callback(f"  [!] Deep read skipped ({exc})")
         return verdict
     if len(article) < 200:
-        log_callback(f"  [!] Deep read skipped (no readable text at {item['link'][:60]})")
+        log_callback(f"  [!] Deep read skipped (no readable text at {link[:60]})")
         return verdict
 
     prompt = (
@@ -2130,18 +2258,41 @@ def run_scan(log_callback=print, cancel=None):
         lock.close()
 
 
+def _feed_error_hint(exc):
+    """One actionable clause for the common feed failures."""
+    code = getattr(exc, "code", None)
+    if code in (401, 403):
+        return (" - the publisher blocks automated clients; use a Google News "
+                "'site:<domain>' query for that source instead")
+    if code == 404:
+        return " - the feed URL is gone; look for a new one on the publisher's site"
+    if code == 429:
+        return " - rate limited; raise the scan interval or drop the feed"
+    return ""
+
+
 def _run_scan(log_callback=print, cancel=None):
     reset_usage()
+    _reset_blocked_hosts()
     scan_started = datetime.now().isoformat(timespec="seconds")
     conn = init_db()
     feeds = load_feeds()
     load_watchlist()
     for warning in watchlist_warnings():
         log_callback(f"  [!] watchlist.txt: {warning}")
+    # Topics are parsed lazily by the scorer, so a malformed line would otherwise be
+    # swallowed on a CLI scan. Force the parse here and report it like the watchlist.
+    topics = load_topics()
+    for warning in topic_warnings():
+        log_callback(f"  [!] topics.txt: {warning}")
     settings = load_settings()
     since = _parse_date(settings["feed_since"])
     until = _parse_date(settings["feed_until"])
-    log_callback(f"[{_now_hms()}] Starting HB Briefing v1.0.0 across {len(feeds)} feed(s)...")
+    source = active_profile_path()
+    log_callback(f"[{_now_hms()}] Starting HB Briefing v1.0.0 across {len(feeds)} feed(s) "
+                 f"- profile {APP_NAME} "
+                 f"({source.name if source.exists() else 'built-in default'}), "
+                 f"{len(topics)} topic(s), {len(load_watchlist())} target rule(s)")
     if since or until:
         log_callback(
             f"     date window: {since or 'open'} to {until or 'open'}"
@@ -2170,7 +2321,7 @@ def _run_scan(log_callback=print, cancel=None):
                 log_callback("     (unchanged since last scan)")
                 continue
             except Exception as exc:
-                log_callback(f"  [!] Error fetching {url}: {exc}")
+                log_callback(f"  [!] Error fetching {url}: {exc}{_feed_error_hint(exc)}")
                 continue
 
             processed = 0
@@ -2399,8 +2550,8 @@ def describe_notifications(config=None):
 def _notify_subject(items):
     top = _clean_text(items[0]["title"], 90) if items else ""
     if len(items) == 1:
-        return f"[HB Briefing] {top}"
-    return f"[HB Briefing] {len(items)} new signals - {top}"
+        return f"[{APP_NAME}] {top}"
+    return f"[{APP_NAME}] {len(items)} new signals - {top}"
 
 
 def _notify_body(items):
@@ -2414,7 +2565,7 @@ def _notify_body(items):
         if item.get("link"):
             lines.append(f"    {item['link']}")
         lines.append("")
-    lines.append("-- HB Briefing")
+    lines.append(f"-- {APP_NAME}")
     return "\n".join(lines)
 
 
@@ -2453,7 +2604,9 @@ def _pending_alerts(conn, settings):
         f"WHERE flagged = 1 AND severity IN ({marks}) AND seen_at > ?"
     )
     if not settings["notify_include_watchlist"]:
-        sql += " AND summary NOT LIKE '[Watchlist]%'"
+        # "Declared interest" is watchlist rules *and* topics; both are the operator's
+        # own intent, so the toggle has to cover both or it silently means neither.
+        sql += " AND summary NOT LIKE '[Watchlist]%' AND summary NOT LIKE '[Topic]%'"
     rows = conn.execute(
         sql + " ORDER BY " + row_order("priority") + " LIMIT ?",
         (*severities, since, settings["notify_max_items"]),
@@ -2500,14 +2653,14 @@ def send_test_notification(log_callback=print):
         log_callback("       Set SMTP_HOST, SMTP_FROM and NOTIFY_EMAIL_TO in .env.")
         return 1
     sample = [{
-        "title": "Test message from HB Briefing",
+        "title": f"Test message from {APP_NAME}",
         "link": "",
         "severity": "high",
         "category": "regulatory_action",
         "published": "",
     }]
     try:
-        _smtp_send(config, "[HB Briefing] Test notification", _notify_body(sample))
+        _smtp_send(config, f"[{APP_NAME}] Test notification", _notify_body(sample))
     except Exception as exc:
         log_callback(f"[FAIL] {type(exc).__name__}: {exc}")
         return 1
@@ -2611,7 +2764,9 @@ def export_rows(conn, filters=None):
             "title": title or "",
             "link": link or "",
             "source": urlparse(feed or "").hostname or "",
-            "analysis": (summary or "").replace("[Watchlist] ", "").replace("[Local Heuristic] ", ""),
+            "analysis": (summary or "").replace("[Watchlist] ", "")
+                                  .replace("[Topic] ", "")
+                                  .replace("[Local Heuristic] ", ""),
             "action": action or "",
             "facts": [str(f) for f in fact_list if str(f).strip()],
             "entities": {str(k): [str(v) for v in vals] for k, vals in entity_map.items()
@@ -2651,7 +2806,8 @@ def latest_briefing(conn):
     return (row[0], row[1]) if row else (None, None)
 
 
-def render_text(rows, title="HB Briefing", briefing=None):
+def render_text(rows, title=None, briefing=None):
+    title = title or APP_NAME
     counts = _export_counts(rows)
     lines = [title, "=" * len(title), ""]
     lines.append(f"{len(rows)} signal(s): " + ", ".join(f"{k} {v}" for k, v in counts.items() if v))
@@ -2676,7 +2832,8 @@ def render_text(rows, title="HB Briefing", briefing=None):
     return "\n".join(lines)
 
 
-def render_markdown(rows, title="HB Briefing", briefing=None, masthead=True):
+def render_markdown(rows, title=None, briefing=None, masthead=True):
+    title = title or APP_NAME
     counts = _export_counts(rows)
     lines = []
     if masthead:
@@ -2726,13 +2883,15 @@ def render_csv(rows):
     return buffer.getvalue()
 
 
-def render_json(rows, title="HB Briefing", briefing=None):
+def render_json(rows, title=None, briefing=None):
+    title = title or APP_NAME
     return json.dumps({"title": title, "exported": datetime.now().isoformat(timespec="seconds"),
                        "count": len(rows), "briefing": briefing[0] if briefing else None,
                        "signals": rows}, indent=2, ensure_ascii=False)
 
 
-def render_html(rows, title="HB Briefing", briefing=None):
+def render_html(rows, title=None, briefing=None):
+    title = title or APP_NAME
     counts = _export_counts(rows)
     badge = {"high": "#b91c1c", "medium": "#b45309", "low": "#475569", "none": "#64748b"}
     cards = []
@@ -2801,8 +2960,9 @@ def _docx_paragraph(text, bold=False, size=20, space_after=100, bullet=False):
             f'<w:r>{run_props}<w:t xml:space="preserve">{("• " if bullet else "")}{body}</w:t></w:r></w:p>')
 
 
-def render_docx(rows, path, title="HB Briefing", briefing=None):
+def render_docx(rows, path, title=None, briefing=None):
     """Write a minimal OOXML document; no third-party dependency required."""
+    title = title or APP_NAME
     counts = _export_counts(rows)
     parts = [
         _docx_paragraph(title, bold=True, size=32, space_after=80),
@@ -2874,7 +3034,7 @@ def export_items(conn, path, fmt=None, filters=None, title=None, log_callback=pr
         raise ValueError(f"unsupported export format: {path.suffix or '(none)'}")
 
     rows = export_rows(conn, filters)
-    title = title or f"HB Briefing - {len(rows)} signals"
+    title = title or f"{APP_NAME} - {len(rows)} signals"
     briefing = latest_briefing(conn)
     if fmt == "docx":
         render_docx(rows, path, title, briefing)
@@ -2986,7 +3146,8 @@ def reclassify(conn, apply=True, log_callback=print):
     """
     rows = conn.execute(
         "SELECT rowid, title, category, severity, summary FROM seen_items "
-        "WHERE flagged = 1 AND (summary LIKE '[Local Heuristic]%' OR summary LIKE '[Watchlist]%')"
+        "WHERE flagged = 1 AND (summary LIKE '[Local Heuristic]%' "
+        "OR summary LIKE '[Watchlist]%' OR summary LIKE '[Topic]%')"
     ).fetchall()
 
     changes = []
@@ -3003,11 +3164,19 @@ def reclassify(conn, apply=True, log_callback=print):
             category, severity = rule["category"], rule["severity"]
             analysis = f"[Watchlist] {rule['label']} → {category}/{severity}."
         else:
-            category, matched = _core_focus(title_text, title_text)
-            if not category:
-                continue  # the title alone says nothing the original verdict did not
-            severity = "high" if _signals_in(title_text, ENFORCEMENT_SIGNALS) else "medium"
-            analysis = f"[Local Heuristic] Core focus: {', '.join(matched[:4])}."
+            # Same precedence the scorer uses, so a re-derivation cannot disagree with
+            # a fresh scan: a topic outranks core-focus keyword evidence.
+            topic = _topic_match(title_text)
+            if topic:
+                category = _guess_category(title_text)
+                severity = topic["severity"]
+                analysis = f"[Topic] {topic['label']} ({topic['group']})."
+            else:
+                category, matched = _core_focus(title_text, title_text)
+                if not category:
+                    continue  # the title alone says nothing the original verdict did not
+                severity = "high" if _signals_in(title_text, ENFORCEMENT_SIGNALS) else "medium"
+                analysis = f"[Local Heuristic] Core focus: {', '.join(matched[:4])}."
         if (category, severity, analysis) != (old_category, old_severity, summary):
             changes.append((old_category, old_severity, category, severity, title, rowid, analysis))
 
@@ -3057,11 +3226,14 @@ def _report_summary(conn):
         "SELECT severity, COUNT(*) FROM seen_items WHERE flagged = 1 GROUP BY severity"))
     total = sum(counts.values())
     core = conn.execute(
-        "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
-        "AND category IN ('regulatory_action', 'litigation')").fetchone()[0]
+        f"SELECT COUNT(*) FROM seen_items WHERE flagged = 1 AND {_core_category_sql()}"
+    ).fetchone()[0]
     watchlist = conn.execute(
         "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
         "AND summary LIKE '[Watchlist]%'").fetchone()[0]
+    topics = conn.execute(
+        "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
+        "AND summary LIKE '[Topic]%'").fetchone()[0]
     last_scan = conn.execute(
         "SELECT value FROM meta WHERE key = 'last_scan_at'").fetchone()
     usage = conn.execute(
@@ -3069,13 +3241,16 @@ def _report_summary(conn):
         "ORDER BY id DESC LIMIT 1").fetchone()
 
     feeds = load_feeds()
-    direct = sum(1 for url in feeds if "news.google.com" not in url)
+    direct = sum(1 for url in feeds if not is_aggregator_host(url))
+    core_names = "/".join(c.replace("_", " ") for c in CORE_CATEGORIES)
+    if not core_names or len(core_names) > 42:
+        core_names = "core"
     lines = [
         "## Summary",
         "",
         f"- **{total}** flagged · {counts.get('high', 0)} high · "
         f"{counts.get('medium', 0)} medium · {counts.get('low', 0)} low",
-        f"- **{core}** regulatory/litigation · **{watchlist}** watchlist matches",
+        f"- **{core}** {core_names} · **{watchlist}** watchlist · **{topics}** topic matches",
         f"- **{len(feeds)}** sources configured ({direct} direct, {len(feeds) - direct} search)",
     ]
     if last_scan and last_scan[0]:
@@ -3102,7 +3277,12 @@ def _report_new_section(conn):
     ).fetchall()
     if not items:
         return []
-    lines = [f"## New since the previous scan ({len(items)})", ""]
+    total = conn.execute(
+        "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 AND seen_at > ?", (previous,)
+    ).fetchone()[0]
+    heading = (f"## New since the previous scan ({total})" if total <= len(items)
+               else f"## New since the previous scan ({total}, top {len(items)} shown)")
+    lines = [heading, ""]
     for title, link, severity in items:
         safe = safe_link(link)
         rendered = (f"[{_md_text(title)}]({_md_url(safe)})" if safe else _md_text(title))
@@ -3118,7 +3298,7 @@ def write_report(conn, briefing_text=None):
     settings = load_settings()
 
     lines = [
-        "# HB Briefing v1.0.0 — Intelligence Report",
+        f"# {APP_NAME} — Intelligence Report",
         f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_",
     ]
     if settings["feed_since"] or settings["feed_until"]:
@@ -3151,12 +3331,13 @@ def write_report(conn, briefing_text=None):
     lines.extend([
         f"## Flagged signals ({total}{shown})",
         "",
-        "_Ordered by severity, then watchlist hit, then regulatory/litigation core, then recency._",
+        "_Ordered by severity, then declared interest (watchlist or topic), then core, "
+        "then recency._",
         "",
     ])
     body = render_markdown(rows, masthead=False)
     lines.append(body if body.strip() else "No flagged items recorded yet.")
-    REPORT_PATH.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+    write_atomic(REPORT_PATH, "\n".join(lines).rstrip("\n") + "\n")
 
 
 def check_api(log_callback=print, api_key=None):
@@ -3164,7 +3345,7 @@ def check_api(log_callback=print, api_key=None):
     source = active_profile_path()
     log_callback(f"Profile:  {APP_NAME} ({source.name if source.exists() else 'built-in default'})"
                  f" - {len(CATEGORIES)} categories, {len(load_topics())} topic(s), "
-                 f"{len(load_watchlist())} target(s)")
+                 f"{len(load_watchlist())} target rule(s)")
     key = (api_key if api_key is not None else LLM_API_KEY).strip()
     if key in PLACEHOLDER_API_KEYS:
         log_callback("No API key configured. Add DEEPSEEK_API_KEY to .env.")

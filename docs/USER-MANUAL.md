@@ -177,9 +177,9 @@ and secrets.
 | **Auto-Scan** | Enables the scheduled loop according to the interval and quiet window |
 
 **Signal table** — five columns: time detected, severity, category, headline, assessment.
-Headlines are colour-coded by severity (high, medium, low); watchlist hits are marked
-`[Watchlist]` and carry a group badge. A `NEW` marker distinguishes items added by the most
-recent scan from the historical backlog.
+Headlines are colour-coded by severity (high, medium, low); declared-interest hits are marked
+`[Watchlist]` or `[Topic]` and carry a group badge (the watchlist note or the topic's group). A
+`NEW` marker distinguishes items added by the most recent scan from the historical backlog.
 
 **Detail pane** — for the selected row: full assessment, key facts as a list, named entities,
 model confidence, the suggested next step and the canonical link.
@@ -280,25 +280,39 @@ python3 hbnscan.py --reclassify --dry-run   # report what would change
 python3 hbnscan.py --reclassify             # apply, then rewrite the report
 ```
 
+It examines rows carrying a offline provenance marker — `[Local Heuristic]`, `[Watchlist]` and
+`[Topic]` — and re-applies the same precedence a fresh scan uses: watchlist/target rule first,
+then topic, then core-focus keywords. Rows whose verdict came from the model or a deep read are
+never touched: the evidence that produced them (article text) is not stored, so re-deriving from
+a headline would weaken the decision rather than improve it. The same applies after switching
+profile: stored rows keep their category until you reclassify, and their stored category may not
+exist in the new profile — the Priority and Category filters simply will not offer it.
+
 ---
 
 ## 6. The report and the executive briefing
 
 ### 6.1 `latest_report.md`
 
-Written by CLI scans and by GUI scans that found new material, and regenerated on export. The
-structure is fixed so it can be diffed and mailed:
+Rewritten at the end of **every** scan, CLI or GUI, and again on export; it is never left stale,
+and it is rendered through the same code as the exports so the two cannot drift. The structure
+is fixed so it can be diffed and mailed:
 
-1. **Header** — product name, generation timestamp, feed-window line (`since`/`until` when set).
-2. **Executive briefing** — the stage-3 narrative, or a note that it is disabled.
-3. **Summary** — counts by severity and category, and how many signals are new since the
-   previous scan.
-4. **Signals** — ranked, severity-first, each with detection time, severity, category,
-   headline, assessment, key facts, entities, confidence and link.
+1. **Header** — the active profile's name, generation timestamp, feed-window line
+   (`since`/`until` when set).
+2. **Executive briefing** — a fresh stage-3 narrative, or the previous digest explicitly
+   labelled as carried over (a scan with nothing new does not buy a new briefing).
+3. **Summary** — counts by severity; how many signals are core for the *active profile*, how
+   many are watchlist matches and how many are topic matches; source counts; last scan time;
+   last AI spend.
+4. **New since the previous scan** — the items that arrived after the last scan, with the true
+   total when it exceeds the 15 listed.
+5. **Signals** — the top 50 in priority order (severity → watchlist or topic → core → recency),
+   each with detection time, severity, category, priority, headline, assessment, key facts,
+   entities, confidence, verification state and link.
 
-If a scan finds nothing new, the previous report is left untouched — it is a record, not a
-heartbeat. Its timestamp tells you how fresh it is, and the GUI labels the briefing with its
-own generation time.
+An empty scan therefore still refreshes the counts and the timestamp; only the *briefing* is
+carried over, and the report says so.
 
 ### 6.2 The briefing
 
@@ -366,8 +380,9 @@ fall back to defaults, and no field is ever interpolated into SQL.
 ### 8.1 Profile
 
 - **Profile** — the active bundle of domain rules, topics and targets. The list shows
-  *built-in default* plus every `.json` found in `profiles/`. A description underneath states
-  the profile's name, how many categories, topics and targets it carries, and what it is for.
+  *built-in default* plus every `.json` found in `profiles/`; the value is saved by **name**, so
+  a moved checkout still resolves it. A description underneath states the profile's name, how
+  many categories, topics and targets it carries, and what it is for.
 - Choosing another profile and pressing **Save** applies it immediately: categories, filter
   menus, prompts, topic set and targets all switch, and the log records the change. Nothing
   already stored is reclassified — run `--reclassify` for that.
@@ -406,7 +421,9 @@ no key the engine runs offline and says so.
 
 - **Email / SMS me new high-priority signals** — master switch (`notify_enabled`).
 - **At least** — `high`, or `high + medium` (`notify_min_severity`).
-- **Include watchlist hits** — keep or exclude your own priorities from the digest.
+- **Declared interest** (`notify_include_watchlist` in `settings.json`, default on) — keep or
+  exclude your own watchlist **and topic** matches from the digest. There is no checkbox; edit
+  the file.
 - **Max items** — 1–20 per message.
 - **Send test** — exercises the real transport and reports the SMTP error verbatim.
 
@@ -460,9 +477,10 @@ Design notes:
 ### 10.1 What gets sent
 
 A digest of **new** signals since the last notification, filtered by your minimum severity,
-optionally excluding watchlist hits, capped by max items, ordered by the same priority logic as
-the table. Each entry carries severity, category, headline and link; the subject line states
-the count and the highest severity present.
+optionally excluding declared-interest hits (watchlist rules and topics), capped by max items,
+ordered by the same priority logic as the table. Each entry carries severity, category, headline
+and link; the subject line states the count and the leading headline, and both the subject and
+the footer carry the active profile's name.
 
 Nothing is sent when nothing qualifies — no "0 new items" noise. The last notification time is
 stored, so restarts never re-send the same items.
@@ -561,12 +579,21 @@ WATCHDOG_PROFILE=profiles/cybersecurity.json python3 hbnscan.py
 WATCHDOG_PROFILE=cybersecurity                             # .env, permanent for CLI and GUI
 ```
 
+A value is resolved in this order: an absolute path; a relative path from the working
+directory; the same relative path from the app directory; then `profiles/<value>.json`. So
+`profiles/cybersecurity.json` works from a `.env`, a desktop launcher or a cron job without
+depending on where the process started. The GUI stores the **name**, not the path, so moving or
+renaming the checkout does not break the setting.
+
 ```bash
-python3 hbnscan.py --check      # prints the active profile, categories, topics and targets
+python3 hbnscan.py --check      # prints the active profile, categories, topics and target rules
 ```
 
-A missing, unreadable or invalid file falls back to the default profile with a warning — the
-engine always starts, and an unknown name in `settings.json` simply resolves to the default.
+Every scan prints the same line as its first log entry. A missing, unreadable or invalid file
+falls back to the default profile — the engine always starts — and an unknown name in
+`settings.json` simply resolves to the default. Switching profile does not rewrite stored
+verdicts: new scans use the new rules, and `--reclassify` (see [§5.6](#56-old-rows-and-reclassification))
+re-derives the offline ones.
 
 ### 12.2 Shipped profiles
 
@@ -766,8 +793,8 @@ server.
 ### 15.1 The database
 
 `watchdog_state.db` (SQLite) holds seen items and verdicts, feed cache validators, briefings,
-per-scan statistics and internal state. Schema and column semantics are documented in the
-[Technical Reference §5](./TECHNICAL-REFERENCE.md#5-data-model).
+per-scan statistics and internal state. Schema, column semantics and the row-state model are documented in the
+[Technical Reference §14](./TECHNICAL-REFERENCE.md#14-storage-schema-and-lifecycle).
 
 ### 15.2 Growth and retention
 
@@ -820,15 +847,19 @@ the offender to a more specific phrase, or add the site's title boilerplate to
 
 ### Deep reads never happen
 
-Four causes, in likelihood order: the deep-read budget was consumed by higher-ranked candidates;
+Five causes, in likelihood order: the deep-read budget was consumed by higher-ranked candidates;
 the article returned fewer than 200 readable characters (paywall, JavaScript-only page, PDF);
-an aggregator link could not be resolved; or deep reads are disabled
-(`WATCHDOG_DEEP_READ=0`). The log names the reason per item.
+the publisher refuses automated clients (`HTTP 401/403` — logged once per host per scan, then
+that host is skipped for the rest of the run); an aggregator link could not be resolved; or deep
+reads are disabled (`WATCHDOG_DEEP_READ=0`). The log names the reason, and for a blocked
+publisher it names the host.
 
 ### The report is stale
 
-By design: a scan that finds nothing new does not rewrite the report. The header timestamp and
-the "new since previous scan" count tell you whether anything has arrived.
+It should not be: the report is rewritten at the end of every scan, even an empty one, so a
+stale timestamp means the last scan did not finish. Check the log for the failing feed, a
+cancelled run, or the scan lock (`Another scan is already running`). The "new since previous
+scan" section will simply be absent when nothing arrived.
 
 ### The briefing disappeared
 

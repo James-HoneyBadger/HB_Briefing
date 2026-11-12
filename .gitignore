@@ -20,3 +20,6 @@ venv/
 
 # Runtime locks
 *.lock
+
+# Atomic-write temporaries
+.*.tmp

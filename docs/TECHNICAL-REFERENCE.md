@@ -178,18 +178,19 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 
 | Key | Type | Rule |
 | --- | --- | --- |
-| `profile` | string | Name in `profiles/` or a path; unknown values fall through to the default profile |
+| `profile` | string | Name in `profiles/` or a path (see §5.1); unknown values fall through to the default profile |
 | `feed_since`, `feed_until` | string | Normalised `YYYY-MM-DD`; malformed → `""` |
 | `table_limit` | int | Clamped to `INT_SETTINGS["table_limit"]` (10–5000) |
 | `filter_severity` | enum | `all`, `high`, `medium`, `low` |
-| `filter_category` | enum | `all` plus the active profile's categories |
+| `filter_category` | enum | `all` plus **the active profile's** categories, resolved per call by `setting_choices()` — a frozen list would reject another profile's categories and silently reset the filter |
 | `filter_group` | enum | `all`, `watchlist`, `topic`, `core`, `context` — the last three resolved against the active profile |
 | `row_order` | enum | One of `priority`, `newest`, `oldest`, `severity`, `title`, `category` |
 | `auto_scan` | bool | `"1"/"true"/"yes"/"on"` accepted |
 | `scan_interval_minutes` | int | Clamped 5–1440 |
 | `scan_window_start`, `scan_window_end` | string | `HH:MM` or `""` |
 | `topics_as_feeds` | bool | Synthesise Google News feeds for the first topics (default off) |
-| `notify_enabled`, `notify_include_watchlist` | bool | |
+| `notify_enabled` | bool | Master switch for the digest |
+| `notify_include_watchlist` | bool | Keep (`true`) or exclude declared-interest hits from the digest — **`[Watchlist]` rules and `[Topic]` matches both** |
 | `notify_min_severity` | enum | `high` or `medium` |
 | `notify_max_items` | int | Clamped 1–20 |
 | `theme` | enum | `dark` or `light`, keyed into `THEMES` and applied by `apply_theme()` |
@@ -232,23 +233,39 @@ topic set and standing targets that belong with it.
 
 ```python
 active_profile_path()
-  1. WATCHDOG_PROFILE  → path if it is a file, else profiles/<name>.json
-  2. settings["profile"] → same rule   (_profile_setting_name reads settings.json directly,
-                                        because apply_profile runs before load_settings exists)
+  1. WATCHDOG_PROFILE    → resolve_profile_path(value)
+  2. settings["profile"] → resolve_profile_path(value)
+                           (_profile_setting_name reads settings.json directly, because
+                            apply_profile runs before load_settings exists)
   3. profile.json (PROFILE_PATH)
   4. built-in DEFAULT_PROFILE
+
+resolve_profile_path(value)   # shared by the two lookups and by profile_summary()
+  1. absolute path, when it is a file
+  2. relative path from the working directory
+  3. the same relative path from APP_DIR        # so a .env value works from any cwd
+  4. profiles/<value>.json                      # bare name
 ```
+
+The GUI stores the profile **name**, not the absolute path, so a moved or renamed checkout keeps
+working; a path is accepted for `profile.json`-style overrides and for `WATCHDOG_PROFILE`.
 
 `load_profile()` merges the file over `DEFAULT_PROFILE` key by key, type-checked:
 
 - A key absent from the file keeps the default.
 - A string default accepts only a non-empty string.
-- A list default accepts only a non-empty list.
-- `categories` is lower-cased, `other` is appended if missing, `core_categories` is filtered to
-  categories that exist.
+- A list default accepts only a non-empty list, and every element of the signal/host lists is
+  coerced to a stripped string — a stray number in `strong_signals` used to reach
+  `re.escape()` and crash the scan.
+- `categories` is lower-cased and `other` is appended if missing; `core_categories` is
+  lower-cased, stripped and filtered to categories that exist, so `"Litigation"` in a hand-written
+  profile is not silently dropped.
 - `category_hints` entries are validated as `[category, [keywords]]`; if none survive, the
   defaults are restored. A malformed profile therefore degrades to a working one instead of
   crashing the scan.
+
+The cache key is `(resolved path, mtime_ns, size)`: switching between two profiles, or editing
+one, always reloads, and the merged document is what `apply_profile()` consumes.
 
 `apply_profile()` then binds module globals — `APP_NAME`, `CATEGORIES`, `CORE_CATEGORIES`,
 `STRONG_SIGNALS`, `WEAK_SIGNALS`, `CATEGORY_HINTS`, `NOISE_TITLE_SIGNALS`,
@@ -490,9 +507,17 @@ appends `topic_feeds()` when enabled. Order is file order, then topic order.
   defence) and then parses with `xml.etree.ElementTree`, handling both Atom (`atom:entry`) and
   RSS 2.0 / RDF (`item`) shapes, picking `title`, `link`/`href`, `description`/`summary`/
   `content`, and a publication date through `_parse_pubdate` (RFC 822 and ISO 8601).
+- When the namespace-qualified passes find nothing, `_parse_foreign_entry` re-scans every
+  element by **local name** (`_local_name` strips `{namespace}`). This is what makes an Atom feed
+  declared without the Atom namespace, or an RDF feed whose items sit in `purl.org/rss/1.0/`,
+  parse at all; before, such a feed silently yielded zero items and looked "unchanged" forever.
+  Note the ElementTree trap the helper avoids: elements are falsey when they have no children, so
+  `fields.get("description") or fallback` silently discards every leaf element.
 - `safe_link` refuses anything that is not `http(s)`, so a `javascript:` or `file:` link can
   never reach a browser, a deep read or a report.
-- Per-feed HTTP or parse failures are logged and skipped; they never abort the scan.
+- Per-feed HTTP or parse failures are logged and skipped; they never abort the scan, and
+  `_feed_error_hint()` appends the actionable clause for the common cases (401/403 → use a
+  `site:` query; 404 → the URL is gone; 429 → rate limited).
 
 `MAX_NEW_PER_FEED` (25) bounds the work per feed per scan. When it is hit, the scan logs the
 deferral and **does not** advance the stored ETag/Last-Modified (`set_feed_state` is skipped).
@@ -519,7 +544,13 @@ tries, in order:
 
 Results are cached twice: in-process (`_aggregator_cache`) and persistently in `meta` under
 `gnurl:<id>` (`_persist_aggregator_cache`), so a resolved redirect is not re-fetched on the next
-scan. On failure the deep read is skipped with an explicit log line, and the item keeps its
+scan. Both cache helpers open and **close** their own connection: `sqlite3`'s context manager
+commits but never closes, and a scan resolving many links used to leak one descriptor per
+resolution.
+
+`is_aggregator_host()` (host test) and `is_aggregator_link()` (host **and** `/articles/` path) are
+separate on purpose: the report's "direct vs search" source split needs the host test, because a
+Google News *search* feed carries no `/articles/` segment. On failure the deep read is skipped with an explicit log line, and the item keeps its
 triage verdict.
 
 ---
@@ -660,7 +691,8 @@ footer line.
 
 `deep_read_item(item, verdict)` runs only for flagged items, while budget remains:
 
-1. Aggregator link → `resolve_aggregator_link`; unresolvable → skip with a log line.
+1. Aggregator link → `resolve_aggregator_link` **once** (the result is cached, so
+   `fetch_article` does not resolve again); unresolvable → skip with a log line.
 2. `fetch_article(url)`: `ARTICLE_ACCEPT`, `MAX_ARTICLE_BYTES` (2 MiB) cap,
    `_TextExtractor(HTMLParser)` drops `script/style/nav/header/footer/aside/form`, collapses
    whitespace, truncates to `MAX_ARTICLE_CHARS` (6 000).
@@ -676,6 +708,14 @@ footer line.
 
 Budget accounting is by *success*: `deep_budget` is decremented only when `deep_read` becomes 1,
 so a run of paywalled articles does not consume the budget of items that can actually be read.
+
+**Blocked publishers.** A single feed can contribute dozens of items from a host that answers
+`401/403` to every automated request — Telecompetitor sits behind such a filter, for both its feed
+and its articles. `_BLOCKED_HOSTS` records the host and status on the first such failure, logs one
+actionable line naming the host, and skips every later item from that host for the rest of the
+scan; `_reset_blocked_hosts()` runs at the start of each scan so a transient block is retried next
+time. Without it, one scan produced thirteen identical `HTTP Error 403` lines and thirteen wasted
+requests. Triage still works from the feed summary — only article-level verification is lost.
 
 ---
 
@@ -702,18 +742,23 @@ so a run of paywalled articles does not consume the budget of items that can act
 The report is rendered through the same code path as the exports (`render_markdown`), so the two
 can never drift. Structure:
 
-1. Title with product name, version and generation timestamp.
-2. **Summary block** (`_report_summary`): flagged/high/medium/low counts, regulatory+litigation
-   count, watchlist/topic match count, feed count (direct vs search), last scan time, AI status
-   (model, or "offline heuristic").
-3. **New since the previous scan** (`_report_new_section`, driven by `meta.prev_scan_at`).
-4. The briefing, labelled fresh or carried over.
-5. The top 50 signals in priority order, each with category, priority badge, dates, verification
-   state, assessment, facts, entities and confidence.
+1. Title = `APP_NAME` (the active profile's name) plus the generation timestamp and, when set,
+   the feed-window line. Nothing about the report is hard-coded to the telecom default.
+2. **Summary block** (`_report_summary`): flagged/high/medium/low counts; a core count taken
+   from `_core_category_sql()` and labelled with the profile's own core categories (falling back
+   to "core" when that label would exceed 42 characters); watchlist **and** topic match counts;
+   feed count split direct/search by `is_aggregator_host()`; last scan time; last AI spend.
+3. The briefing, labelled fresh or carried over.
+4. **New since the previous scan** (`_report_new_section`, driven by `meta.prev_scan_at`); the
+   heading reports the true total and says `top 15 shown` when the list is capped.
+5. The top 50 signals in priority order (severity → watchlist/topic → core → recency), each with
+   category, priority badge, dates, verification state, assessment, facts, entities and
+   confidence.
 
-A scan that finds nothing new still rewrites the report (counts and timestamps change), but it
+A scan that finds nothing new still rewrites the report — counts and timestamps change, and it
 does not invent a "new" section. The offline catch-all next step is suppressed so 180 identical
-"Open the source item…" lines cannot drown the report.
+"Open the source item…" lines cannot drown the report. The file is written through
+`write_atomic()`, so an interrupted scan cannot leave a half-written report behind.
 
 ---
 
@@ -770,6 +815,12 @@ why these predicates work.
 **Retention.** `prune_old_items` deletes `flagged = 0` rows older than `RETENTION_DAYS` (90).
 Flagged and dismissed rows are kept forever — a dismissal is evidence.
 
+**Config durability.** `settings.json`, `.env`, `feeds.txt`, `topics.txt` and `latest_report.md`
+are all rewritten in place, so they go through `write_atomic()`: write `.{name}.tmp`, then
+`os.replace`. A crash mid-write used to be able to truncate `settings.json` (silently reverting
+every setting to its default) or `.env` (losing the key). `.env` is written with mode `0600`;
+`.*.tmp` is gitignored.
+
 ---
 
 ## 15. Export pipeline
@@ -810,9 +861,19 @@ Renderers, all standard-library:
 
 `export_items(conn, path, fmt=None, filters=None, title=None)` resolves the format: an explicit
 canonical name (`markdown|text|html|csv|json|docx`) wins, otherwise — including for suffix-style
-aliases such as `"md"` — the destination extension decides via `EXPORT_FORMATS`. Anything else
-raises `ValueError`. Every export carries the stored AI analysis (assessment, action, facts,
-entities, confidence, deep-read state) plus the latest briefing from `latest_briefing(conn)`.
+aliases such as `"md"` — the destination extension decides via `EXPORT_FORMATS` (a `--format md`
+against `out.md` used to raise "unsupported export format"). Anything else raises `ValueError`.
+
+Every export carries the stored AI analysis (assessment, action, facts, entities, confidence,
+deep-read state) plus the latest briefing from `latest_briefing(conn)`.
+
+Titles are never hard-coded: each renderer takes `title=None` and resolves it to `APP_NAME` at
+call time, and `export_items` defaults to `f"{APP_NAME} - {n} signals"`. A stale default argument
+captured at import would have kept saying "HB Briefing" under a `cybersecurity` profile.
+
+`export_rows` strips the provenance prefix from `analysis` — `[Watchlist] `, `[Topic] ` and
+`[Local Heuristic] ` — because the **Priority** column already carries it; `[Deduped]`,
+`[Rejected by deep read]` and `[Dismissed]` are kept, since they change what the row means.
 
 `_priority_of(summary, category)` derives the badge the GUI shows, in tier order: `watchlist`
 (`[Watchlist]` prefix), `topic` (`[Topic]` prefix), `core` (category in `CORE_CATEGORIES`),
@@ -837,14 +898,17 @@ otherwise `context`.
 1. Returns 0 unless `notify_enabled` and transport is configured (log line explains why).
 2. Selects `flagged = 1` rows with severity in `{high}` or `{high, medium}` (per
    `notify_min_severity`), `seen_at > meta.last_notified_at`, ordered by `row_order("priority")`,
-   `LIMIT notify_max_items`; optionally excludes `[Watchlist]%` rows.
+   `LIMIT notify_max_items`. With `notify_include_watchlist` false it excludes **both** declared
+   -interest tiers (`[Watchlist]%` and `[Topic]%`): excluding only the watchlist made the toggle
+   silently mean "keep every topic match".
 3. Sends one message to all recipients.
 4. Advances `last_notified_at` **only on success** — a failed send retries next scan instead of
    silently dropping the alert.
 5. Never raises: an SMTP failure is logged and the scan continues.
 
 `send_test_notification()` exercises the real code path with a fixed payload, which is what the
-**Send test** button calls.
+**Send test** button calls. Subject, footer and the test message all interpolate `APP_NAME`, so a
+profile-aware install does not mail everything as "HB Briefing".
 
 ---
 
@@ -876,11 +940,17 @@ Copy all three while no scan is running, or use
 **Changing profile or topics on a live install.**
 
 1. Change the value (GUI **Settings → Profile**, or `WATCHDOG_PROFILE`; **🎯 Topics** for topics).
-2. The next scan uses it — categories, prompts, ranking, topic set and targets all switch.
-3. Historical rows keep their stored category/severity. To re-derive offline rows:
-   `python3 hbnscan.py --reclassify --dry-run`, review, then run without `--dry-run`. Model and
-   deep-read verdicts are never rewritten, because the evidence that produced them (article
-   text) is not stored.
+   The dialog stores the profile **name**; it applies immediately and rebuilds the UI, so the
+   category filter and ordering vocabulary match the new profile.
+2. The next scan uses it — categories, prompts, ranking, topic set and targets all switch. The
+   first log line of every scan states the profile, its topic count and its target-rule count, so
+   a mis-set `WATCHDOG_PROFILE` is visible immediately rather than inferred from results.
+3. Historical rows keep their stored category/severity, and a category the new profile does not
+   define simply stops appearing in the filters. To re-derive offline rows:
+   `python3 hbnscan.py --reclassify --dry-run`, review, then run without `--dry-run`.
+   `reclassify` now covers `[Topic]%` rows as well as `[Local Heuristic]%` and `[Watchlist]%`,
+   and re-applies the same precedence (rule → topic → core focus). Model and deep-read verdicts
+   are never rewritten, because the evidence that produced them (article text) is not stored.
 
 **Cost control.** Set `WATCHDOG_MAX_TRIAGE` low (e.g. 10) for a cheap sweep, `WATCHDOG_DEEP_READ=0`
 to disable article fetches, `WATCHDOG_BRIEFING=0` to disable digests. `scan_runs` is the audit
@@ -969,7 +1039,7 @@ message content. Personal identifiers should stay in the untracked `watchlist.tx
 
 | Dimension | Value | Where |
 | --- | --- | --- |
-| Feeds per scan | unbounded (15 shipped, 8 direct + 7 queries) | `feeds.txt` |
+| Feeds per scan | unbounded (15 shipped: 7 direct + 8 queries) | `feeds.txt` |
 | New items per feed per scan | 25, deferred not dropped | `MAX_NEW_PER_FEED` |
 | Triage calls per scan | 40 default | `WATCHDOG_MAX_TRIAGE` |
 | Deep reads per scan | 8 default, counted on success | `WATCHDOG_MAX_DEEP_READS` |
@@ -1037,12 +1107,19 @@ that exist and are worth repeating after a change:
 | Export formats | Generate all six; a `.docx` must list `[Content_Types].xml`, `_rels/.rels`, `word/document.xml` in its zip |
 | Daemon loop | `run_daemon(sleep=lambda s: None, clock=fake, max_cycles=N)` with `auto_scan` off and inside/outside the quiet window |
 | GUI smoke | `DISPLAY=:0 python3 -c "import hbnscan_gui; a=hbnscan_gui.NewsScanApp(); a.update(); a.destroy()"`, then exercise dialogs by walking `winfo_children()` |
+| GUI filters follow the profile | Walk the main window for the `OptionMenu` whose entries include `other`, switch profile, call `_rebuild_ui()`, assert the entries are now the new profile's categories |
+| GUI settings ordering | Monkeypatch `set_api_key`/`set_llm_config`, change profile **and** theme **and** type a key in one Save, assert all three were applied (the appearance branch returns early) |
+| Feed parser shapes | `_parse_feed` on RSS 2.0, namespaced Atom, Atom without the namespace, RDF with a default namespace, an empty channel, and a DTD document; assert 1 item each except the last two |
+| Profile path resolution | `chdir` elsewhere, set `WATCHDOG_PROFILE=profiles/<name>.json`, assert it resolves under `APP_DIR` |
+| Config durability | Write a settings/env file through `write_atomic()` and assert no `.*.tmp` remains and the content matches |
 
 Regression hazards seen in practice, worth re-checking whenever the matching area changes:
 validator advancement after a cap, `max_cycles` counting iterations rather than scans, the
 missing commit in `build_briefing`, `bool`-before-`int` coercion, `LIKE '[Watchlist]%'`
-semantics, `re.escape` plus word-start matching, and `_core_focus` iterating `CATEGORY_HINTS`
-filtered by `CORE_CATEGORIES` so precedence survives.
+semantics, `re.escape` plus word-start matching, `_core_focus` iterating `CATEGORY_HINTS`
+filtered by `CORE_CATEGORIES` so precedence survives, **ElementTree elements being falsey when
+childless**, **choice lists frozen at import time** (the category filter), and **hard-coded
+telecom category pairs** that ignore the active profile (report summary, group filters).
 
 ---
 
@@ -1057,8 +1134,14 @@ filtered by `CORE_CATEGORIES` so precedence survives.
 - **Dedupe is per-scan.** A syndicated story re-published the next day is triaged again.
 - **Deep-read rejections cannot be re-derived** (`--reclassify` only touches offline rows),
   because article text is not stored.
+- **Some publishers block automated fetches entirely** (Cloudflare bot filters answer `403` to
+  every client, whatever the `User-Agent`). Those sources are still ingested — Telecompetitor via a
+  `site:` query — but their articles cannot be deep-read; the scan says so once per host.
 - **Targets pin absolutely.** A carelessly low target severity can flatten an important story;
   the shipped profiles therefore avoid regulator targets.
+- **Stored verdicts are not re-derived on a profile change.** Rows keep the category they were
+  given; `--reclassify` only fixes offline verdicts, because model and deep-read evidence is not
+  retained.
 - **Single-user model.** No authentication on the GUI, no multi-tenant separation, one database
   per directory (run separate copies for independent monitors).
 - **SMS depends on carrier gateways**, which vary in reliability and can be blocked entirely.

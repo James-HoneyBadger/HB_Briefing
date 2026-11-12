@@ -61,8 +61,8 @@ python3 hbnscan.py --check      # validates the LLM connection, if a key is set
 
 `--check` exits 0 with the recognised provider, or explains the failure (401 key rejected,
 402 insufficient balance, 429 rate limited, DNS, timeout). Its first line names the active
-profile and how many categories, topics and targets it carries, so it doubles as a
-configuration check.
+profile and how many categories, topics and target rules it carries, so it doubles as a
+configuration check. Every scan prints the same line at the top of its log.
 
 ---
 
@@ -100,7 +100,9 @@ reads like any other source.
 Good feed categories:
 
 - **Regulators** — FCC, FTC, SEC, CFPB, DOJ, state AGs, PUCs, Federal Register queries.
-- **Aggregators** — Google News queries, Broadband Breakfast, Telecompetitor.
+- **Aggregators** — Google News queries, Broadband Breakfast. Telecompetitor's own feed sits
+  behind a bot filter that answers HTTP 403, so it is covered by a `site:telecompetitor.com`
+  query instead (the log says so if any feed starts refusing automated clients).
 - **Litigation** — court press feeds, law-firm blogs, docket alert feeds.
 - **Company news** — only if the vendor publishes RSS; otherwise use a Google News `site:` query.
 
@@ -221,9 +223,10 @@ cost. Give a bare number and use `SMS_GATEWAY_DOMAIN`, or supply a full address 
 | Metro | `mymetropcs.com` |
 
 Behaviour: only **new** items since the last notification are sent, filtered by the
-**At least** threshold (high, or high + medium), watchlist hits included by default, capped by
-**Max items**. Press **Send test** to prove the transport works. Failures are logged and never
-abort a scan.
+**At least** threshold (high, or high + medium), declared-interest hits (watchlist rules and
+topics) included by default, capped by **Max items**. Set `notify_include_watchlist` to false in
+`settings.json` to drop both from the digest. Press **Send test** to prove the transport works.
+Failures are logged and never abort a scan.
 
 ---
 
@@ -348,7 +351,7 @@ targets syntax are in
 | `python3 hbnscan.py --check` | Validate the LLM connection and print a sample verdict |
 | `python3 hbnscan.py --daemon` (or `--watch`) | Loop scans per `settings.json` schedule; `Ctrl+C` stops |
 | `python3 hbnscan.py --export FILE` | Export signals; format inferred from extension |
-| `python3 hbnscan.py --export FILE --format csv` | Force a format instead of inferring |
+| `python3 hbnscan.py --export FILE --format csv` | Force a format; canonical names (`markdown`, `text`, `html`, `csv`, `json`, `docx`) and suffix aliases (`md`, `txt`) both work |
 | `python3 hbnscan.py --reclassify` | Re-derive category/severity for offline rows, keep flags |
 | `python3 hbnscan.py --reclassify --dry-run` | Show what reclassification would change |
 | `python3 -m hbnscan_gui` | Start the desktop interface |
@@ -365,8 +368,12 @@ Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.
 | Nothing is flagged | Feed date window excludes everything, or the profile's categories do not match your sources — check the log lines per item |
 | `--check` says *key rejected* | Wrong key, or a key for a different provider than the base URL |
 | `--check` says *insufficient balance* | Provider account has no credit; the offline heuristic still works |
-| Deep reads never happen | Aggregator link could not be resolved, article returned <200 characters, or budget `WATCHDOG_MAX_DEEP_READS` reached |
-| Report looks stale | A scan with no new items deliberately leaves the previous report in place; the header carries its generation time |
+| Deep reads never happen | Aggregator link could not be resolved, article returned <200 characters, the publisher blocks automated fetches (HTTP 401/403 — logged once per host per scan), or budget `WATCHDOG_MAX_DEEP_READS` reached |
+| A feed logs `HTTP 403` | The publisher refuses automated clients (Cloudflare and similar). Replace the feed with a Google News `site:<domain>` query so items are still ingested; the hint in the log says the same |
+| Report looks stale | The report is rewritten at the end of every scan, so a stale one means the last scan did not finish — read the log for the failing feed or the cancelled run |
+| Profile switched but old rows still say `billing_dispute` | Stored verdicts are not rewritten on a profile change; run `--reclassify` (or leave them — new scans use the new profile) |
+| Category filter reset itself to `all` | The saved category belonged to the previous profile; the filter only offers categories the active profile defines |
+| A topic never matches | Check the scan log for `[!] topics.txt:` warnings; a bad interest level or an over-long label is skipped, and matching is word-start only |
 | "Feed unusable (HTML)" | That URL serves a web page, not RSS — find the real feed URL or use a Google News query |
 | Email never arrives | `SMTP_HOST` blank, or `notify_enabled` off; use **Send test** and read the log |
 | SMS never arrives | Carrier gateway blocked, number not in `NOTIFY_SMS_TO`, or the gateway domain does not match the carrier |

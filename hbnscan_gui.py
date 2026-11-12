@@ -159,9 +159,7 @@ class NewsScanApp(tk.Tk):
         title_box.pack(side=tk.LEFT)
         tk.Label(title_box, text="HB BRIEFING", bg=BG_PANEL, fg=AMBER,
                  font=("Sans", 14, "bold")).pack(anchor="w")
-        profile_label = hbnscan.profile_summary(
-            hbnscan.active_profile_path().stem
-            if hbnscan.active_profile_path().exists() else "")["name"]
+        profile_label = hbnscan.APP_NAME
         tk.Label(title_box,
                  text=f"v1.0.0  |  {profile_label}  |  Two-stage AI triage, deep reads & "
                       "daily briefing",
@@ -286,7 +284,7 @@ class NewsScanApp(tk.Tk):
                      font=("Sans", 9)).pack(side=tk.LEFT, padx=(0 if position == 0 else 12, 4))
             var = tk.StringVar(value=saved[key])
             self.filter_vars[key] = var
-            menu = tk.OptionMenu(filter_bar, var, *hbnscan.SETTING_CHOICES[key],
+            menu = tk.OptionMenu(filter_bar, var, *hbnscan.setting_choices(key),
                                  command=lambda value, name=key: self._on_filter_changed(name, value))
             menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                            relief="flat", font=("Sans", 9), highlightthickness=0,
@@ -458,7 +456,7 @@ class NewsScanApp(tk.Tk):
 
     def _active_filters(self):
         if not hasattr(self, "filter_vars"):
-            return {key: hbnscan.DEFAULT_SETTINGS[key] for key in hbnscan.SETTING_CHOICES}
+            return {key: hbnscan.DEFAULT_SETTINGS[key] for key in hbnscan.FILTER_SETTING_KEYS}
         return {key: var.get() for key, var in self.filter_vars.items()}
 
     def refresh_table(self):
@@ -623,7 +621,7 @@ class NewsScanApp(tk.Tk):
             self.brief_text.insert(
                 tk.END,
                 "No briefing yet.\n\n"
-                "A briefing is written once per scan, but only when a DeepSeek API key is "
+                "A briefing is written once per scan, but only when an LLM API key is "
                 "configured in .env — it needs a model call to rank and merge the signals.",
                 "muted"
             )
@@ -787,7 +785,7 @@ class NewsScanApp(tk.Tk):
             txt.insert("1.0", FEEDS_PATH.read_text(encoding="utf-8"))
 
         def save_feeds():
-            FEEDS_PATH.write_text(txt.get("1.0", tk.END).strip() + "\n", encoding="utf-8")
+            hbnscan.write_atomic(FEEDS_PATH, txt.get("1.0", tk.END).strip() + "\n")
             self.refresh_table()
             self.log("[INFO] Updated feeds.txt configuration.")
             win.destroy()
@@ -874,7 +872,7 @@ class NewsScanApp(tk.Tk):
 
         def save_topics():
             text = current_text()
-            TOPICS_PATH.write_text(text, encoding="utf-8")
+            hbnscan.write_atomic(TOPICS_PATH, text)
             hbnscan.save_settings(topics_as_feeds=bool(as_feeds.get()))
             hbnscan.load_topics()  # refresh cache and warnings
             for warning in hbnscan.topic_warnings():
@@ -1092,7 +1090,7 @@ class NewsScanApp(tk.Tk):
         window_start_var = tk.StringVar(value=settings["scan_window_start"])
         window_end_var = tk.StringVar(value=settings["scan_window_end"])
         for label, var, choices in (
-            ("Every", interval_var, hbnscan.SETTING_CHOICES["scan_interval_minutes"]),
+            ("Every", interval_var, hbnscan.setting_choices("scan_interval_minutes")),
         ):
             tk.Label(scan_row, text=f"{label}:", bg=BG_PANEL, fg=FG_MUTED,
                      font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
@@ -1128,7 +1126,7 @@ class NewsScanApp(tk.Tk):
         tk.Label(notify_row, text="At least:", bg=BG_PANEL, fg=FG_MUTED,
                  font=("Sans", 9)).pack(side=tk.LEFT, padx=(0, 4))
         sev_menu = tk.OptionMenu(notify_row, severity_var,
-                                 *hbnscan.SETTING_CHOICES["notify_min_severity"])
+                                 *hbnscan.setting_choices("notify_min_severity"))
         sev_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
                            relief="flat", font=("Sans", 9), highlightthickness=0,
                            bd=0, indicatoron=False, padx=8, pady=3)
@@ -1168,7 +1166,7 @@ class NewsScanApp(tk.Tk):
         theme_var = tk.StringVar(value=settings["theme"])
         scale_var = tk.StringVar(value=str(settings["font_scale"]))
         for label, var, choices in (
-            ("Theme", theme_var, hbnscan.SETTING_CHOICES["theme"]),
+            ("Theme", theme_var, hbnscan.setting_choices("theme")),
             ("Text size", scale_var, ("90", "100", "110", "125", "150")),
         ):
             tk.Label(look, text=f"{label}:", bg=BG_PANEL, fg=FG_MUTED,
@@ -1203,7 +1201,10 @@ class NewsScanApp(tk.Tk):
                     messagebox.showerror("Settings", f"{label} must be HH:MM.", parent=win)
                     return
             before = hbnscan.load_settings()
-            chosen_profile = profile_paths.get(profile_var.get(), "")
+            # Save the name, not the path: a moved or renamed checkout keeps working.
+            chosen_profile = profile_var.get()
+            if chosen_profile == profile_choices[0][0]:
+                chosen_profile = ""
             profile_changed = chosen_profile != before["profile"]
             hbnscan.save_settings(feed_since=since, feed_until=until,
                                   theme=theme_var.get(), font_scale=scale_var.get(),
@@ -1229,12 +1230,9 @@ class NewsScanApp(tk.Tk):
                     "scan_window_end")):
                 self._reschedule_auto_scan()
             self.log(f"[INFO] Feed date window: {since or 'open'} to {until or 'open'}.")
-            if (theme_var.get() != self.settings["theme"]
-                    or int(scale_var.get()) != int(self.settings["font_scale"])):
-                self.log(f"[INFO] Appearance: {theme_var.get()}, text {scale_var.get()}%.")
-                win.destroy()
-                self._rebuild_ui()
-                return
+            # Provider and key are applied before the appearance branch, which returns
+            # early after rebuilding the UI: a typed key must not be dropped because a
+            # theme change happened to be saved in the same click.
             base = url_var.get().strip()
             model = model_var.get().strip()
             if base or model:
@@ -1248,6 +1246,12 @@ class NewsScanApp(tk.Tk):
                     self.log("[INFO] LLM key saved to .env; AI stages are live.")
                 else:
                     self.log("[WARN] Key looks like the placeholder; AI stays offline.")
+            if (theme_var.get() != self.settings["theme"]
+                    or int(scale_var.get()) != int(self.settings["font_scale"])):
+                self.log(f"[INFO] Appearance: {theme_var.get()}, text {scale_var.get()}%.")
+                win.destroy()
+                self._rebuild_ui()
+                return
             if profile_changed:
                 win.destroy()
                 self._rebuild_ui()
@@ -1257,7 +1261,7 @@ class NewsScanApp(tk.Tk):
 
         buttons = tk.Frame(win, bg=BG_PANEL)
         buttons.pack(fill=tk.X, padx=16, pady=8)
-        tk.Button(buttons, text="Clear", command=clear, bg=BG_ACCENT, fg=FG_MUTED,
+        tk.Button(buttons, text="Clear dates", command=clear, bg=BG_ACCENT, fg=FG_MUTED,
                   font=("Sans", 10), relief="flat", padx=12, pady=6).pack(side=tk.LEFT)
         tk.Button(buttons, text="Save", command=save, bg=AMBER, fg="#0f172a",
                   font=("Sans", 10, "bold"), relief="flat", padx=16, pady=6).pack(side=tk.RIGHT)

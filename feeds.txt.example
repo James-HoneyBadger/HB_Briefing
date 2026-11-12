@@ -33,8 +33,11 @@ https://www.federalregister.gov/api/v1/documents.rss?conditions%5Bagencies%5D%5B
 # Broadband Breakfast - US broadband policy and regulation
 https://broadbandbreakfast.com/feed/
 
-# Telecompetitor - US ISP market, regulation and deal coverage
-https://www.telecompetitor.com/feed/
+# Telecompetitor - US ISP market, regulation and deal coverage.
+# Its own feed sits behind a Cloudflare bot filter that refuses every automated
+# client (HTTP 403), so it is reached through Google News instead. Deep reads still
+# work: the redirect is resolved to the publisher URL before the article is fetched.
+https://news.google.com/rss/search?q=site%3Atelecompetitor.com&hl=en-US&gl=US&ceid=US:en
 
 # ---------------------------------------------------------- Google News queries
 # fcc.gov and justice.gov publish HTML or dead endpoints, not feeds, so FCC
