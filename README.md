@@ -1,106 +1,92 @@
 # HB Briefing v1.0.0
 
-An autonomous, open-source RSS/Atom intelligence monitor with two-stage DeepSeek AI triage and a standalone desktop GUI. It started as a single Python script; 1.0.0 is its first packaged release.
+**An open-source toolkit for assessing RSS and Atom feeds.** Point it at any set of feeds and it
+answers one question continuously: *which of these items actually matter, why, and what should I
+do about them?* It collects, grades, verifies against the linked article, writes a digest, and
+delivers the result to a desktop grid, a report, an export or your inbox.
 
-**HB Briefing tracks regulatory action and litigation.** That is the core of the product: who is being investigated, sued, fined, settled or ruled against, and what happens next. The default profile narrows that to **telecoms and ISPs**, with a sample standing target you replace with the companies *you* watch; ten profiles and a topic library retarget the same engine to cybersecurity, chips, energy, health, finance, transport, platforms or general news — see [Profiles and topics](#profiles-and-topics). Billing disputes, fee complaints and security notes are context around that core — they are still screened, but they never outrank a proceeding. Items are classified as `regulatory_action` or `litigation` before any other category is considered, the report orders those two ahead of everything else at the same severity, and all three AI stages are prompted to prefer them. The only thing that outranks the core is an explicit watchlist hit — a matter the operator declared important by name.
+HB Briefing is highly configurable. You choose the feeds it reads, the subjects that interest
+you, the names you track and how strict the assessment should be — the same engine can follow a
+regulator, a market, a competitor, a research field or a single company.
 
-## What's in 1.0.0
-
-**Triage pipeline**
-- **Structured verdicts instead of a boolean.** Each item is scored for `category`, `severity`, `entities` and a concrete `action`, not just flagged/unflagged.
-- **Deep read (stage 2).** Flagged items get their article fetched, converted to readable text, and re-judged against the actual content — producing quoted `facts` and a `confidence` score. Budgeted at 8 reads per scan. A confident rejection is stored (`dismissed`) rather than dropped.
-- **Executive briefing (stage 3).** One call per scan ranks the flagged set, merges syndicated duplicates across feeds, and writes a digest shown in the **AI Briefing** tab. Skipped when nothing new has arrived since the last briefing.
-- **Cross-feed dedupe.** The same story carried by two publishers is triaged once and marked `[Deduped]`.
-- **Offline heuristic fallback** with graded severity, so the tool stays useful with no API key.
-
-**Generalisation**
-- **Profiles bundle the domain.** Categories, keyword signals, prompt framing, trusted sources,
-  a topic set and standing targets live in one JSON file; ten ship in `profiles/` and one is
-  selected in Settings, by `WATCHDOG_PROFILE`, or by `profile.json`.
-- **Topics retarget without JSON.** `topics.txt` holds plain-language subjects with an interest
-  level and a group; a bundled library covers 20 interest areas, and active topics optionally
-  become Google News queries.
-- **Targets beat inference.** `watchlist.txt` and a profile's `targets` pin a named party to a
-  category and severity; neither the model nor a deep read can downgrade or dismiss it.
-- **Provider-agnostic AI.** DeepSeek, OpenAI, Ollama or any OpenAI-compatible endpoint, chosen
-  in the GUI, with retries, JSON-mode fallback and truncated-answer retry.
-
-**Reliability**
-- **Hardened feed fetching:** conditional GET (ETag / Last-Modified), a browser-compatible `Accept` header, DTD/entity rejection, and an 8 MiB payload cap.
-- **Honest AI fallback:** when the DeepSeek request fails, items are scored by the offline heuristic instead of being silently marked "not flagged".
-- **No silent item loss:** new items beyond the per-scan cap roll over to the next scan instead of being skipped.
-- **Safer output:** links are restricted to `http(s)`, report text is escaped, and the report is ordered by severity before truncation.
-- **Direct sources where they exist:** FTC, CFPB newsroom, CFPB enforcement actions, SEC
-  press releases, Federal Register rules for the FCC and FTC, and Broadband Breakfast are
-  fetched from their own feeds. Google News queries cover FCC news, state attorneys general,
-  the companies you track, and Telecompetitor, where no usable feed is reachable from a plain
-  HTTP client.
-
-**Desktop**
-- **Standalone GUI (`hbnscan_gui.py`):** non-blocking threaded scans, live telemetry log, interactive feed editor, and double-click URL launcher.
-- **Linux autostart installer (`install_autostart.sh`):** resolves `$PWD` to register both an XDG application menu shortcut and a login autostart `.desktop` entry (tested on XFCE, Arch, and Fedora).
-
-## Quick Start
-
-One command checks the machine over, installs whatever is missing, and opens the GUI:
+- **Works with no configuration**: a fresh clone seeds its feeds, topics and examples and scans.
+- **Works with no spend**: a deterministic offline heuristic grades every headline; an LLM key
+  adds article verification and a written briefing.
+- **Works on any subject**: ten profiles ship, a topic library covers ~210 subjects across 20
+  interest areas, and your own files always layer on top.
 
 ```bash
-./start.sh
+./start.sh          # checks the machine, installs what is missing, opens the GUI
+python3 hbnscan.py  # or: one headless scan
 ```
 
-It verifies `python3` (3.8+), installs `python3-tk` through the system package manager if
-`tkinter` is absent, creates a project-local `.venv` so the system interpreter is left
-alone, installs `requirements.txt` into it, and creates `.env` from `.env.example` on
-first run. Nothing is reinstalled once present.
+## What it does
 
-Manual equivalent:
-1. Copy `.env.example` to `.env` and insert your DeepSeek API key:
-   ```bash
-   cp .env.example .env
-   ```
-   Without a key HB Briefing still runs, using the offline keyword heuristic.
-2. Install dependencies (Tkinter ships with most Python builds):
-   ```bash
-   pip install -r requirements.txt
-   ```
-   If `import tkinter` fails: Debian/Ubuntu `sudo apt install python3-tk`, Arch `sudo pacman -S tk`, Fedora `sudo dnf install python3-tkinter`.
-3. Launch the standalone GUI:
-   ```bash
-   python3 hbnscan_gui.py
-   ```
-   Headless alternative:
-   ```bash
-   python3 hbnscan.py
-   ```
-4. *(Optional)* Enable Linux desktop menu & login autostart:
-   ```bash
-   ./install_autostart.sh
-   ```
+One scan collects, refines and delivers. The three numbered stages are the model-backed ones;
+container-style steps around them run with or without a key:
 
-## Profiles and topics
+| Step | What happens | Needs a key |
+|---|---|---|
+| **Collect** | Poll every feed with conditional GET, reject unsafe payloads, hash and dedupe items | no |
+| **Stage 1 — triage** | Produce a structured verdict per new item: `flagged`, `category`, `severity`, `entities`, `action` | no — the offline heuristic runs instead |
+| **Stage 2 — deep read** | For flagged items, fetch the linked article, extract its text and re-judge it — with quoted `facts` and a `confidence` | yes |
+| **Stage 3 — briefing** | One call per scan ranks the batch, merges syndicated duplicates and writes a digest | yes |
+| **Deliver** | Grid, report, exports (md/html/csv/json/docx/txt), e-mail and SMS alerts | no |
 
-Two layers decide what counts as interesting, and they stack.
+A **verdict** is the unit of output: not just "relevant / not relevant", but a category, a graded
+severity, a short assessment, key facts, named entities, a confidence and one concrete next step.
+Everything downstream — ranking, filtering, the briefing, exports, alerts — reads that verdict.
 
-A **profile** bundles the domain rules — categories, keyword signals, prompt framing, trusted
-sources — *with* a topic set and standing targets. Ten ship in `profiles/`, and choosing one in
-**Settings → Profile** switches the whole engine at once:
+**Declared intent always outranks inference.** A watchlist rule or a profile target pins a
+subject to a category and severity; neither the model nor a deep read can downgrade or dismiss
+it. That is what makes the tool dependable when a matter genuinely cannot be missed.
 
-| Profile | Focus |
+## Why the assessment is worth trusting
+
+- **Structured, validated output.** The model's answer is parsed and repaired, never trusted:
+  severity is clamped to four legal values, categories to the active profile's vocabulary, flags
+  coerced, confidence bounded. Anything out of contract is corrected, not applied.
+- **The article, not just the headline.** Stage 2 is what separates a guess from a finding: the
+  page is fetched, reduced to readable text and re-judged. It can confirm, promote or reject — and
+  a rejection is stored (`dismissed`) rather than deleted, so the decision stays auditable.
+- **Word-start matching, headline evidence.** Offline scoring matches phrases at word starts, so
+  `sues` does not fire on *issues* and `fined` does not fire on *defined*; weak signals are read
+  from the headline only, so boilerplate in a summary cannot manufacture a signal.
+- **Cross-feed dedupe.** The same story syndicated by two publishers is assessed once and marked
+  `[Deduped]`, so the digest and the counts stay honest.
+- **Fail open, never silently.** A missing key, a failed request, an unparseable answer or a
+  paywalled article degrades to the offline verdict and a log line. Nothing is dropped, and
+  nothing is quietly marked irrelevant.
+- **Provenance on every row.** `[Watchlist]`, `[Topic]`, `[Local Heuristic]`, `[Deduped]`,
+  `[Rejected by deep read]`, `[Dismissed]` say exactly which layer decided.
+
+## Point it at anything
+
+Three settings decide what counts as interesting, and they stack. All three are plain text or
+JSON, edited in the app or in any text editor.
+
+**A profile is the whole domain in one file.** Categories, keyword signals, prompt framing,
+trusted sources, *plus* its own topic set and standing targets. Ten ship; choosing one in
+**Settings → Profile** switches the entire engine at once. One of them is the shipped default
+(regulatory and legal action in telecoms and internet service); the rest are worked examples of
+how far the same file can move the tool:
+
+| Profile | Domain |
 | --- | --- |
-| *(built-in)* + `regulatory.json` | regulatory action and litigation in telecoms and ISPs, with a sample standing target to replace with your own |
+| *(built-in)* + `regulatory.json` | regulatory and legal action in telecoms and ISPs (shipped default) |
 | `cybersecurity.json` | vulnerabilities, exploitation, ransomware crews |
 | `ai_and_silicon.json` | AI and chip regulation, export controls, antitrust |
-| `energy_utilities.json` | rate cases, grid access, reliability, wildfire liability |
+| `energy_utilities.json` | rate cases, grid access, reliability, liability |
 | `financial_services.json` | banking, lending and payment enforcement |
-| `healthcare_pharma.json` | FDA/CMS action, pricing, recalls, product liability |
+| `healthcare_pharma.json` | approvals, pricing, recalls, product liability |
 | `consumer_products.json` | recalls, junk fees, consumer class actions |
-| `transport_automotive.json` | vehicle recalls, airline consumer rules, rail and trucking |
+| `transport_automotive.json` | vehicle recalls, airline rules, rail and trucking |
 | `platforms_media.json` | platform antitrust, privacy, content rules |
 | `general_news.json` | policy, litigation and business across beats |
 
-A **topic** is a standing subject that is relevant on its own — no enforcement verb needed.
-Add one in **🎯 Topics** (`topics.txt`), or take them from the bundled library of ~210 subjects
-in 20 interest groups:
+**A topic is a standing subject** — interesting on its own, with no enforcement verb required.
+Write one line in **🎯 Topics** (`topics.txt`), or start from the bundled library of ~210
+subjects in 20 interest groups:
 
 ```
 ## Broadband and spectrum
@@ -109,343 +95,169 @@ BEAD funding | high | Funding
 pole attachment | low
 ```
 
-A topic is matched at a word start, graded no lower than its interest level, marked `[Topic]`
-and ranked with your watchlist hits. Switch on **Search Google News for each active topic** in
-the topics editor and the first 20 topics also become query feeds, so a new subject produces
-items on the next scan with no feed editing (off by default, so a profile's topic set cannot
-multiply the feed count on a fresh install). Your own `topics.txt`
-and `watchlist.txt` layer on top of whichever profile is active, so a local edit is never lost
-by switching profile.
+Topics match at a word start, raise an item to at least their interest level, are labelled
+`[Topic]` and rank alongside watchlist hits. Switch on *Search Google News for each active topic*
+and the first 20 topics also become query feeds, so a new subject starts producing items on the
+next scan without you finding a feed URL.
 
-```bash
-python3 hbnscan.py --check                  # prints the active profile, categories, topics, targets
-WATCHDOG_PROFILE=cybersecurity python3 hbnscan.py
-```
-
----
-
-## The AI pipeline
-
-| Stage | Runs on | Cost | Output |
-|---|---|---|---|
-| 1. Screen | every new item | 1 call, ~400 tokens | `flagged`, `category`, `severity`, `entities`, `action` |
-| 2. Verify | flagged items only, max 8/scan | 1 call + 1 page fetch | `facts`, `confidence`, refined `severity` |
-| 3. Brief | once per scan | 1 call | `headline`, `summary`, `top_stories`, `watchlist` |
-
-Any OpenAI-compatible endpoint works — DeepSeek by default, with OpenAI, Ollama/local and a
-custom URL selectable in **Settings → LLM / AI Provider** (`LLM_BASE_URL`, `LLM_MODEL`,
-`LLM_API_KEY`; the older `DEEPSEEK_*` names still work as fallbacks).
-
-Stage 2 is what makes the verdicts trustworthy: the model reads the article, not just the headline. It can confirm, promote or reject a screened signal; a rejection is stored with `dismissed = 1` (never deleted) and is hidden from the report and briefing. Stage 3 is what makes the output usable: one ranked digest instead of a wall of rows.
-
-### Offline heuristic
-
-Without a key, screening uses local keyword matching instead of the model:
-
-- **Page type is checked first.** Index, form, station-information and login pages are dropped even when their titles name a regulator.
-- **Regulatory action and litigation come first.** A headline naming a regulator (`ftc`, `fcc`, `cfpb`, `doj`, `attorney general`, `public utilities commission`) or a forum (`lawsuit`, `court`, `settlement`, `consent order`, `class action`, `injunction`) is classified before any consumer-hardship category is considered. It grades `high` when the headline reports an outcome (`sued`, `fined`, `settlement`, `ruling`) and `medium` when it is only an inquiry, proposal or announcement.
-- **The headline decides the rest.** A strong phrase ("class action", "data breach", "fined") flags the item on its own; two *weak* words ("billing", "telecom", "fee") also qualify.
-- **Summaries only corroborate.** A strong phrase in the description counts only when the headline already carries a signal, and it caps severity at `medium`. This is what removes the "learn how to avoid fraud and scams" false positives.
-- **Signals match at word starts, not mid-word,** so `sues` no longer fires on `Issues` and `fined` no longer fires on `defined`.
-- Outside the core, severity is graded rather than flat: two or more strong headline signals → `high`; one strong signal, or corroborated summary evidence → `medium`; weak words alone → `low`. Releases from `ftc.gov`, `consumerfinance.gov` and `fcc.gov` are in scope by definition and land at `medium` as `regulatory_action`.
-
-### Sources
-
-`feeds.txt` mixes two kinds of source:
-
-| Kind | Example | Deep read |
-|---|---|---|
-| `direct` — the publisher's own feed | `ftc.gov`, `consumerfinance.gov/enforcement/actions`, `sec.gov`, `federalregister.gov`, `broadbandbreakfast.com` | works |
-| `query` — a Google News search | `site:fcc.gov`, `site:telecompetitor.com`, state AG, your tracked companies | works once the redirect is resolved to the publisher URL — unless that publisher refuses automated clients |
-
-Google News item links are encrypted redirects, so HB Briefing decodes the payload (or runs
-the `batchexecute` handshake) to recover the publisher URL before the deep read, and caches the
-result. Some publishers sit behind a bot filter that refuses every automated request — Telecompetitor
-answers HTTP 403 to both its own feed and its articles — so the scan logs one line for that host
-and stops retrying it for the rest of the scan. Triage still works from the feed summary; only the
-article-level verification is lost.
-
-fcc.gov and justice.gov publish HTML or dead endpoints rather than feeds (both were probed),
-which is why FCC coverage runs through search. The Federal Register feeds are filtered to `RULE`
-and `PRORULE` documents — the unfiltered agency feed is almost entirely procedural notices
-("information collections") that would drown the digest. A feed that starts failing prints its
-HTTP status and a hint (blocked, gone, rate limited) rather than a bare error.
-
-## Watchlist
-
-`feeds.txt` decides what gets fetched; `watchlist.txt` decides what a match *means*. Each
-rule pins a subject to a category and a status, ahead of keyword scoring and regardless
-of topic:
+**A target pins a name.** `watchlist.txt` (and a profile's `targets`) promote any phrase to a
+fixed category and status, ahead of keyword scoring and regardless of subject:
 
 ```
 acme fiber & better business bureau | billing_dispute   | high
 acme fiber                          | regulatory_action | high
 acme capital                        | regulatory_action | medium
-state attorney general              | regulatory_action | high
 ```
 
-- Every `&`-joined phrase must appear at a word start in the item's title or summary.
-- Rules are evaluated top to bottom and the first match wins, so narrow rules go above
-  broad ones (`acme fiber & bbb` above `acme fiber`).
-- `category` must be one of the categories the pipeline knows; `status` is `high`,
-  `medium` or `low`. Malformed lines are skipped and reported in the scan log.
-- The same list is appended to the model prompt as a standing watchlist, so AI mode
-  honours it too, and watchlist items are never downgraded by a deep read's doubt.
+- Every `&`-joined phrase must appear at a word start in the title or summary.
+- Rules are evaluated top to bottom, first match wins — narrow rules go above broad ones.
+- `category` must exist in the active profile; `status` is `high`, `medium` or `low`.
+- Malformed lines are skipped and reported in the scan log, never silently ignored.
+- The list is also appended to the model prompt, so AI mode honours the same intent.
 
-The shipped `watchlist.txt.example` — copied to `watchlist.txt` on first run — leaves a
-commented block at the top for your own identifiers and then shows a worked example: one named
-target, a related party, and the regulators that cover it. Replace those phrases with the
-companies and agencies you actually follow. Your `watchlist.txt` is git-ignored and not tracked,
-so personal names, addresses and case numbers stay out of the repository — verify with
-`git ls-files watchlist.txt`, which must print nothing. A profile can carry its own `targets`
-in the same form, so the pin holds even with an empty watchlist file.
-
-A watchlist hit outranks everything else in the report: ordering is severity first, then
-watchlist hit, then core category, then recency.
-
-### Tuning
-
-Set these in `.env` to control spend and depth:
-
-```dotenv
-WATCHDOG_DEEP_READ=1          # 0 disables article fetching (stage 2)
-WATCHDOG_MAX_DEEP_READS=8     # article fetches per scan
-WATCHDOG_MAX_TRIAGE=40        # screening calls per scan; the remainder score offline
-WATCHDOG_BRIEFING=1           # 0 disables the executive briefing (stage 3)
-WATCHDOG_BRIEF_HOURS=24       # how far back the briefing looks for signals
-```
-
-`MAX_NEW_PER_FEED` (25) and `MAX_BRIEF_SIGNALS` (30) are constants at the top of `hbnscan.py`.
-
-### Feed date window
-
-**Settings** in the GUI (or `settings.json` in the program directory) restricts triage to
-items published inside a date range:
-
-```json
-{
-  "feed_since": "2026-11-01",
-  "feed_until": "2026-11-30",
-  "table_limit": 100
-}
-```
-
-Both keys are optional; blank or missing means open-ended. Rules:
-
-- Dates are `YYYY-MM-DD`; anything malformed is ignored and the range stays open.
-- Items outside the window are skipped **before** triage, so they cost no model call
-  and never consume the per-feed cap.
-- Out-of-window items are not recorded as seen, so widening the range later picks them
-  up on the next scan.
-- Undated items are always kept — a missing date is not evidence the item is out of range.
-- The active window is printed at scan start, shown in the GUI footer, and written into
-  the report header.
-
-This is separate from `WATCHDOG_BRIEF_HOURS`, which bounds how far back the *briefing*
-looks among items already collected.
-
-### Scheduling
-
-Scanning is controlled from **Settings → Scanning** and mirrored in the footer:
-
-- **Scan automatically** — off means the GUI never scans on its own; the Run button and
-  the headless commands still work.
-- **Every** — 5, 10, 15, 30, 60, 120 or 240 minutes.
-- **only between** — a quiet-hours window (`HH:MM` to `HH:MM`). Blank means all day; the
-  window wraps midnight, so `22:00`–`06:00` is overnight. Outside the window the GUI sleeps
-  until it opens rather than polling.
-
-These persist in `settings.json` as `auto_scan`, `scan_interval_minutes`,
-`scan_window_start` and `scan_window_end`.
-
-For a headless machine, the engine schedules itself:
+Your own `topics.txt` and `watchlist.txt` layer on top of whichever profile is active, so a local
+edit is never lost by switching. All three are git-ignored and seeded from committed `.example`
+twins on first run.
 
 ```bash
-python3 hbnscan.py --daemon     # or --watch
+python3 hbnscan.py --check                     # active profile, categories, topics, targets
+WATCHDOG_PROFILE=cybersecurity python3 hbnscan.py
 ```
 
-It re-reads settings every cycle, so toggling `auto_scan` or changing the interval from the
-GUI takes effect on the next tick. A failed cycle is logged and the loop continues; `Ctrl-C`
-stops it. One-shot `python3 hbnscan.py` and cron remain available.
+## Feeds and discovery
 
-### Searching signals
+`feeds.txt` is one URL per line, `#` for comments. Two kinds of source work, and the difference
+matters for stage 2:
 
-The **Flagged Signals** tab has a search box (`Ctrl+F`) that filters as you type, after a
-250 ms debounce. It matches against headline, assessment, category and source URL, and
-queries the whole database — not just the rows on screen — so an old signal is reachable
-without scrolling.
-
-`Rows` next to the search box controls how many rows are returned (50 → 5000) and is
-saved as `table_limit` in `settings.json`. The table header always reports what you are
-looking at, e.g. `SEARCH 'acme fiber': showing 51 of 51 match(es), limit 100`.
-
-### Reading the grid
-
-- **Click a column header** (`Detected`, `Sev`, `Category`, `Headline`) to re-sort. It sets
-  the same `row_order` the Order menu uses, so the two never disagree.
-- **Select a row** to see the detail pane: assessment, next step, published date, key
-  facts, entities, confidence and whether the item was deep-read or only screened — the
-  fields the grid has no room for.
-- **Right-click a row** for *Open in browser*, *Copy headline* and **Not relevant
-  (dismiss)** (`Delete` also works). Dismissing sets `flagged = 0, dismissed = 1` with a
-  `[Dismissed]` marker in the analysis; the item leaves the report, the grid, exports and
-  notifications but stays in the database, and `hbnscan.dismiss_item(conn, hash, undo=True)`
-  restores it.
-- **`NEW`** marks signals that arrived after the previous scan (`meta.prev_scan_at`), and
-  the header counts them (`showing 100 of 186, limit 100, 2 new`). Nothing is marked on a
-  fresh install, where everything would be new.
-
-### Filters and ordering
-
-A second row of controls narrows and sorts the grid. Every choice persists in
-`settings.json`:
-
-| Control | Values | Setting |
+| Kind | What it is | Deep read |
 |---|---|---|
-| Severity | `all`, `high`, `medium`, `low` | `filter_severity` |
-| Category | `all` or any pipeline category | `filter_category` |
-| Priority | `all`, `watchlist`, `topic`, `core`, `context` | `filter_group` |
-| Order | `priority`, `newest`, `oldest`, `severity`, `title`, `category` | `row_order` |
+| `direct` | the publisher's own RSS/Atom feed | works |
+| `query` | a Google News search URL (`site:`, `"exact phrase"`, `OR`, `when:7d`) | works once the redirect is resolved to the publisher URL — unless that publisher refuses automated clients |
 
-- `watchlist` shows only watchlist/target rules; `topic` shows only topic matches; `core` shows
-  everything else whose category is core **for the active profile**; `context` is the rest.
-  Together they partition the set, and the category list follows whichever profile is active.
-- Only whitelisted values are accepted — anything else in the file falls back to the default, a
-  category that belongs to a different profile resets to `all`, and the SQL order fragments are
-  fixed strings built from the active profile's own category names, never interpolated input.
-- Filters combine with search and with the row limit; the header names every active
-  filter and reports `showing N of M`.
+Google News item links are encrypted redirects, so HB Briefing decodes the payload (or runs the
+`batchexecute` handshake) to recover the publisher URL before fetching an article, and caches the
+result permanently. A publisher that answers `401/403` to automated clients is recorded, logged
+once and skipped for the rest of the scan — triage still works from the feed summary, only
+article-level verification is lost.
 
-Without an API key every stage degrades to the offline keyword heuristic — no network calls, no briefing, and the UI footer says `AI: Offline heuristic`.
+Where a feed is missing, a query is the practical answer; where a feed exists, it is always
+better: it carries full summaries, publication dates and a stable identity. A feed that starts
+failing prints its HTTP status with a hint (blocked, gone, rate limited) rather than a bare error.
+`python3 hbnscan.py --check` validates the AI path; a normal scan's log names every feed it
+touches and why it skipped one.
 
-Validate the configured key without running a scan (it prints a masked fingerprint, never the key):
+## Delivering the result
 
-```bash
-python3 hbnscan.py --check
-```
+**The grid** is the working surface: severity, category, headline and assessment, with a detail
+pane for facts, entities, confidence and verification state. Full-database search (debounced),
+severity/category/priority filters, six orderings and a 50–5000 row limit all persist in
+`settings.json`.
 
-### AI key and spend
+- **Priority** is a real column: `watchlist`, `topic`, `core` (core for the active profile) or
+  `context` — a partition, not a label.
+- **Click a column header** to re-sort; it sets the same `row_order` the Order menu shows.
+- **`NEW`** marks items that arrived after the previous scan.
+- **Right-click → Not relevant** (`Delete`) sets `flagged = 0, dismissed = 1`: the row leaves the
+  grid, report, exports and alerts but stays in the database, auditable and reversible.
 
-**Settings → DeepSeek API key** saves the key to `.env` (mode `0600`, comments and other
-keys preserved) and applies it to the running process, so no restart is needed. **Test
-key** spends one live call and reports the verdict plus token usage in the log.
+**The briefing** is stage 3's narrative digest, shown in its own tab and embedded in the report.
 
-Transient failures are retried rather than degrading the scan:
+**The report** (`latest_report.md`) is rewritten after every scan and rendered through the same
+code path as the exports, so the two cannot drift. It opens with counts (severity, core,
+watchlist, topics, sources, last scan, last AI spend), then "new since the previous scan", then
+the briefing, then the top 50 signals in priority order.
 
-- `408`, `429`, `500`, `502`, `503`, `504` and connection/timeout errors are retried up
-  to 3 times with exponential backoff and jitter.
-- `Retry-After` is honoured and capped at 20 s.
-- `401`/`402`/`403` and other 4xx fail immediately — a bad key should not burn attempts.
-
-Every call's `usage` is counted, and a scan that spent model calls writes a row to
-`scan_runs` (`ai_calls`, `prompt_tokens`, `completion_tokens`, `new_items`, `flagged`,
-`deep_reads`, `model`). The scan log ends with the same figures:
-
-```
-[22:35:49] Scan complete. New: 2 | Flagged: 2 | Deep reads: 0 | AI: 2 calls, 400 in / 120 out
-```
-
-```sql
-SELECT started_at, ai_calls, prompt_tokens, completion_tokens FROM scan_runs ORDER BY id DESC LIMIT 10;
-```
-
-### Notifications
-
-Email and SMS alerts fire at the end of a scan for signals above a threshold, and only for
-items that have not been sent before (`meta.last_notified_at` keeps the watermark).
-
-Configure in `.env` — nothing secret goes into `settings.json`:
-
-```dotenv
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_SECURITY=starttls        # starttls | ssl | none
-SMTP_USER=me@example.com
-SMTP_PASSWORD=app-password
-SMTP_FROM=me@example.com
-NOTIFY_EMAIL_TO=me@example.com
-NOTIFY_SMS_TO=+15551234567
-SMS_GATEWAY_DOMAIN=vtext.com
-```
-
-**SMS uses the carrier's free email-to-SMS gateway**, so no Twilio account is needed —
-`+15551234567` becomes `15551234567@vtext.com`. Supported names: `verizon`, `att`,
-`tmobile`, `sprint`, `uscellular`, `googlefi`, `cricket`, `metro`; anything else is used
-verbatim as the domain. You can also put a full gateway address in `NOTIFY_SMS_TO` and
-skip `SMS_GATEWAY_DOMAIN`.
-
-Toggles live in **Settings → Notifications**: enable, minimum severity (`high` or
-`medium`), and **Send test**, which sends one fixed message through the same code path.
-Declared-interest items — watchlist *and* topic matches — can be excluded from the digest by
-setting `notify_include_watchlist` to false in `settings.json`. Messages are prefixed with the
-active profile's name.
-
-A failed send is logged and never fails the scan, and it does not advance the watermark, so
-the next scan retries those items.
-
-## The daily report
-
-`latest_report.md` is rewritten after every scan and is rendered through the same code path
-as the exports, so the two never drift. Its title is the active profile's name, and it opens
-with a summary block rather than dropping straight into items:
-
-```markdown
-# HB Briefing — Intelligence Report
-
-## Summary
-
-- **186** flagged · 79 high · 90 medium · 17 low
-- **180** regulatory action/litigation · **110** watchlist · **38** topic matches
-- **15** sources configured (7 direct, 8 search)
-- Last scan: 2026-11-11 05:10:56
-- AI: offline heuristic (no model calls)
-```
-
-The `<n>` in the second line is counted against the **active profile's** core categories, so a
-`cybersecurity` report counts exploitation and vulnerability items instead. Then, when anything
-arrived since the previous scan, a **New since the previous scan** list (with the true total when
-it exceeds the 15 shown); the executive briefing (fresh, or explicitly labelled as carried over);
-and finally the top 50 signals ordered by severity → declared interest (watchlist or topic) →
-core → recency, each with category, priority, detected/published dates, verification state,
-assessment, facts, entities and confidence.
-
-The offline heuristic's catch-all next step ("Open the source item and confirm the details.")
-is suppressed — repeated 180 times it was just noise.
-
-## Exporting
-
-Every export carries the full AI output — assessment, key facts, entities, confidence and
-whether the item was deep-read or only screened — plus the latest executive briefing when
-one exists. The document title is the active profile's name, and the provenance prefix
-(`[Watchlist]`, `[Topic]`, `[Local Heuristic]`) is stripped from the assessment because the
-**Priority** column already states it.
-
-From the GUI, **⤓ Export** writes exactly what the grid is showing: the active search,
-severity/category/priority filters and the row limit all apply.
-
-From the CLI:
-
-```bash
-python3 hbnscan.py --export signals.html          # format from the extension
-python3 hbnscan.py --export signals.csv
-python3 hbnscan.py --export briefing.docx
-python3 hbnscan.py --export out.bin --format json # or state it explicitly
-python3 hbnscan.py --export signals.md --format md # suffix aliases work too
-```
+**Exports** carry the full verdict — assessment, next step, facts, entities, confidence,
+verification state — plus the latest briefing:
 
 | Format | Notes |
 |---|---|
-| `.md` | Markdown, same shape as the daily report |
-| `.html` | Self-contained page: severity badges, facts, entities, briefing block, print-friendly |
+| `.md` | Markdown, same shape as the report |
+| `.html` | Self-contained page: severity badges, facts, entities, briefing, print-friendly |
 | `.csv` | One row per signal, 14 columns — spreadsheet and pivot friendly |
-| `.json` | Nested objects plus a top-level `briefing` field, for downstream tooling |
-| `.docx` | Word document, generated as OOXML directly — **no extra dependency** |
+| `.json` | Nested objects plus a top-level `briefing`, for downstream tooling |
+| `.docx` | Word document, generated as OOXML directly — no extra dependency |
 | `.txt` | Plain text, for paste or mail |
 
-Only standard-library code is used: the `.docx` writer emits `[Content_Types].xml`,
-`_rels/.rels` and `word/document.xml` into a zip, which Word and LibreOffice both open.
+```bash
+python3 hbnscan.py --export signals.html           # format from the extension
+python3 hbnscan.py --export out.bin --format json  # or state it explicitly
+```
 
----
+The GUI's **⤓ Export** writes exactly what the grid is showing: active search, filters and row
+limit included.
+
+**Alerts** fire at the end of a scan for signals above a threshold, and only for items not sent
+before. E-mail goes through any SMTP server; SMS uses the carrier's free e-mail-to-SMS gateway,
+so no third-party messaging account is needed.
+
+**Scheduling** is a first-class feature: an interval, a quiet-hours window that wraps midnight, and
+a headless daemon for machines without a desktop.
+
+```bash
+python3 hbnscan.py --daemon     # loop per settings.json; Ctrl-C stops
+```
+
+## Cost, control and failure modes
+
+Nothing here requires a model. With no key the offline heuristic grades every item, the briefing
+is skipped, and the footer says so. With a key, three budgets bound the spend per scan:
+
+```dotenv
+WATCHDOG_MAX_TRIAGE=40        # screening calls per scan; the remainder score offline
+WATCHDOG_MAX_DEEP_READS=8     # article fetches per scan
+WATCHDOG_BRIEFING=1           # 0 disables the digest (stage 3)
+```
+
+Transient failures are retried rather than degrading the scan: `408`, `429`, `5xx`, connection
+errors and timeouts are retried up to three times with exponential backoff and jitter, honouring
+`Retry-After`; a provider that rejects JSON mode is retried without it; a truncated answer is
+re-asked with a larger token budget. `401`/`402`/`403` fail immediately — a bad key should not
+burn attempts. Every call's `usage` is recorded in `scan_runs`, and the scan log ends with the
+per-run totals.
+
+Any OpenAI-compatible endpoint works — DeepSeek by default, with OpenAI, Ollama/local and a custom
+URL selectable in **Settings → LLM / AI Provider** (`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`;
+the older `DEEPSEEK_*` names remain as fallbacks).
+
+## Reliability and safety
+
+- **Conditional GET** (`ETag` / `Last-Modified`) per feed, with an 8 MiB payload cap.
+- **DTD/entity rejection** before parsing, so a feed cannot mount an entity-expansion attack.
+- **Links restricted to `http(s)`**; report and export text is escaped for its target format.
+- **Parameterised SQL everywhere**; the only interpolated fragments are the active profile's own
+  category names, quoted and escaped.
+- **Untrusted text is fenced** in every prompt, with explicit instructions, and model output is
+  validated structurally rather than executed.
+- **No silent item loss**: items beyond the per-feed cap roll over to the next scan (the stored
+  validator is deliberately not advanced), and a failed scan cycle never kills the daemon.
+- **Atomic configuration writes**: `settings.json`, `.env`, `feeds.txt`, `topics.txt` and the
+  report are replaced through a temp file, so an interrupted write cannot truncate them.
+- **One scan at a time** (file lock) and **one GUI at a time** (instance lock).
+- **Private by default**: keys live in `.env` (`0600`), masked in logs, never exported; your
+  feeds, topics, priority rules and settings are git-ignored.
+
+## Quick start
+
+One command checks the machine over, installs whatever is missing, and opens the GUI:
+
+```bash
+./start.sh
+```
+
+It verifies `python3` (3.8+), installs `python3-tk` through the system package manager if
+`tkinter` is absent, creates a project-local `.venv` so the system interpreter is left alone,
+installs `requirements.txt` into it, and seeds `.env`, `feeds.txt`, `watchlist.txt` and
+`topics.txt` from their `.example` twins on first run. Nothing is reinstalled once present.
+
+Manual equivalent:
+
+1. `cp .env.example .env` and, optionally, add an LLM key. Without one the tool runs offline.
+2. `pip install -r requirements.txt` (Tkinter ships with most Python builds; if not:
+   Debian/Ubuntu `sudo apt install python3-tk`, Arch `sudo pacman -S tk`,
+   Fedora `sudo dnf install python3-tkinter`).
+3. `python3 hbnscan_gui.py` for the desktop interface, or `python3 hbnscan.py` for one scan.
+4. *(Optional)* `./install_autostart.sh` to add a desktop menu entry and login autostart.
 
 ## Documentation
 
@@ -453,8 +265,6 @@ Only standard-library code is used: the `.docx` writer emits `[Content_Types].xm
 | --- | --- |
 | [Instructions](./docs/INSTRUCTIONS.md) | Short, task-oriented steps: install, scan, tune, schedule, notify, export |
 | [User Manual](./docs/USER-MANUAL.md) | Every screen, setting and file, with the reasoning behind it |
-| [Technical Reference](./docs/TECHNICAL-REFERENCE.md) | Architecture, profiles, scoring ladder, AI contract, schema, security, runbook |
+| [Technical Reference](./docs/TECHNICAL-REFERENCE.md) | Architecture, profiles and scoring, AI contract, schema, security, runbook |
 
-Runtime defaults for `feeds.txt`, `watchlist.txt` and `topics.txt` ship as `*.example` twins and
-are copied into place on first run, so a fresh clone works immediately while your own lists stay
-out of git.
+HB Briefing is MIT licensed and uses only the Python standard library plus `python-dotenv`.

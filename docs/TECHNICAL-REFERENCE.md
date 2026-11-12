@@ -4,7 +4,8 @@ Everything needed to maintain, extend, audit or deploy HB Briefing. It describes
 shipped in v1.0.0: the module layout, the configuration model, the scoring ladder, the AI
 contract, the storage schema, the security posture, and the operational procedures. Every
 statement here can be checked against the source; function and constant names are given so it
-can be.
+can be. Domain-specific examples come from whichever profile is active — the mechanism is the
+same for any feed set.
 
 - Operating it: [User Manual](./USER-MANUAL.md). Short tasks: [Instructions](./INSTRUCTIONS.md).
 
@@ -39,9 +40,12 @@ can be.
 
 ## 1. Scope and design goals
 
-HB Briefing answers one question continuously: *what regulatory or legal action just happened
-that I need to know about?* The shipped default answers it for telecoms and ISPs; the profile
-system answers it for any domain.
+HB Briefing turns an arbitrary set of RSS/Atom feeds into a ranked, explained signal stream. It
+answers one question continuously — *which of these items matter, why, and what should I do about
+them?* — and the answer is produced by a pipeline whose notion of "matters" is configuration, not
+code: a profile supplies the categories, keywords and prompt framing, a topic list supplies the
+subjects, and a target list supplies the names that must never be missed. The shipped default
+targets regulatory and legal action in telecoms and ISPs; the same machinery serves any field.
 
 The design choices that follow from that:
 
@@ -52,7 +56,7 @@ The design choices that follow from that:
 | **Works with zero spend** | The AI stages are optional. `heuristic_verdict` produces a full structured verdict offline; every AI failure degrades to it rather than losing an item. |
 | **Never lose an item silently** | The per-feed cap defers work instead of dropping it (feed validators are held back), rejections are stored as `dismissed`, and outside-window items are not marked seen. |
 | **Operator intent beats inference** | Watchlist rules, profile targets and topics are applied *after* the model and cannot be downgraded or dismissed by it. |
-| **Data, not code, is extensible** | Domain, categories, keywords, prompts, topics and targets all live in JSON/plain text. Adding a domain requires no Python change. |
+| **Configurable, not forkable** | Domain, categories, keywords, prompts, topics and targets all live in JSON/plain text, resolved per call. Pointing the tool at a new field is an edit, not a code change. |
 | **Nothing leaves the machine unless asked** | Only the configured LLM endpoint and SMTP server see data; every other fetch is a feed or an article the user asked for. |
 
 ---
@@ -301,7 +305,7 @@ severity escalator still works.
 
 | File | Categories (core first) | Topics | Targets |
 | --- | --- | --- | --- |
-| *(built-in `DEFAULT_PROFILE`)* | regulatory_action, litigation, billing_dispute, equipment_scam, deceptive_fees, data_breach, security, policy | 18 | MetroNet, MetroNet & BBB, KKR |
+| *(built-in `DEFAULT_PROFILE`)* | regulatory_action, litigation, billing_dispute, equipment_scam, deceptive_fees, data_breach, security, policy | 18 | 1 sample |
 | `regulatory.json` | identical to the built-in default, materialised as an editable file | 18 | 3 |
 | `cybersecurity.json` | vulnerability, exploitation, data_breach, regulatory_action, litigation, advisory | 14 | LockBit, Cl0p, Scattered Spider |
 | `ai_and_silicon.json` | regulatory_action, litigation, export_control, subsidy, market_action, policy | 12 | — |
@@ -314,14 +318,15 @@ severity escalator still works.
 | `general_news.json` | policy, litigation, business, technology, world | 11 | — |
 
 `regulatory.json` exists so a user can copy the default and edit it; the built-in default is
-what runs when no file is present. Both carry the same content.
+what runs when no file is present. Both carry the same content, and the sample targets in each
+are placeholders for the operator's own names.
 
-**Why the non-default profiles ship no regulator targets.** A target pins category *and*
-severity outright (§7.2). Pinning `FDA` at `medium` would flatten a genuine high-severity
-recall. Regulators are instead covered by `category_hints` (classification) and
-`trusted_source_hosts` (relevance), both of which grade each item on its own evidence. Parties
-whose appearance is *inherently* the signal — MetroNet, named ransomware crews — are the only
-shipped targets.
+**Why most profiles ship no agency targets.** A target pins category *and* severity outright
+(§7.2), so pinning a regulator at `medium` would flatten a genuine high-severity finding down to
+the target's level. Agencies are instead covered by `category_hints` (classification) and
+`trusted_source_hosts` (relevance), which grade each item on its own evidence. Only parties whose
+appearance is *inherently* the signal — a company being tracked, a named threat actor — are
+expressed as shipped targets.
 
 ### 5.4 Validation of profile-supplied topics and targets
 
@@ -461,7 +466,7 @@ phrase [& phrase ...] | category | severity [| note]
 JSON equivalent:
 
 ```json
-{"match": ["metronet", "better business bureau"], "category": "billing_dispute",
+{"match": ["acme fiber", "better business bureau"], "category": "billing_dispute",
  "severity": "high", "note": "complaint pattern"}
 ```
 

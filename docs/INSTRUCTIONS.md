@@ -8,16 +8,23 @@ algorithms see the [Technical Reference](./TECHNICAL-REFERENCE.md).
 
 ## What it does
 
-HB Briefing watches a list of RSS/Atom feeds, decides which items are genuine signals, and
-surfaces them — ranked, briefed and optionally mailed to you. It works **with no API key**:
-a deterministic offline heuristic scores every headline. Add an LLM key and two extra
-stages light up: article deep reads (which confirm, promote or reject a candidate) and a
-written executive briefing.
+HB Briefing is a toolkit for assessing RSS/Atom feeds. It watches the feeds you give it,
+decides which items are genuine signals, and surfaces them — ranked, explained, briefed and
+optionally mailed to you. It works **with no API key**: a deterministic offline heuristic
+scores every headline. Add an LLM key and two more stages light up: article deep reads (which
+confirm, promote or reject a candidate) and a written executive briefing.
 
-Default focus is **regulatory action and litigation in telecoms and ISPs** — enforcement,
-rulemakings, lawsuits, settlements, penalties, with MetroNet as a standing target. The focus is
-data, not code: a profile file retargets the whole engine to another industry, and a line in
-`topics.txt` retargets it to another subject.
+It is configurable in three places, and all three layer:
+
+| Layer | File | What you control |
+| --- | --- | --- |
+| Profile | `profiles/*.json` or `profile.json` | The domain: categories, keywords, prompt framing, trusted sources, plus its own topics and targets |
+| Topics | `topics.txt` | The subjects you follow, with an interest level and a group |
+| Targets | `watchlist.txt` | The names you never want to miss, pinned to a category and status |
+
+Ten profiles ship, including the default (regulatory and legal action in telecoms and ISPs),
+cybersecurity, energy, finance, health, consumer products, transport, platforms and general
+news. Switching one changes the whole engine, not just a filter.
 
 ---
 
@@ -86,9 +93,9 @@ Edit `feeds.txt` (GUI: **Settings → Save Feeds**, or any text editor). One URL
 `#` starts a comment.
 
 ```
-https://www.fcc.gov/news-events/rss-releases
-https://www.ftc.gov/feeds/press-release.xml
-# litigation-specific
+https://www.example-regulator.gov/news-events/rss-releases
+https://www.example-publisher.com/feed/
+# no feed? a search query works instead
 https://news.google.com/rss/search?q=%22class+action%22+telecom&hl=en-US&gl=US&ceid=US:en
 ```
 
@@ -97,14 +104,16 @@ feed: the `q=` parameter accepts full search syntax (`"exact phrase"`, `OR`, `si
 HB Briefing now resolves the redirect on those links, so items from Google feeds get deep
 reads like any other source.
 
-Good feed categories:
+What makes a good source:
 
-- **Regulators** — FCC, FTC, SEC, CFPB, DOJ, state AGs, PUCs, Federal Register queries.
-- **Aggregators** — Google News queries, Broadband Breakfast. Telecompetitor's own feed sits
-  behind a bot filter that answers HTTP 403, so it is covered by a `site:telecompetitor.com`
-  query instead (the log says so if any feed starts refusing automated clients).
-- **Litigation** — court press feeds, law-firm blogs, docket alert feeds.
-- **Company news** — only if the vendor publishes RSS; otherwise use a Google News `site:` query.
+- **Primary publishers** — the body, court, company or publication that issues the news itself.
+  Their own feed is always preferred: it carries full summaries and stable identities.
+- **Aggregators and queries** — a Google News search when no feed exists.
+- **Specialist press** — trade publications and law-firm blogs that follow your subject closely.
+- **Company news** — only if the vendor publishes RSS; otherwise use a `site:` query.
+
+Some publishers refuse automated clients with `HTTP 403` and cannot be fetched at all; the scan
+names the host once and moves on, and a `site:` query still gets their headlines.
 
 Feeds that return HTML instead of XML will be reported as unusable; feeds using DTDs are
 rejected by design.
@@ -134,10 +143,10 @@ phrase [& phrase ...] | category | status [| note]
 Example:
 
 ```
-MetroNet | litigation | high | named defendant
-MetroNet & outage | billing_dispute | medium
-KKR & acquisition | regulatory_action | medium
-FCC & forfeiture | regulatory_action | high | forfeiture orders only
+acme fiber | litigation | high | named defendant
+acme fiber & outage | billing_dispute | medium
+acme capital & acquisition | regulatory_action | medium
+state regulator & forfeiture | regulatory_action | high | forfeiture orders only
 ```
 
 A watchlist hit sets the category and status directly: it is never downgraded, and a deep
@@ -280,18 +289,19 @@ Full syntax, ranking rules and limits: [User Manual §12.5](./USER-MANUAL.md#125
 
 ## 10. Switch profile (the deep way)
 
-A **profile** bundles the domain rules (categories, keyword signals, prompt framing, trusted
-sources) *with* a topic set and standing targets. Ten ship in `profiles/`:
+A **profile** is the whole domain in one file: categories, keyword signals, prompt framing and
+trusted sources, *plus* its own topic set and standing targets. Ten ship in `profiles/`, each a
+complete working example you can copy and edit:
 
 | Profile | Focus |
 | --- | --- |
-| *(built-in)* | **regulatory action and litigation in telecoms and ISPs — MetroNet as a target** |
+| *(built-in)* | regulatory and legal action in telecoms and ISPs — the shipped default |
 | `regulatory.json` | the same default, as a file to copy and edit |
 | `cybersecurity.json` | vulnerabilities and exploitation |
 | `ai_and_silicon.json` | AI and chip regulation, export controls, antitrust |
 | `energy_utilities.json` | rate cases, grid access, reliability, wildfire liability |
 | `financial_services.json` | banking, lending and payment enforcement |
-| `healthcare_pharma.json` | FDA/CMS action, pricing, recalls, product liability |
+| `healthcare_pharma.json` | approvals, pricing, recalls, product liability |
 | `consumer_products.json` | recalls, junk fees, consumer class actions |
 | `transport_automotive.json` | recalls, airline consumer rules, rail and trucking |
 | `platforms_media.json` | platform antitrust, privacy, content rules |
@@ -338,7 +348,7 @@ targets syntax are in
 | Check what a scan cost | Settings/log: calls, prompt and completion tokens per run |
 | Repair old classifications | `python3 hbnscan.py --reclassify --dry-run` then without `--dry-run` |
 | Follow a new subject | **🎯 Topics** → add a line (§9) |
-| Change industry or domain | **Settings → Profile** → pick → **Save** (§10) |
+| Change the subject area entirely | **Settings → Profile** → pick → **Save** (§10) |
 | See which profile and topics are live | `python3 hbnscan.py --check` |
 
 ---
@@ -371,7 +381,7 @@ Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.
 | Deep reads never happen | Aggregator link could not be resolved, article returned <200 characters, the publisher blocks automated fetches (HTTP 401/403 — logged once per host per scan), or budget `WATCHDOG_MAX_DEEP_READS` reached |
 | A feed logs `HTTP 403` | The publisher refuses automated clients (Cloudflare and similar). Replace the feed with a Google News `site:<domain>` query so items are still ingested; the hint in the log says the same |
 | Report looks stale | The report is rewritten at the end of every scan, so a stale one means the last scan did not finish — read the log for the failing feed or the cancelled run |
-| Profile switched but old rows still say `billing_dispute` | Stored verdicts are not rewritten on a profile change; run `--reclassify` (or leave them — new scans use the new profile) |
+| Profile switched but old rows still show the previous profile's categories | Stored verdicts are not rewritten on a profile change; run `--reclassify` (or leave them — new scans use the new profile) |
 | Category filter reset itself to `all` | The saved category belonged to the previous profile; the filter only offers categories the active profile defines |
 | A topic never matches | Check the scan log for `[!] topics.txt:` warnings; a bad interest level or an over-long label is skipped, and matching is word-start only |
 | "Feed unusable (HTML)" | That URL serves a web page, not RSS — find the real feed URL or use a Google News query |

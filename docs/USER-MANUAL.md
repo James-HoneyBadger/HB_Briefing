@@ -1,10 +1,12 @@
 # HB Briefing — User Manual
 
-HB Briefing is an autonomous open-source intelligence monitor for a narrow, high-value
-question: *what regulatory or legal action just happened that I need to know about?*
+HB Briefing is an open-source toolkit for assessing RSS and Atom feeds. It watches the feeds
+you point it at, decides which items are worth your attention, explains why, ranks the result,
+and delivers it to your screen, your report, your inbox and your phone.
 
-It watches your feeds, decides what deserves attention, explains why, ranks the result, and
-can deliver it to your screen, your inbox and your phone. This manual covers operating it:
+It ships configured for regulatory and legal action in telecoms and ISPs, but nothing about that
+choice is special: feeds, subjects, tracked names, categories and prompts are all configuration,
+so the same engine follows whatever field you care about. This manual covers operating it — the
 concepts, the interface, every setting, and how to keep the signal-to-noise ratio high.
 
 - **New here?** [Instructions](./INSTRUCTIONS.md) is the short version.
@@ -34,7 +36,7 @@ concepts, the interface, every setting, and how to keep the signal-to-noise rati
 
 ## 1. Concepts and vocabulary
 
-Understanding six words is enough to operate everything.
+A handful of terms cover the whole system.
 
 **Feed.** An RSS or Atom URL. HB Briefing polls each feed on every scan, asking for changes
 only (HTTP `ETag` / `Last-Modified`).
@@ -50,11 +52,12 @@ but stay invisible unless you reclassify.
 confidence, an assessment, a suggested next step, key facts and named entities. Verdicts are
 produced offline by a deterministic heuristic, or by a model when a key is configured.
 
-**Pipeline stages.** Three optional stages sit on top of the offline heuristic:
+**Pipeline stages.** Beyond fetching, three model-backed stages refine each item. With no key
+configured they are skipped and the offline heuristic produces the same shape of verdict:
 
 | Stage | Name | What it does | Needs a key |
 | --- | --- | --- | --- |
-| 1 | Triage | Screens an item, returns a structured verdict | yes (else heuristic) |
+| 1 | Triage | Screens an item and returns a structured verdict | yes (else heuristic) |
 | 2 | Deep read | Fetches the linked article, re-judges with full text; can confirm, promote or reject | yes |
 | 3 | Briefing | Writes a short executive narrative across the period's signals | yes |
 
@@ -62,14 +65,14 @@ produced offline by a deterministic heuristic, or by a model when a key is confi
 wins over both the heuristic and the model.
 
 **Profile.** A named bundle of everything domain-specific: the categories, keyword signals and
-prompt framing, plus the **topic set** and the **standing targets** that ship with it. The
-default profile is regulatory action and litigation in telecoms and ISPs, with MetroNet as a
-target; another profile retargets the whole engine (see [§12](#12-profiles-and-topics-retargeting-the-engine)).
+prompt framing, plus the **topic set** and the **standing targets** that ship with it. Ten ship;
+one of them is the default (regulatory and legal action in telecoms and ISPs) and any of them
+retargets the whole engine (see [§12](#12-profiles-and-topics-retargeting-the-engine)).
 
-**Topic.** A plain-language subject treated as always relevant — `municipal broadband`,
-`zero-day exploit`, `drug price negotiation`. Topics are grouped, carry an interest level, and
-optionally become their own Google News queries. They are what you retarget without writing
-JSON (see [§12.5](#125-topics-the-subjects-inside-a-profile)).
+**Topic.** A plain-language subject treated as always relevant — `chip fab`, `zero-day exploit`,
+`drug price negotiation`. Topics are grouped, carry an interest level, and optionally become
+their own Google News queries. They are the quickest way to change what the tool follows (see
+[§12.5](#125-topics-the-subjects-inside-a-profile)).
 
 **Target.** A named party from a profile or from `watchlist.txt` whose appearances are pinned
 to a category and severity regardless of what the model thinks.
@@ -80,7 +83,7 @@ to a category and severity regardless of what the model thinks.
 
 ### 2.1 Requirements
 
-- Python 3.10+ (3.13 tested), standard library plus `python-dotenv`.
+- Python 3.8 or newer (tested on 3.13), standard library plus `python-dotenv`.
 - Tkinter only if you want the desktop interface.
 - Linux, macOS or Windows. The bundled helpers (`start.sh`, `install_autostart.sh`) target Linux.
 
@@ -93,8 +96,8 @@ to a category and severity regardless of what the model thinks.
 The launcher is defensive by design: it verifies Python, offers to install `python3-tk` via
 your package manager, creates `.venv` and checks that it is actually usable (a broken
 `ensurepip` leaves a half-built directory, which it detects and rebuilds), installs
-`requirements.txt`, seeds `.env`, `feeds.txt` and `watchlist.txt` from their `.example`
-templates when absent, then starts the GUI.
+`requirements.txt`, seeds `.env`, `feeds.txt`, `watchlist.txt` and `topics.txt` from their
+`.example` templates when absent, then starts the GUI.
 
 ### 2.3 Manual start
 
@@ -341,7 +344,7 @@ phrase [& phrase ...] | category | status [| note]
 
 | Part | Rules |
 | --- | --- |
-| `phrase` | Case-insensitive, matched at word boundaries (`MetroNet` will not match `MetroNetworks`) |
+| `phrase` | Case-insensitive, matched at word boundaries (`acme` will not match `acmecorp`) |
 | `&` | All phrases must be present; up to several per rule |
 | `category` | Must be one of the profile's categories |
 | `status` | `high`, `medium` or `low` |
@@ -360,7 +363,7 @@ changes; no restart is needed.
 
 ### 7.3 Practical guidance
 
-- Be specific. `acquisition` alone will fire constantly; `KKR & acquisition` will not.
+- Be specific. `acquisition` alone will fire constantly; `acme capital & acquisition` will not.
 - Prefer `&` over multiple single-phrase rules when the combination is what matters.
 - Track your own identifiers privately — keep personal names, addresses and case numbers in
   your untracked `watchlist.txt`, not in the shipped `.example`.
@@ -602,26 +605,27 @@ drop it back in the folder, and it appears in the Settings dropdown.
 
 | File | Focus | Topics | Targets |
 | --- | --- | --- | --- |
-| *(built-in)* | regulatory action and litigation in telecoms and ISPs | 18 | MetroNet (high), MetroNet & BBB, KKR |
-| `regulatory.json` | the default, materialised as a file to copy and edit | 18 | same as built-in |
-| `cybersecurity.json` | vulnerability and exploitation | 14 | LockBit, Cl0p, Scattered Spider |
+| *(built-in)* | regulatory and legal action in telecoms and ISPs (shipped default) | 18 | 1 sample |
+| `regulatory.json` | the default, materialised as a file to copy and edit | 18 | 3 |
+| `cybersecurity.json` | vulnerability and exploitation | 14 | 3 |
 | `ai_and_silicon.json` | AI and semiconductor regulation, export controls, antitrust | 12 | — |
 | `energy_utilities.json` | rate cases, grid access, reliability, wildfire liability | 12 | — |
 | `financial_services.json` | enforcement and litigation in banking, lending, payments | 12 | — |
-| `healthcare_pharma.json` | FDA/CMS action, pricing, recalls, product liability | 12 | — |
+| `healthcare_pharma.json` | approvals, pricing, recalls, product liability | 12 | — |
 | `consumer_products.json` | recalls, junk fees, consumer class actions | 11 | — |
 | `transport_automotive.json` | recalls, airline consumer rules, rail and trucking enforcement | 10 | — |
 | `platforms_media.json` | platform antitrust, privacy, content rules, media bargaining | 11 | — |
 | `general_news.json` | policy, litigation and business across beats | 11 | — |
 
-The default profile is the regulatory/legal one because that is what the tool is for. Its
-targets make MetroNet — and, at medium, its investor KKR — a standing subject: an item naming
-MetroNet is pinned to `regulatory_action`/`high` even when the headline says nothing about
-regulation, and a deep read cannot downgrade it.
+The shipped default is the regulatory/legal profile because that is the use case the project grew
+out of; it is not privileged in any other way. Its `targets` demonstrate the mechanism: a named
+party is pinned to a category and severity, so an item that mentions it is surfaced even when the
+headline says nothing about regulation, and a deep read cannot downgrade it. Replace the shipped
+phrases with your own.
 
 Shipping a *regulator* as a target is deliberately avoided in the other profiles: a target pins
-category and severity outright, so pinning `FDA` would flatten a genuine high-severity recall
-down to the target's level. Regulators are covered by `trusted_source_hosts` and
+category and severity outright, so pinning an agency would flatten a genuine high-severity
+finding down to the target's level. Agencies are covered by `trusted_source_hosts` and
 `category_hints` instead, which grade each item on its own merits.
 
 ### 12.3 Authoring your own profile
@@ -686,9 +690,9 @@ A topic is a subject that is relevant on its own — no enforcement verb require
 **🎯 Topics** in the toolbar, or edit `topics.txt` directly (one subject per line):
 
 ```
-broadband overbuild                     subject only, medium interest
-municipal broadband | high              choose an interest level
-BEAD funding | high | Broadband         choose a level and a group
+chip fab                                subject only, medium interest
+export controls | high                  choose an interest level
+merger review | high | Competition      choose a level and a group
 ```
 
 - `#` starts a line comment; `## Heading` opens a **group**. Every topic below a heading belongs
@@ -698,7 +702,7 @@ BEAD funding | high | Broadband         choose a level and a group
   stay readable.
 - Matching is at a word start and case-insensitive: `sue` does not match `issues`.
 - When topics overlap, the **highest interest level wins, then the longest phrase** — so
-  `municipal broadband` beats a bare `broadband`.
+  a two-word subject beats a bare one-word subject.
 - Limits: 300 active topics, 120 characters each.
 - Switching on **Search Google News for each active topic** in the topics editor turns the
   first 20 topics into Google News query feeds, so a new subject starts producing items on the
@@ -720,9 +724,9 @@ the topics editor to append it, then uncomment what you want.
 
 ```json
 "targets": [
-  {"match": ["metronet"], "category": "regulatory_action", "severity": "high",
-   "note": "default target"},
-  {"match": ["metronet", "better business bureau"], "category": "billing_dispute",
+  {"match": ["acme fiber"], "category": "regulatory_action", "severity": "high",
+   "note": "the company we track"},
+  {"match": ["acme fiber", "better business bureau"], "category": "billing_dispute",
    "severity": "high", "note": "complaint pattern"}
 ]
 ```
@@ -776,7 +780,8 @@ without re-reading sources. A deep read can also *reject*: when it concludes an 
 signal with at least 0.5 confidence, the item is marked dismissed and logged as a rejection —
 visible in the audit trail, silent in the table.
 
-**Watchlist verdicts** are authoritative by design; see [§7](#7-the-watchlist).
+**Declared-interest verdicts** — watchlist rules and topics — are authoritative by design; see
+[§7](#7-the-watchlist) and [§12.5](#125-topics-the-subjects-inside-a-profile).
 
 Severity means: **high** — action taken or imminent (a fine, a filed suit, a final rule);
 **medium** — a process that may lead to action (comment period, investigation, appeal);

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 HB Briefing v1.0.0 - Standalone Desktop GUI
-Clean, dark-slate Tkinter interface built for Linux (XFCE/Arch/Fedora), macOS, and Windows.
+
+Tkinter front end over hbnscan.py: it never reimplements engine logic, only calls it. Scans run
+in a worker thread and marshal back through a queue, so the interface stays responsive.
 """
 import json
 import os
@@ -487,6 +489,8 @@ class NewsScanApp(tk.Tk):
         matched = 0
         new_count = 0
         rows = []
+        totals = (0, 0)
+        marker = None
         if DB_PATH.exists():
             try:
                 conn = sqlite3.connect(DB_PATH, timeout=5)
@@ -549,8 +553,8 @@ class NewsScanApp(tk.Tk):
                  + ("" if (query or active) else " (double-click opens, right-click dismisses)")
         )
 
-        ai_mode = (f"DeepSeek ({hbnscan.DEEPSEEK_MODEL})"
-                   if hbnscan.deepseek_configured() else "Offline heuristic")
+        ai_mode = (hbnscan.LLM_MODEL if hbnscan.deepseek_configured()
+                   else "Offline heuristic")
         window = hbnscan.load_settings()
         window_text = ""
         if window["feed_since"] or window["feed_until"]:

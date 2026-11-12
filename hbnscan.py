@@ -2,10 +2,20 @@
 """
 HB Briefing v1.0.0 - Core Engine
 
-Two-stage AI triage:
-  1. Screen  - one cheap structured verdict per new item (category, severity, entities, action)
-  2. Verify  - for flagged items only, fetch the article, extract its text, and re-judge with facts
-  3. Brief   - one per-scan call that ranks the batch, merges syndicated duplicates, writes a digest
+An RSS/Atom assessment toolkit. One scan collects items, grades them, optionally verifies the
+flagged ones against their article, and writes a digest:
+
+  Collect - conditional GET per feed, hash and dedupe, prune
+  Stage 1 - triage: one cheap structured verdict per new item (category, severity, entities,
+            action); the offline heuristic produces the same shape when no key is configured
+  Stage 2 - deep read: for flagged items only, fetch the article, extract its text, re-judge
+            with quoted facts and a confidence
+  Stage 3 - briefing: one per-scan call that ranks the batch, merges syndicated duplicates and
+            writes a digest
+  Deliver - report, exports, notifications
+
+The domain (categories, keywords, prompt framing, topics, targets) is configuration: see
+DEFAULT_PROFILE below, the profiles/ directory, topics.txt and watchlist.txt.
 """
 import base64
 import csv
@@ -2003,14 +2013,6 @@ def analyze_item(item, feed_url="manual", log_callback=print):
         return _apply_watchlist(verdict, item)
 
 
-def analyze_with_deepseek(title, description, link, log_callback=print):
-    """Back-compat shim: returns (flagged, analysis)."""
-    verdict = analyze_item(
-        {"title": title, "description": description, "link": link}, "manual", log_callback
-    )
-    return verdict["flagged"], verdict["analysis"]
-
-
 # Hosts that answered 401/403 during this scan. One blocked publisher can supply a
 # whole feed's worth of items, and retrying every article wastes a request per item.
 _BLOCKED_HOSTS = {}
@@ -3348,7 +3350,7 @@ def check_api(log_callback=print, api_key=None):
                  f"{len(load_watchlist())} target rule(s)")
     key = (api_key if api_key is not None else LLM_API_KEY).strip()
     if key in PLACEHOLDER_API_KEYS:
-        log_callback("No API key configured. Add DEEPSEEK_API_KEY to .env.")
+        log_callback("No API key configured. Add LLM_API_KEY to .env to enable the AI stages.")
         log_callback("HB Briefing still runs in offline heuristic mode without one.")
         return 1
 

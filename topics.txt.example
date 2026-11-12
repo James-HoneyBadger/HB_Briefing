@@ -6,9 +6,9 @@
 #  when no enforcement, filing or litigation language appears, they are graded
 #  at the interest level you give them, and the AI is told to prioritise them.
 #
-#  Unless "Search Google News for each topic" is switched off in Settings, each
-#  active topic also becomes its own Google News query feed, so a subject works
-#  without adding a single RSS URL.
+#  Switch on "Search Google News for each topic" in the topics editor and each of
+#  the first 20 active topics also becomes its own Google News query feed, so a
+#  subject works without adding a single RSS URL. It is off by default.
 #
 #  LINE FORMAT - three forms, each a superset of the one above it:
 #
@@ -35,7 +35,8 @@
 #  can switch on a block at a time, so a fresh install never starts by fetching a
 #  hundred feeds. Uncomment what you want, then run a scan.
 #
-#  Limits: 150 active topics, the first 20 also become Google News feeds.
+#  Limits: 300 active topics, 120 characters each. The first 20 can become
+#  Google News feeds (see above).
 #  A topic is matched at a word start, so "chip fab" matches "chip fabs" but the
 #  topic "AI" will not match the word "said".
 # ============================================================================
