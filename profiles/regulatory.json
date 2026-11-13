@@ -292,28 +292,28 @@
   "targets": [
     {
       "match": [
-        "metronet"
+        "acme fiber"
       ],
       "category": "regulatory_action",
       "severity": "high",
-      "note": "default target"
+      "note": "example: the operator I follow - replace with your own subject"
     },
     {
       "match": [
-        "metronet",
+        "acme fiber",
         "better business bureau"
       ],
       "category": "billing_dispute",
       "severity": "high",
-      "note": "complaint pattern around the default target"
+      "note": "example: complaint pattern - narrower rules go first"
     },
     {
       "match": [
-        "kkr"
+        "acme capital"
       ],
       "category": "regulatory_action",
       "severity": "medium",
-      "note": "MetroNet's investor"
+      "note": "example: the subject's investor or parent"
     }
   ]
 }

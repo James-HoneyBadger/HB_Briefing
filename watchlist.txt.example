@@ -6,7 +6,7 @@
 #     match phrase [& phrase] | category | status [| note]
 #
 # - Every phrase joined with "&" must appear, at a word start, in the item's title
-#   or summary. "metronet & bbb" therefore needs both.
+#   or summary. "acme fiber & bbb" therefore needs both.
 # - category: regulatory_action, litigation, billing_dispute, equipment_scam,
 #   deceptive_fees, data_breach, security, policy, other
 # - status (severity): high, medium, low
@@ -19,15 +19,15 @@
 # acme telecom | regulatory_action | high | the company you track
 # jane doe | other | high | principal
 
-# ------------------------------------------------------------------ MetroNet: always top
-# KKR-backed fibre operator; every mention is escalation-grade by request.
-# Narrower rules go first because the first match wins.
-metronet & better business bureau | billing_dispute | high | BBB complaints about MetroNet
-metronet & bbb | billing_dispute | high | BBB complaints about MetroNet
-metronet | regulatory_action | high | MetroNet - always highest significance
+# ------------------------------------------------------- example: one subject, three rules
+# Nothing here is privileged: these are placeholder names, written the way you would write
+# your own. Narrower rules go first because the first match wins.
+# acme fiber & better business bureau | billing_dispute | high | complaints about acme fiber
+# acme fiber & bbb | billing_dispute | high | short form of the same rule
+# acme fiber | regulatory_action | high | acme fiber - every mention matters to me
 
 # --------------------------------------------------------- related parties and regulators
-kkr | regulatory_action | medium | investor
-iowa attorney general | regulatory_action | high | state regulator
-fcc | regulatory_action | medium | federal regulator
-federal communications commission | regulatory_action | medium | federal regulator
+# acme capital | regulatory_action | medium | investor or parent company
+# state attorney general | regulatory_action | high | state regulator
+# fcc | regulatory_action | medium | federal regulator
+# federal communications commission | regulatory_action | medium | federal regulator

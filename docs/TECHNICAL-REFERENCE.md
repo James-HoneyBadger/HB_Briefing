@@ -373,8 +373,8 @@ severity escalator still works.
 
 | File | Categories (core first) | Topics | Targets |
 | --- | --- | --- | --- |
-| *(built-in `DEFAULT_PROFILE`)* | regulatory_action, litigation, billing_dispute, equipment_scam, deceptive_fees, data_breach, security, policy | 18 | 1 sample |
-| `regulatory.json` | identical to the built-in default, materialised as an editable file | 18 | 3 |
+| *(built-in `DEFAULT_PROFILE`)* | regulatory_action, litigation, billing_dispute, equipment_scam, deceptive_fees, data_breach, security, policy | 18 | — |
+| `regulatory.json` | the same vocabulary, materialised as an editable file | 18 | 3 samples |
 | `cybersecurity.json` | vulnerability, exploitation, data_breach, regulatory_action, litigation, advisory | 14 | LockBit, Cl0p, Scattered Spider |
 | `ai_and_silicon.json` | regulatory_action, litigation, export_control, subsidy, market_action, policy | 12 | — |
 | `energy_utilities.json` | regulatory_action, litigation, rate_case, reliability, interconnection, policy | 12 | — |
@@ -386,8 +386,10 @@ severity escalator still works.
 | `general_news.json` | policy, litigation, business, technology, world | 11 | — |
 
 `regulatory.json` exists so a user can copy the default and edit it; the built-in default is
-what runs when no file is present. Both carry the same content, and the sample targets in each
-are placeholders for the operator's own names.
+what runs when no file is present. They carry the same vocabulary, but the built-in default holds
+**no** standing targets: the subject a rule pins is the operator's decision, so the sample file
+demonstrates the shape with three obviously-placeholder ones (`acme fiber`, `acme fiber` +
+complaint venue, an investor) and the core stays subject-agnostic.
 
 **Why most profiles ship no agency targets.** A target pins category *and* severity outright
 (§7.2), so pinning a regulator at `medium` would flatten a genuine high-severity finding down to
@@ -1190,8 +1192,14 @@ message content. Personal identifiers should stay in `watchlist.txt`, not in
 private set. They are git-ignored **and untracked**: `git ls-files <name>` must print nothing for
 each of them. Adding one to `.gitignore` after it was committed does not remove it from the index
 or from history, which is how the operator's own `watchlist.txt` ended up published in this
-repository's early commits; `git rm --cached <name>` is the fix, and purging history needs a
-rewrite.
+repository's early commits; `git rm --cached <name>` removes it going forward, and the shipped
+history has since been rewritten to purge it (`git filter-branch --index-filter`, then
+`git gc --prune=now`, then a force-push).
+
+**No personal data ships.** Nothing in the application — code, profiles, example configs, prompts
+— names a real person, employer or contact address. The sample subjects are placeholders
+(`acme fiber`, `acme capital`, `jane doe`) that a user replaces with their own; the maintainer's
+attribution lives in `LICENSE` and the documentation, never in a shipped config or UI string.
 
 ---
 

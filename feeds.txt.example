@@ -113,15 +113,17 @@ https://news.google.com/rss/search?q=site%3Afcc.gov&hl=en-US&gl=US&ceid=US:en
 https://news.google.com/rss/search?q=telecom+billing+dispute+OR+unreturned+equipment+fee&hl=en-US&gl=US&ceid=US:en
 https://news.google.com/rss/search?q=fiber+internet+billing+fraud+OR+small+claims&hl=en-US&gl=US&ceid=US:en
 
-# MetroNet (KKR-backed fibre operator; all coverage)
-https://news.google.com/rss/search?q=Metronet&hl=en-US&gl=US&ceid=US:en
+# Scoping a subject you track. These are placeholders: replace "Acme Fiber" with the
+# names that matter to you, keep the %22 quotes so a two-word name stays one phrase.
+# Everything published about that subject:
+# https://news.google.com/rss/search?q=%22Acme+Fiber%22&hl=en-US&gl=US&ceid=US:en
 
-# KKR in telecom/fibre context
-# (bare "KKR" would pull the whole private-equity firehose, so scope it)
-https://news.google.com/rss/search?q=%22KKR%22+(Metronet+OR+fiber+OR+broadband+OR+telecom+OR+ISP)&hl=en-US&gl=US&ceid=US:en
+# That subject plus the regulators and complaint venues that matter in telecoms.
+# (The bare name in a broad query pulls the whole sector, so scope related parties too.)
+# https://news.google.com/rss/search?q=%22Acme+Fiber%22+(FCC+OR+%22Federal+Communications+Commission%22+OR+%22Attorney+General%22+OR+%22Better+Business+Bureau%22+OR+BBB)&hl=en-US&gl=US&ceid=US:en
 
-# MetroNet + FCC / Iowa AG / Better Business Bureau
-https://news.google.com/rss/search?q=Metronet+(FCC+OR+%22Federal+Communications+Commission%22+OR+%22Iowa+Attorney+General%22+OR+%22Better+Business+Bureau%22+OR+BBB)&hl=en-US&gl=US&ceid=US:en
+# An investor or parent company, kept in-sector.
+# https://news.google.com/rss/search?q=%22Acme+Capital%22+(fiber+OR+broadband+OR+telecom+OR+ISP)&hl=en-US&gl=US&ceid=US:en
 
-# Iowa Attorney General, telecom context
-https://news.google.com/rss/search?q=%22Iowa+Attorney+General%22+(telecom+OR+fiber+OR+broadband+OR+%22internet+service%22)&hl=en-US&gl=US&ceid=US:en
+# A state regulator in a sector context.
+# https://news.google.com/rss/search?q=%22Attorney+General%22+(telecom+OR+fiber+OR+broadband+OR+%22internet+service%22)&hl=en-US&gl=US&ceid=US:en

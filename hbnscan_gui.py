@@ -611,7 +611,7 @@ class NewsScanApp(tk.Tk):
         self.footer_lbl.configure(
             text=f"Active Feeds: {feeds_count}  |  Signals: {flagged_total} "
                  f"({high_total} high)  |  {scan_mode}  |  AI: {ai_mode}{window_text}"
-                 f"  |  MIT License — James-HoneyBadger"
+                 f"  |  MIT Licensed — see LICENSE"
         )
 
     def _on_filter_changed(self, key, value):

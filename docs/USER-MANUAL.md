@@ -654,8 +654,8 @@ drop it back in the folder, and it appears in the Settings dropdown.
 
 | File | Focus | Topics | Targets |
 | --- | --- | --- | --- |
-| *(built-in)* | regulatory and legal action in telecoms and ISPs (shipped default) | 18 | 1 sample |
-| `regulatory.json` | the default, materialised as a file to copy and edit | 18 | 3 |
+| *(built-in)* | regulatory and legal action in telecoms and ISPs (shipped default) | 18 | — |
+| `regulatory.json` | the default vocabulary, materialised as a file to copy and edit | 18 | 3 samples |
 | `cybersecurity.json` | vulnerability and exploitation | 14 | 3 |
 | `ai_and_silicon.json` | AI and semiconductor regulation, export controls, antitrust | 12 | — |
 | `energy_utilities.json` | rate cases, grid access, reliability, wildfire liability | 12 | — |
@@ -784,14 +784,17 @@ An item naming every phrase in `match` (word-start, case-insensitive) is pinned 
 category and severity, marked `[Watchlist]`, and sorted into the highest tier. Your
 `watchlist.txt` is consulted **before** the profile's targets, so a local rule always wins a
 tie. A profile with `"targets": []` is perfectly valid — most shipped profiles have none, and
-expect you to add your own parties locally.
+expect you to add your own parties locally. The built-in default is one of them; only
+`regulatory.json` carries examples, three placeholder rules that show the three shapes worth
+copying: one subject, a subject plus a complaint venue, and an investor.
 
 ---
 
 ## 13. Appearance and keyboard
 
-**Themes.** Dark (default) and light, switchable in Settings and applied to every widget
-instantly — including the table, log, dialogs and menus.
+**Themes.** Five palettes — dark (default), light, midnight, solarized and high contrast —
+switchable in Settings and applied to every widget instantly, including the table, log, dialogs
+and menus.
 
 **Text size.** 80–150 %, scaling all fonts proportionally for dense tables or high-DPI screens.
 

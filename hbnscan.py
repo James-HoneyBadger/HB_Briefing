@@ -213,10 +213,9 @@ DEFAULT_PROFILE = {
          "group": "Consumer and billing"},
         {"label": "broadband price increase", "severity": "low", "group": "Consumer and billing"},
     ],
-    "targets": [
-        {"match": ["metronet"], "category": "regulatory_action", "severity": "high",
-         "note": "default target"},
-    ],
+    # No baked-in subject: targets are profile data, not core policy. A profile ships its
+    # own examples (profiles/*.json) and the operator adds theirs in watchlist.txt.
+    "targets": [],
 }
 
 SEVERITIES = ("high", "medium", "low", "none")
@@ -1305,8 +1304,9 @@ def load_watchlist():
     title or summary. A match overrides keyword scoring with the rule's own category
     and status, so an operator can promote any subject without touching the code.
 
-    The profile supplies targets that ship with it (MetroNet in the default profile);
-    the user's file is consulted first so a local rule always wins a tie.
+    The profile supplies whatever targets it ships with (the sample profiles carry a few
+    obviously-placeholder ones); the user's file is consulted first so a local rule always
+    wins a tie.
     """
     file_key = None
     if WATCHLIST_PATH.exists():
