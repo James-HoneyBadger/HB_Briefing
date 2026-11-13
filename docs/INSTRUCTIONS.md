@@ -1,8 +1,9 @@
 # HB Briefing — Instructions
 
 Task-oriented steps for getting HB Briefing running and keeping it tuned. For the full
-interface walkthrough see the [User Manual](./USER-MANUAL.md); for internals, schema and
-algorithms see the [Technical Reference](./TECHNICAL-REFERENCE.md).
+interface walkthrough see the [User Manual](./USER-MANUAL.md); for the browser and terminal
+front ends see [Web App and Terminal UI](./WEB-APP.md); for internals, schema and algorithms
+see the [Technical Reference](./TECHNICAL-REFERENCE.md).
 
 ---
 
@@ -45,7 +46,9 @@ cd hb-news-scan
 ```bash
 python3 -m pip install -r requirements.txt
 python3 hbnscan.py            # one scan, writes latest_report.md
-python3 -m hbnscan_gui.py     # optional desktop UI
+python3 hbnscan.py --tui      # terminal interface
+python3 hbnscan.py --serve    # web app at http://127.0.0.1:8765
+python3 hbnscan_gui.py        # desktop interface
 ```
 
 On first start these files are created if absent:
@@ -75,11 +78,15 @@ configuration check. Every scan prints the same line at the top of its log.
 
 ## 2. Run a scan
 
-Three ways, same pipeline:
+Four front ends, one pipeline:
 
-- **GUI** — press **RUN WATCHDOG SCAN**. Progress and a live log appear; **■ Stop** cancels.
+- **Desktop** — press **▶ Run Scan Now**. Progress and a live log appear; **■ Stop** cancels.
+- **Web** — press **Run scan** in the browser; the same log and grid, no Tk needed.
+- **Terminal** — press `r` in the TUI; `x` cancels.
 - **One shot** — `python3 hbnscan.py`.
-- **Continuous** — `python3 hbnscan.py --daemon`, or tick **Auto-Scan** in the GUI.
+- **Continuous** — `python3 hbnscan.py --daemon`, or switch scheduled scanning on in any front end.
+
+See [Web App and Terminal UI](./WEB-APP.md) for the browser and terminal interfaces.
 
 A scan fetches feeds, skips items already seen, filters by your date window, scores new
 items, deep-reads the best candidates, writes `latest_report.md`, refreshes the briefing and
@@ -114,6 +121,13 @@ What makes a good source:
 
 Some publishers refuse automated clients with `HTTP 403` and cannot be fetched at all; the scan
 names the host once and moves on, and a `site:` query still gets their headlines.
+
+`feeds.txt.example` also carries a verified block of **major world, business and technology news
+feeds** (BBC, Guardian, NPR, Al Jazeera, NYT, Washington Post, CBS/ABC/NBC, CBC, DW, France 24,
+Sky, FT, Bloomberg, Economist, Politico, Axios, Ars Technica, The Verge). They ship commented out
+because the default profile is narrow; uncomment the URL lines you want, or start from
+`profiles/general_news.json`. The file also records which outlets could not be included and why
+(Reuters retired RSS; AP and USA Today refuse automated clients).
 
 Feeds that return HTML instead of XML will be reported as unusable; feeds using DTDs are
 rejected by design.
@@ -188,16 +202,34 @@ runs offline.
 
 ## 6. Schedule scanning
 
+Every front end exposes the same three controls — on/off, interval, quiet hours — and writes the
+same two settings.
+
+| Front end | On/off | Interval |
+| --- | --- | --- |
+| Desktop GUI | **Auto-Scan** checkbox in the toolbar | the `every` menu beside it |
+| Web app (`--serve`) | **Scan on a schedule** checkbox | the `every` menu in the same bar |
+| Terminal UI (`--tui`) | `a` | `i` |
+| CLI | `--auto` / `--no-auto` | `--interval N` |
+
+```bash
+python3 hbnscan.py --interval 15          # save the interval and exit
+python3 hbnscan.py --quiet 22:00-06:00    # quiet hours, wraps midnight
+python3 hbnscan.py --quiet off            # back to all day
+python3 hbnscan.py --auto --daemon        # headless loop honouring the above
+```
+
 | Goal | Do this |
 | --- | --- |
-| Scan on a timer while the GUI is open | **Settings → Scanning → Scan automatically** + interval |
-| Scan only outside working hours | Set **Quiet window** start/end (wraps midnight) |
+| Scan on a timer while any front end is open | the on/off control above + an interval |
+| Scan only outside working hours | the quiet window (`22:00-06:00` wraps midnight) |
 | Run headless forever | `python3 hbnscan.py --daemon` |
-| Run headless via systemd/user session | Add a `ExecStart` line pointing at `--daemon` |
+| Run headless via systemd/user session | an `ExecStart` line pointing at `--daemon` |
 | Scan once, from cron | `*/30 * * * * cd /path/to/hb-news-scan && python3 hbnscan.py` |
+| Stop the timer but keep manual runs | switch auto off; **Run scan** and one-shot commands still work |
 
-Intervals are 5–1440 minutes. Only one scan runs at a time: a file lock prevents overlap, and
-the GUI refuses a second instance.
+Intervals are 5–1440 minutes. Only one scan runs at a time: a file lock prevents overlap, and the
+desktop GUI refuses a second instance.
 
 ---
 
@@ -279,7 +311,7 @@ flagged `[Topic]`, is ranked with your watchlist hits, and cannot be dismissed b
 Tick **Search Google News for each active topic** and the first 20 topics also become query
 feeds, so new subjects start producing items on the next scan (off by default).
 
-**Insert Topic Library** in the editor appends a ready-made catalogue — 20 groups, roughly 210
+**Insert Topic Library** in the editor appends a ready-made catalogue — 20 groups, roughly 220
 subjects across telecom, energy, health, finance, transport, platforms, AI, consumer products
 and more — all commented out for you to pick from.
 
@@ -343,7 +375,9 @@ targets syntax are in
 | Re-sort | Click a column heading, or pick an order in the Rows bar |
 | Limit table size | **Rows:** box (50–5000) |
 | Read the narrative summary | **AI Briefing** tab |
-| Change colours or text size | **Settings → Appearance** (dark/light theme, 80–150 % text) |
+| Change colours or text size | **Settings → Appearance** (five themes, 80–150 % text) |
+| Use a browser instead of the desktop window | `python3 hbnscan.py --serve` (§2) |
+| Work over SSH | `python3 hbnscan.py --tui` (§2) |
 | Resize panes | Drag the horizontal divider; size and position are remembered |
 | Check what a scan cost | Settings/log: calls, prompt and completion tokens per run |
 | Repair old classifications | `python3 hbnscan.py --reclassify --dry-run` then without `--dry-run` |
@@ -364,6 +398,11 @@ targets syntax are in
 | `python3 hbnscan.py --export FILE --format csv` | Force a format; canonical names (`markdown`, `text`, `html`, `csv`, `json`, `docx`) and suffix aliases (`md`, `txt`) both work |
 | `python3 hbnscan.py --reclassify` | Re-derive category/severity for offline rows, keep flags |
 | `python3 hbnscan.py --reclassify --dry-run` | Show what reclassification would change |
+| `python3 hbnscan.py --serve` | Web app on `127.0.0.1:8765`; the app's own flags are `--port`, `--host`, `--token`, `--no-browser`, `--no-request-log` |
+| `python3 hbnscan.py --tui` | Terminal interface |
+| `python3 hbnscan.py --interval 15` | Set the scan interval and exit |
+| `python3 hbnscan.py --auto` / `--no-auto` | Turn scheduled scanning on or off and exit |
+| `python3 hbnscan.py --quiet 22:00-06:00` | Set quiet hours (wraps midnight); `--quiet off` clears them |
 | `python3 -m hbnscan_gui` | Start the desktop interface |
 
 Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.

@@ -139,11 +139,11 @@ and secrets.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ HB BRIEFING            v1.0.0 | two-stage triage, deep reads, briefing    │
+│ HB BRIEFING     v1.0.0 | HB Briefing | weighted triage, deep reads …      │
 │                                        ● IDLE | READY                    │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ ▶ Run Scan Now │ ✎ Edit Feeds │ ⚙ Settings │ ⤓ Export │ 📄 Open Report │
-│ 🗑 Clear Logs │ ■ Stop │ ▓▓▓ progress                        □ Auto-Scan │
+│ ▶ Run Scan Now │ ✎ Edit Feeds │ 🎯 Topics │ ⚙ Settings │ ⤓ Export │ 📄 Report │
+│ 🗑 Clear Logs │ ■ Stop │ ▓▓▓ progress           □ Auto-Scan  every [30 ▾] │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ ┌ Flagged Signals │ AI Briefing ┐                                       │
 │ │ FLAGGED INTELLIGENCE SIGNALS (Double-click row to open URL)           │
@@ -178,6 +178,7 @@ and secrets.
 | **🗑 Clear Logs** | Clears the log pane only (no data is deleted) |
 | **■ Stop** | Requests cancellation; the scan finishes the item in flight |
 | **Auto-Scan** | Enables the scheduled loop according to the interval and quiet window |
+| **every [N ▾]** | The scan interval: 5, 10, 15, 30, 60, 120 or 240 minutes, saved the moment you pick it |
 
 **Signal table** — five columns: time detected, severity, category, headline, assessment.
 Headlines are colour-coded by severity (high, medium, low); declared-interest hits are marked
@@ -191,7 +192,24 @@ model confidence, the suggested next step and the canonical link.
 stage-2 outcomes, token usage, notification results, warnings. It is the first place to look
 when something behaves unexpectedly.
 
-**Footer** — feed count, active database and licence.
+**Footer** — feed count, active database, active AI provider and licence.
+
+### 3.1 The other three front ends
+
+The desktop window is one of four, and all of them drive the same engine over the same database
+and `settings.json`:
+
+| Front end | Start it with | Trade-off |
+| --- | --- | --- |
+| Desktop GUI | `./start.sh` | Richest: full editors, dialog settings, details pane |
+| Web app | `python3 hbnscan.py --serve` | Browser on the same machine; no Tk required |
+| Terminal UI | `python3 hbnscan.py --tui` | Works over SSH; keyboard only |
+| CLI | `python3 hbnscan.py` | Nothing interactive: cron, scripts, exports |
+
+Switching between them is safe at any time — a scan started in one appears in the others on
+their next refresh, and the interval or theme you set in one is what the rest show. Full
+walkthrough of the browser and terminal interfaces, including the HTTP API and TUI key map:
+[Web App and Terminal UI](./WEB-APP.md).
 
 ---
 
@@ -415,10 +433,15 @@ no key the engine runs offline and says so.
 
 ### 8.4 Scanning
 
-- **Scan automatically** — enables the scheduled loop (`auto_scan`).
-- **Every N minutes** — 5, 10, 15, 30, 60, 120 or 240 (5–1440 accepted in the file).
+- **Scan automatically** — enables the scheduled loop (`auto_scan`). The toolbar checkbox and
+  this one are the same setting.
+- **Every N minutes** — 5, 10, 15, 30, 60, 120 or 240 (5–1440 accepted in the file). Also
+  available from the toolbar's **every** menu without opening this dialog.
 - **Quiet window start / end** — no scans between these clock times; the window wraps midnight
   correctly (`22:00`–`06:00` means overnight). Blank disables the restriction.
+
+These three are shared with the web app, the terminal UI and the CLI; setting them anywhere
+sets them everywhere ([§9](#9-scheduling)).
 
 ### 8.5 Notifications
 
@@ -434,7 +457,9 @@ Transport lives in `.env`; see [§10](#10-notifications).
 
 ### 8.6 Appearance
 
-- **Theme** — dark or light, applied immediately and remembered.
+- **Theme** — one of five palettes: `dark`, `light`, `midnight`, `solarized`, `contrast`. Applied
+  immediately and remembered; the web app offers the same five, so a shared `settings.json`
+  keeps both looking the same.
 - **Text size** — 80 % to 150 % scaling for the whole interface, for dense tables or large displays.
 - Window size, position, maximised state and pane divider position persist automatically.
 
@@ -442,10 +467,31 @@ Transport lives in `.env`; see [§10](#10-notifications).
 
 ## 9. Scheduling
 
-Two independent mechanisms, both respecting the same schedule:
+One schedule, reachable from every interface:
 
-**GUI Auto-Scan** — while the window is open, a timer starts scans at the configured interval,
-skipping any tick inside the quiet window or while a scan is already running.
+| Front end | On/off | Interval | Quiet hours |
+| --- | --- | --- | --- |
+| Desktop GUI | **Auto-Scan** checkbox | the `every` menu beside it | Settings → Scanning |
+| Web app | **Scan on a schedule** checkbox | the `every` menu in the same bar | the `quiet` field |
+| Terminal UI | `a` | `i` (cycles the six presets) | `settings.json` |
+| CLI | `--auto` / `--no-auto` | `--interval N` | `--quiet HH:MM-HH:MM`, or `--quiet off` |
+
+```bash
+python3 hbnscan.py --interval 15            # save and exit; nothing else runs
+python3 hbnscan.py --no-auto --interval 60  # a longer timer, currently paused
+python3 hbnscan.py --quiet 22:00-06:00      # overnight gap
+python3 hbnscan.py --auto --daemon          # headless loop honouring all of it
+```
+
+**Auto-Scan (any interface)** — while the front end is open, a timer starts scans at the
+configured interval, skipping any tick inside the quiet window or while a scan is already
+running.
+
+**Every change is remembered.** The controls above write `settings.json` the moment you touch
+them — there is no *Apply* or *Save* step for the schedule, and no scan will ever put them back.
+The timer, the interval, the quiet window, the grid filters and the theme change only when you
+change them. Because every front end reads that one file, an interval you set in the web app is
+the interval the desktop window and a headless daemon use as well.
 
 **Headless daemon** — `python3 hbnscan.py --daemon` (alias `--watch`) loops until `Ctrl+C`.
 It sleeps in short increments so cancellation is immediate, and logs each cycle. Ideal for a
@@ -466,7 +512,10 @@ WantedBy=default.target
 Design notes:
 
 - **Disabled means idle.** If automatic scanning is off, the daemon does not spin: it waits and
-  re-reads settings, so re-enabling in the GUI takes effect without a restart.
+  re-reads settings, so re-enabling in any front end takes effect without a restart.
+- **The rule is shared.** `next_scan_delay()` in the engine decides every wait, so the daemon,
+  the GUI, the web app and the TUI cannot drift apart: auto off means no schedule, a scan fires
+  immediately at startup when auto is on, and a tick inside quiet hours waits for the window.
 - **Quiet hours are inclusive of the end boundary and wrap midnight.**
 - **Overlap is impossible** thanks to the scan lock; a slow scan delays the next tick rather
   than stacking.
@@ -713,7 +762,7 @@ The active set is the profile's `topics` array **plus** your `topics.txt`, in th
 in `topics.txt` whose wording matches a profile topic replaces it, which is how you re-grade or
 re-group a shipped topic without copying the whole set. Duplicates are ignored.
 
-`topics.txt.example` ships an empty, heavily annotated library of 20 groups and about 210
+`topics.txt.example` ships an empty, heavily annotated library of 20 groups and about 220
 subjects across many interests — telecom, energy, health, finance, transport, platforms, AI,
 consumer products, environment, labour, education and more. Press **Insert Topic Library** in
 the topics editor to append it, then uncomment what you want.
@@ -892,7 +941,28 @@ falls back to the heuristic rather than storing a malformed verdict.
 ### A second GUI will not start
 
 Single-instance lock, by design — two windows writing one database would fight. If you are
-certain no instance is running, delete `.hb-briefing-gui.lock`.
+certain no instance is running, delete `.hb-briefing-gui.lock`. The web app and TUI are
+not affected: they may run alongside it.
+
+### The web app refuses my browser, or the page goes blank
+
+Two guards, both deliberate. It binds to `127.0.0.1` and rejects any request whose `Host`
+header is not a loopback name (HTTP 421) to defeat DNS rebinding, so reach it as
+`http://127.0.0.1:8765/`, not via a hostname. Every action needs the per-run token, which is
+printed at startup and baked into the page — a reloaded or re-opened URL from the log carries
+it. `--host 0.0.0.0` is possible but puts an unauthenticated API on your network; use a reverse
+proxy with TLS and auth if you need that.
+
+### The TUI shows a black screen or garbles
+
+Use a terminal with UTF-8 and at least 80×24; the keys are listed in the footer and in
+[WEB-APP.md](./WEB-APP.md). `q` quits. If it exits instantly, `python3 -c "import curses"`
+tells you whether curses is present.
+
+### A CLI option changed my settings but nothing ran
+
+By design: `--interval`, `--auto`/`--no-auto` and `--quiet` edit `settings.json` and exit 0.
+Add `--daemon` to act on them, or press Run Scan in any front end.
 
 ### Does it work without any API key at all?
 
@@ -918,8 +988,10 @@ and the locks are per-directory, so instances do not interfere.
 
 | Path | Role | Safe to edit |
 | --- | --- | --- |
-| `hbnscan.py` | engine: feeds, scoring, AI, report, exports, notifications, daemon | for development |
+| `hbnscan.py` | engine: feeds, scoring, AI, report, exports, notifications, daemon, scheduling rule | for development |
 | `hbnscan_gui.py` | Tkinter desktop interface | for development |
+| `hbnweb.py` | browser interface and its HTTP API (standard library HTTP server) | for development |
+| `hbntui.py` | curses terminal interface | for development |
 | `start.sh` | dependency bootstrap and launcher | yes, for your environment |
 | `install_autostart.sh` | desktop autostart entry | yes |
 | `.env` | key, provider, SMTP, pipeline tuning | **yes — keep private** |
@@ -931,12 +1003,12 @@ and the locks are per-directory, so instances do not interfere.
 | `profile.json` | your domain override (optional) | yes |
 | `profiles/*.json` | ten shipped profiles (rules + topics + targets) | copy, do not overwrite |
 | `topics.txt` | your standing subjects | **yes — keep private** |
-| `topics.txt.example` | annotated topic library, ~210 subjects in 20 groups | copy into `topics.txt` |
+| `topics.txt.example` | annotated topic library, over 200 subjects in 20 groups | copy into `topics.txt` |
 | `settings.json` | GUI state | written by the app |
 | `watchdog_state.db` | all collected data | back up, do not hand-edit |
 | `latest_report.md` | most recent report | regenerated |
 | `requirements.txt` | Python dependencies | yes |
-| `docs/` | these documents | yes |
+| `docs/` | these documents, including [WEB-APP.md](./WEB-APP.md) for the browser and terminal interfaces | yes |
 
 ### Glossary
 

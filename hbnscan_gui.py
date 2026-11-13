@@ -43,7 +43,33 @@ THEMES = {
         "accent": "#b45309", "accent_hover": "#92400e",
         "green": "#047857", "red": "#b91c1c",
     },
+    "midnight": {
+        "bg_main": "#0a0e17", "bg_panel": "#111827", "bg_accent": "#1c2740",
+        "bg_input": "#070a11", "bg_select": "#2b3a5c", "log_fg": "#a5b4cf",
+        "fg_text": "#e5ecf8", "fg_muted": "#7b8aa8",
+        "accent": "#60a5fa", "accent_hover": "#3b82f6",
+        "green": "#22c55e", "red": "#f87171",
+    },
+    "solarized": {
+        "bg_main": "#fdf6e3", "bg_panel": "#eee8d5", "bg_accent": "#dfd9c3",
+        "bg_input": "#fffbf0", "bg_select": "#cfc9b3", "log_fg": "#586e75",
+        "fg_text": "#073642", "fg_muted": "#657b83",
+        "accent": "#b58900", "accent_hover": "#8f6c00",
+        "green": "#859900", "red": "#dc322f",
+    },
+    "contrast": {
+        "bg_main": "#000000", "bg_panel": "#0b0b0b", "bg_accent": "#1f1f1f",
+        "bg_input": "#000000", "bg_select": "#3a3a3a", "log_fg": "#ffffff",
+        "fg_text": "#ffffff", "fg_muted": "#d0d0d0",
+        "accent": "#ffd400", "accent_hover": "#ffb700",
+        "green": "#00ff88", "red": "#ff4d4d",
+    },
 }
+
+if tuple(THEMES) != hbnscan.THEME_NAMES:
+    raise RuntimeError(
+        f"GUI palettes {tuple(THEMES)} do not match hbnscan.THEME_NAMES "
+        f"{hbnscan.THEME_NAMES}; add the palette here or remove the name in the engine")
 
 BG_MAIN = BG_PANEL = BG_ACCENT = BG_INPUT = BG_SELECT = ""
 FG_TEXT = FG_MUTED = LOG_FG = AMBER = AMBER_HOVER = GREEN = RED = ""
@@ -152,6 +178,11 @@ class NewsScanApp(tk.Tk):
                   background=[("selected", BG_PANEL)],
                   foreground=[("selected", AMBER)])
 
+    def _header_subtitle(self):
+        """Name the profile in force: it can change without restarting."""
+        return (f"v1.0.0  |  {hbnscan.PROFILE.get('name', hbnscan.APP_NAME)}  |  "
+                "Weighted triage, ranked deep reads & written briefing")
+
     def _build_ui(self):
         # Top Header Bar
         header = tk.Frame(self, bg=BG_PANEL, height=64, padx=18, pady=10)
@@ -161,11 +192,9 @@ class NewsScanApp(tk.Tk):
         title_box.pack(side=tk.LEFT)
         tk.Label(title_box, text="HB BRIEFING", bg=BG_PANEL, fg=AMBER,
                  font=("Sans", 14, "bold")).pack(anchor="w")
-        profile_label = hbnscan.APP_NAME
-        tk.Label(title_box,
-                 text=f"v1.0.0  |  {profile_label}  |  Two-stage AI triage, deep reads & "
-                      "daily briefing",
-                 bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9)).pack(anchor="w")
+        self.header_sub_lbl = tk.Label(title_box, text=self._header_subtitle(),
+                                       bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 9))
+        self.header_sub_lbl.pack(anchor="w")
 
         # Status Badge
         status_box = tk.Frame(header, bg=BG_PANEL)
@@ -216,10 +245,24 @@ class NewsScanApp(tk.Tk):
         self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=120)
         self._progress_packed = False
 
+        self.interval_var = tk.StringVar(value=str(self.settings["scan_interval_minutes"]))
+        interval_menu = tk.OptionMenu(
+            toolbar, self.interval_var,
+            *[str(v) for v in (5, 10, 15, 30, 60, 120, 240)],
+            command=self._on_interval_changed)
+        interval_menu.configure(bg=BG_ACCENT, fg=FG_TEXT, activebackground=BG_SELECT,
+                                relief="flat", font=("Sans", 9), highlightthickness=0, bd=0,
+                                indicatoron=False, padx=8, pady=3, cursor="hand2")
+        interval_menu["menu"].configure(bg=BG_PANEL, fg=FG_TEXT, activebackground=BG_ACCENT,
+                                       activeforeground=AMBER, font=("Sans", 9))
+        interval_menu.pack(side=tk.RIGHT, padx=(0, 6))
+        tk.Label(toolbar, text="every", bg=BG_MAIN, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(side=tk.RIGHT, padx=(0, 4))
+
         tk.Checkbutton(toolbar, text="Auto-Scan", variable=self.auto_enabled,
                        command=self._on_auto_toggle,
                        bg=BG_MAIN, fg=FG_TEXT, selectcolor=BG_PANEL, activebackground=BG_MAIN,
-                       font=("Sans", 10)).pack(side=tk.RIGHT)
+                       font=("Sans", 10)).pack(side=tk.RIGHT, padx=(0, 8))
 
         # Main Split Area
         paned = tk.PanedWindow(self, orient=tk.VERTICAL, bg=BG_MAIN, sashwidth=6,
@@ -1222,6 +1265,7 @@ class NewsScanApp(tk.Tk):
             if profile_changed:
                 active = hbnscan.apply_profile()
                 source = hbnscan.active_profile_path()
+                self.header_sub_lbl.configure(text=self._header_subtitle())
                 self.log(f"[INFO] Profile: {active['name']} "
                          f"({source.name if source.exists() else 'built-in default'}) - "
                          f"{len(hbnscan.CATEGORIES)} categories, "
@@ -1335,6 +1379,11 @@ class NewsScanApp(tk.Tk):
         enabled = self.auto_enabled.get()
         hbnscan.save_settings(auto_scan=enabled)
         self.log(f"[AUTO] Automatic scanning {'enabled' if enabled else 'disabled'}.")
+        self._reschedule_auto_scan()
+
+    def _on_interval_changed(self, value):
+        hbnscan.save_settings(scan_interval_minutes=value)
+        self.log(f"[AUTO] Scan interval set to every {value} minute(s).")
         self._reschedule_auto_scan()
 
     def _reschedule_auto_scan(self):

@@ -8,6 +8,7 @@ can be. Domain-specific examples come from whichever profile is active — the m
 same for any feed set.
 
 - Operating it: [User Manual](./USER-MANUAL.md). Short tasks: [Instructions](./INSTRUCTIONS.md).
+- Browser and terminal front ends, including the HTTP API: [Web App and Terminal UI](./WEB-APP.md).
 
 **Contents**
 
@@ -28,7 +29,7 @@ same for any feed set.
 15. [Export pipeline](#15-export-pipeline)
 16. [Notifications](#16-notifications)
 17. [Operational runbook](#17-operational-runbook)
-18. [GUI internals](#18-gui-internals)
+18. [Front ends](#18-front-ends)
 19. [Security posture](#19-security-posture)
 20. [Performance, limits and cost](#20-performance-limits-and-cost)
 21. [Extension points](#21-extension-points)
@@ -96,38 +97,44 @@ The design choices that follow from that:
 
 | File | Lines (approx.) | Responsibility |
 | --- | --- | --- |
-| `hbnscan.py` | 3 253 | Engine: profiles, topics, feeds, scoring, AI, storage, report, exports, notifications, daemon, CLI |
-| `hbnscan_gui.py` | 1 428 | Tkinter interface; imports the engine, never reimplements it |
+| `hbnscan.py` | 3 560 | Engine: profiles, topics, feeds, scoring, AI, storage, report, exports, notifications, scheduling, daemon, CLI |
+| `hbnscan_gui.py` | 1 470 | Tkinter desktop interface; imports the engine, never reimplements it |
+| `hbnweb.py` | 990 | Browser interface: `ThreadingHTTPServer`, JSON API, embedded page |
+| `hbntui.py` | 465 | Curses terminal interface |
 | `start.sh` | 85 | Interpreter discovery, dependency bootstrap, `.example` seeding, launch |
 | `install_autostart.sh` | 57 | XDG desktop entry + login autostart |
 | `profiles/*.json` | — | Ten complete domain bundles |
-| `docs/*.md` | — | Instructions, manual, this reference |
+| `docs/*.md` | — | Instructions, manual, front ends, this reference |
+
+No front end contains pipeline logic. Each one reads the database, calls the same engine
+functions (`run_scan`, `export_items`, `build_briefing`, `next_scan_delay`, `apply_profile`) and
+writes the same `settings.json`, which is why behaviour cannot diverge between them.
 
 The engine has no `if __name__`-time side effects beyond `apply_profile()` and
-`load_dotenv()`, which is what lets the GUI, the tests and the CLI share it.
+`load_dotenv()`, which is what lets the GUI, the web app, the TUI, the tests and the CLI share it.
 
 ### 2.1 Internal sections of `hbnscan.py`
 
 The file is a flat module organised by banner comments, in dependency order:
 
 ```
-constants & env          lines ~40–250    paths, LLM config, budgets, limits
-profiles                 ~250–670         DEFAULT_PROFILE, resolution, normalisation, apply
-settings                 ~670–890         schema, coercion, load/save
-feed parsing             ~890–1050        Atom/RSS parsing, safe_link, aggregator decode
-storage                  ~1050–1145       init_db, feed_state, pruning, lock
-watchlist                ~1145–1230       parse, match, prompt block
-topics                   ~1230–1385       parse, merge, match, groups, feeds
-AI layer                 ~1545–1710       JSON extraction, payload, _call_deepseek
-heuristic scoring        ~1708–1890       _has, _signals_in, categories, apply_* layers
-stages                   ~1888–2090       analyze_item, deep_read_item, build_briefing
-scan                     ~2085–2330       run_scan, _run_scan
-notifications            ~2330–2525       config, pending, SMTP, test
-export                   ~2525–2890       renderers, filters, OOXML writer
-scheduling               ~2890–2935       run_daemon
-dismiss / reclassify     ~2935–3035       row-state transitions
-report                   ~3035–3160       write_report, summary and new-since blocks
-CLI                      ~3160–end        --check, --export, --daemon, --reclassify
+constants & env          1–121      paths, LLM config, budgets, limits
+profiles                 122–748    DEFAULT_PROFILE, resolution, normalisation, apply
+scheduling rule          749–872    next_scan_delay, describe_schedule, THEME_NAMES
+settings                 873–1136   schema, coercion, load/save, palettes
+database                 1137–1246  init_db, feed_state, pruning, scan lock
+watchlist                1247–1332  parse, match, prompt block
+topics                   1333–1484  parse, merge, match, groups, feeds
+feeds                    1485–1696  fetch, conditional GET, parse, aggregator decode
+AI layer                 1697–2248  payload, _call_deepseek, heuristic, categories, layers
+scan                     2249–2516  analyze_item, deep_read_item, build_briefing, run_scan
+notifications            2517–2727  config, pending, SMTP/SMS, test
+export                   2728–3106  renderers, filters, OOXML writer
+scheduling               3107–3150  run_daemon
+dismissals               3151–3191  row-state transitions
+reclassify               3192–3263  offline re-derivation
+report                   3264–3430  write_report, summary and new-since blocks
+CLI                      3399–end   check_api, _apply_cli_schedule, --check/--export/--serve/--tui/…
 ```
 
 ---
@@ -145,12 +152,27 @@ migrations, and reclassify writes unless `--dry-run`).
 every 80 ms (`_drain_ui_queue`). The same rule applies to the notification test thread and the
 export thread. Breaking it produces the classic Tcl "main thread is not in main loop" abort.
 
+**Web app.** `ThreadingHTTPServer` on `127.0.0.1:8765` serves one embedded page and a small JSON
+API. The handler thread never scans: `/api/scan` flips a module-level `SCAN` dict under
+`SCAN_LOCK` and starts a `threading.Thread` that calls `run_scan(log_callback=…)`, appending log
+lines to a bounded deque. A separate scheduler thread wakes every 5 s, asks `next_scan_delay()`
+and starts a scan when it returns `0`. Reads (`/api/signals`, `/api/briefing`) open their own
+`sqlite3` connections per request — the connection object is not shareable across threads, and
+SQLite's own locking serialises them. Request logging goes to stderr so the scan log stays
+readable.
+
+**TUI.** A single-threaded `curses` loop: `screen.timeout(250)` then `getch`, so the loop stays
+responsive without blocking. A scan runs in a worker thread that only appends to a `deque`; the
+loop drains it into the log pane and calls `addstr` through a wrapper that swallows
+`curses.error` at the screen edges. The scheduler is the same rule as everywhere else, evaluated
+each tick.
+
 **Locks.**
 
 | Lock | File | Scope |
 | --- | --- | --- |
-| Scan | `scan.lock` | `fcntl.flock(LOCK_EX|LOCK_NB)` held for the duration of `run_scan`; a second scan (CLI, daemon or GUI) logs *"Another scan is already running"* and returns `(0, 0)` |
-| GUI | `.hb-briefing-gui.lock` | `flock` held by a running GUI; a second launch exits with a message instead of opening a second window |
+| Scan | `scan.lock` | `fcntl.flock(LOCK_EX|LOCK_NB)` held for the duration of `run_scan`; a second scan (CLI, daemon, GUI, web or TUI) logs *"Another scan is already running"* and returns `(0, 0)` |
+| GUI | `.hb-briefing-gui.lock` | `flock` held by a running GUI; a second launch exits with a message instead of opening a second window. The web app and TUI take no lock of their own and may run beside it |
 
 Both are `*.lock`, hence gitignored. Neither is removed on exit: `flock` releases with the
 process, and the file is a stable rendezvous point. A stale *empty* lock file is harmless;
@@ -197,7 +219,7 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 | `notify_include_watchlist` | bool | Keep (`true`) or exclude declared-interest hits from the digest — **`[Watchlist]` rules and `[Topic]` matches both** |
 | `notify_min_severity` | enum | `high` or `medium` |
 | `notify_max_items` | int | Clamped 1–20 |
-| `theme` | enum | `dark` or `light`, keyed into `THEMES` and applied by `apply_theme()` |
+| `theme` | enum | One of `hbnscan.THEME_NAMES` — `dark`, `light`, `midnight`, `solarized`, `contrast`. The engine owns the list so `SETTING_CHOICES`, the GUI `THEMES` dict and the web CSS palettes cannot drift; the GUI validates its own dict against it at import and raises `RuntimeError` on a mismatch, and an unknown stored value falls back to `dark` |
 | `window_geometry` | string | `WINDOW_GEOMETRY_RE` (`1200x800+10+10`) |
 | `window_state` | enum | `normal`, `zoomed` |
 | `sash` | int | 0–4000 |
@@ -206,6 +228,20 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 `save_settings(**values)` merges, coercing each value, and rewrites the whole file. Because
 booleans are `int` subclasses in Python, `_coerce_setting` tests `isinstance(default, bool)`
 **before** the integer branch — reversing that silently turns `False` into `0`.
+
+A write that cannot be used falls back to **the value already stored**, not to the factory
+default, so a bad number, an unknown theme name or a malformed date leaves the setting exactly as
+it was; a legal-but-out-of-range number is still clamped (`scan_interval_minutes=9999` → `1440`).
+Keys in `BLANK_SETTINGS` (`feed_since`, `feed_until`, `scan_window_start`, `scan_window_end`,
+`profile`, `window_geometry`) accept `""` as a real choice — that is how a date window or a quiet
+period is cleared.
+
+**Only a user action writes settings.** `run_scan()` and every other scan path read
+`settings.json` and never write it, so completing a scan cannot revert an interval, a quiet
+window, a filter or a theme; a caller that persists a *partial* change passes only the keys it
+touched, because the merge base is always the file on disk, not an in-memory snapshot. Each front
+end persists the moment the control changes rather than on a separate *Apply* step, so what the
+screen shows is what the file holds.
 
 ### 4.2 Environment variables
 
@@ -225,6 +261,38 @@ booleans are `int` subclasses in Python, `_coerce_setting` tests `isinstance(def
 
 `_env_flag` treats `0/false/no/off` as false and anything else as true, so `WATCHDOG_BRIEFING=0`
 is the documented off switch.
+
+---
+
+### 4.3 The scheduling rule
+
+Every front end asks the engine the same question, so the four cannot drift apart:
+
+```python
+def next_scan_delay(settings, last_started=None, now=None):
+    if not settings.get("auto_scan"):
+        return None                      # nothing scheduled; manual runs still work
+    interval = settings["scan_interval_minutes"] * 60
+    if not in_scan_window(settings, now):
+        return min(max(seconds_until_window(settings, now), 60), interval)
+    if last_started is None:
+        return 0                         # startup with auto on: scan now
+    return max(0, int(interval - (now - last_started).total_seconds()))
+```
+
+- `None` means *stop scheduling* — the caller sleeps and re-reads settings, so switching auto
+  back on in another front end takes effect within one poll.
+- Outside quiet hours the wait is **capped at one interval**, so a long quiet window still
+  produces a poll per interval rather than a multi-hour sleep that would miss a settings change.
+- The floor of 60 s keeps a window boundary from spinning.
+- `now` and `last_started` are injectable, which is what the verification harnesses use to test
+  a whole week of boundaries without waiting.
+- `describe_schedule(settings)` turns the same state into `every 30 min, quiet 22:00-06:00` (or
+  `manual`), used verbatim by the GUI status line, the web schedule bar and the TUI footer.
+
+Writing the setting is deliberately separate from acting on it: `--interval`, `--auto` and
+`--quiet` persist to `settings.json` and exit 0, and only `--daemon` (or a running front end)
+reads the result.
 
 ---
 
@@ -426,7 +494,7 @@ topics are written. Cost control: only the
 first 20 topics become queries, and the feed cap (`MAX_NEW_PER_FEED`) plus the triage budget
 bound the work per scan.
 
-`topics.txt.example` holds the annotated library (20 groups, ~210 subjects, every line
+`topics.txt.example` holds the annotated library (20 groups, ~220 subjects, every line
 commented out); `ensure_data_files` copies it to `topics.txt` on first run.
 
 ### 6.7 Prompt injection
@@ -984,7 +1052,13 @@ hbnscan.dismiss_item(conn, "<item_hash>", undo=True)   # flagged=1, dismissed=0,
 
 ---
 
-## 18. GUI internals
+## 18. Front ends
+
+Four thin clients over one engine. Each owns presentation only: layout, input handling and
+formatting. None of them re-derives a verdict, re-implements a filter or writes the database
+directly, so a bug in scoring is fixed once.
+
+### 18.1 GUI internals
 
 `NewsScanApp(tk.Tk)` — one class, sections in this order:
 
@@ -1016,6 +1090,76 @@ Mechanics worth knowing:
 - **Single instance** is enforced with `flock` on `.hb-briefing-gui.lock` before any widget is
   created.
 
+### 18.2 Web front end (`hbnweb.py`)
+
+```
+hbntui/hbnweb ── imports ──► hbnscan  (run_scan, export_items, load_settings, next_scan_delay)
+     │
+     ├─ Handler(ThreadingHTTPServer)  one thread per request
+     ├─ worker thread                 run_scan(log_callback=_log)
+     └─ scheduler thread              scheduler_step() every 5 s
+```
+
+| Area | Members |
+| --- | --- |
+| Server | `serve()` builds `ThreadingHTTPServer`, generates `secrets.token_urlsafe(18)`, sets `Handler.token` and `Handler.allowed_hosts`, starts the scheduler, optionally opens a browser |
+| Transport guards | `_host_ok` (Host header must be a bound loopback name, else 421), `_token_ok` (`secrets.compare_digest` over `X-HB-Token` or `?token=`), `_send` (sets `nosniff`, `no-referrer`, `X-Frame-Options: DENY`, `Cache-Control: no-store`), `_body` (`MAX_BODY` cap, JSON only) |
+| Reads | `_signal_payload`, `one_signal`, `cached_resolution`, `export_document` |
+| Writes | `/api/scan`, `/api/scan/cancel`, `/api/dismiss`, `/api/settings` |
+| Scheduling | `start_scan`, `cancel_scan`, `scheduler_step`, `_scheduler_loop` |
+| Page | one `PAGE` string: markup, CSS with five `html[data-theme=…]` palettes, and vanilla JS. `__TOKEN__` is substituted per request so the page carries its own credential |
+
+Design notes:
+
+- **The page never builds HTML from feed text.** Everything is written with `textContent`, so a
+  headline containing markup is displayed, not interpreted. The alternative — string-concatenated
+  rows — is the classic stored-XSS route in a feed reader.
+- **Scan state is a dict, not a thread handle.** `SCAN` holds `running`, `started`, `cancel` and
+  the log deque; `SCAN_LOCK` guards it. `/api/scan` returns 409 when `running` is true, which
+  matches the engine's own scan lock rather than duplicating the decision.
+- **The scheduler is best-effort.** Any exception in `scheduler_step` is logged and the loop
+  continues; a broken settings file must not kill the web server.
+- **The API is not authenticated beyond the token**, by design: it binds loopback and holds no
+  accounts. `--host 0.0.0.0` is a deliberate footgun documented as such.
+- **Aggregator links are resolved from cache only.** `one_signal` reads
+  `hbnscan.aggregator_cache()`; a request never triggers a network fetch, so a page load cannot
+  block on a publisher.
+- **The page writes through, it does not stage.** Every control in the schedule bar and the
+  filter bar posts its own key to `/api/settings` on `change`, so the file is the only source of
+  truth and a refresh cannot undo an edit. `persistSettings()` keeps the control ids in a
+  `pending` set while the round trip is open and merges the server's reply back into
+  `state.settings`; `syncControls()` skips any control that is pending or still focused. Without
+  that guard the 20 s poll (1.5 s during a scan) would overwrite what the user had just typed.
+  The older design — a *Apply* button plus a full re-read — is what made a completed scan look
+  like it had reset the interval to the default.
+
+### 18.3 Terminal UI (`hbntui.py`)
+
+| Area | Members |
+| --- | --- |
+| State | `State` — filters, cursor, pane, settings snapshot, log deque, scan thread and cancel event |
+| Loop | `main()` — `screen.timeout(250)`, draw, `getch`, dispatch |
+| Input | `handle_key`, plus the `pending` states for search and dismiss confirmation |
+| Data | `reload`, `load_detail`, `load_briefing`, `current` |
+| Actions | `start_scan`, `export_current`, `State.toggle_schedule`, `State.cycle_interval` |
+| Drawing | `draw_table`, `draw_detail`, `addstr` (swallows `curses.error` at screen edges) |
+
+The TUI is the strictest test of the engine's separation: with no widgets, no dialogs and no
+images, everything it shows must come from a public engine function. Anything it needs that is
+missing from the engine is a missing engine API, not a reason to duplicate logic.
+
+### 18.4 Rules shared by all front ends
+
+| Concern | Source of truth | How a front end uses it |
+| --- | --- | --- |
+| When to scan | `next_scan_delay` | poll, then call `run_scan` when it returns `0` |
+| How to describe the schedule | `describe_schedule` | status/footer text, verbatim |
+| Which values are legal | `SETTING_CHOICES`, `INT_SETTINGS`, `THEME_NAMES` | build menus and validate writes |
+| What a signal means | `_signal_payload`-style field access on the engine's rows | never recompute severity, priority or assessment |
+| Where the profile comes from | `apply_profile`, `active_profile_path` | re-bind after a switch so menus and prompts match |
+| How a setting is written | `save_settings(**changed_keys_only)` | write through on the `change` event, sending only the keys the user touched; the merge base is the file, never a cached dict |
+| When settings are re-read | `load_settings` | on demand — for display only, never re-applied over a control that is mid-edit or mid-save |
+
 ---
 
 ## 19. Security posture
@@ -1028,6 +1172,10 @@ Mechanics worth knowing:
 | **Prompt injection from feeds** | Untrusted text is fenced with explicit markers and instructions; model output is structurally validated and never executed |
 | **SSRF against internal hosts** | Only URLs from `feeds.txt`, topic-generated Google News queries, and links that appeared in those feeds are fetched — a user-supplied list, not remote input. There is no arbitrary URL parameter in the CLI or GUI |
 | **Secret leakage** | Keys live in `.env` (written `0600`), masked in logs (`sk-691…366b`), never written to `settings.json`, never exported, never committed (`.gitignore`) |
+| **DNS rebinding against the web app** | The handler rejects any request whose `Host` header is not a bound loopback name (421), so a hostile domain cannot resolve to 127.0.0.1 and drive the API |
+| **Cross-site request forgery** | Every mutating request needs the per-run `secrets.token_urlsafe(18)` token (`X-HB-Token` or `?token=`), compared with `compare_digest`; the token dies with the process |
+| **Cross-site scripting from feed text** | The page writes feed-derived values with `textContent` only; `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY` are set on every response |
+| **Unbounded request bodies** | `_body()` refuses anything over `MAX_BODY` and accepts only JSON |
 | **Secret in the report/export** | Export and report renderers only emit stored signal fields; no environment value is interpolated |
 | **Concurrent-scan corruption** | `flock` on `scan.lock`; SQLite WAL with a 10 s busy timeout |
 | **Denial of service by a huge article** | `MAX_ARTICLE_BYTES` (2 MiB), `MAX_ARTICLE_CHARS` (6 000), 15 s timeout |
@@ -1097,6 +1245,13 @@ message in `_notify_body`, and send from `send_notifications` after `_pending_al
 content type and return the same item dicts (`title`, `link`, `description`, `published`), which
 is the only contract the scan depends on.
 
+**Add a front end.** Write a client that imports the engine and uses nothing else: read rows
+with `export_rows`/`db_rows`, describe a signal from its columns, start work with `run_scan`
+in a worker, gate the timer on `next_scan_delay`, persist through `save_settings`, and re-bind
+after a profile change with `apply_profile`. Copying the shape of `hbnweb.py` (HTTP) or
+`hbntui.py` (terminal) is faster than inventing one, and neither contains a line of domain
+logic worth copying.
+
 **Instrument it.** The scan log is the debugging interface: one line per feed, per skipped item,
 per flag (`[FLAGGED:high] …`), per deep read, per notification, plus token totals. Every
 decision prints the rule that fired.
@@ -1105,7 +1260,10 @@ decision prints the rule that fired.
 
 ## 22. Testing and verification
 
-There is no test suite in the repository; verification is by targeted harness. The procedures
+There is no test suite in the repository; verification is by targeted harness. The front ends
+are verified the same way: the web app by driving every route over `urllib`, the TUI through a
+`pty.fork()` pseudo-terminal, the GUI by constructing `NewsScanApp` and inspecting widget state.
+None of these need a display for the web app or TUI. The procedures
 that exist and are worth repeating after a change:
 
 | Target | How |
@@ -1197,7 +1355,17 @@ RETRYABLE_STATUS      = (408, 429, 500, 502, 503, 504)
 | `--export FILE [--format FMT]` | Export; format from `FMT` or the extension |
 | `--daemon` / `--watch` | Loop per `settings.json`; `Ctrl+C` stops |
 | `--reclassify [--dry-run]` | Re-derive category/severity for offline rows |
+| `--serve` / `--web` | Web app; `--host`, `--port`, `--token`, `--no-browser` |
+| `--tui` | Terminal UI |
+| `--interval N` | Persist the scan interval (5–1440), then exit |
+| `--auto` / `--no-auto` | Persist scheduled scanning on/off, then exit |
+| `--quiet HH:MM-HH:MM` / `--quiet off` | Persist quiet hours, then exit |
 | `python3 -m hbnscan_gui` | Desktop interface |
+
+`_apply_cli_schedule(argv)` returns `None` when no schedule flag was given, `True` when it
+applied one, and `False` on a bad value. `__main__` exits `2` on `False` and `0` on `True`
+**unless** an action flag was also given — without that guard the schedule flags fell through
+into a full scan, which cost real API calls.
 
 Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.
 
@@ -1205,7 +1373,7 @@ Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.
 
 | Path | Role | Tracked |
 | --- | --- | --- |
-| `hbnscan.py`, `hbnscan_gui.py` | code | yes |
+| `hbnscan.py`, `hbnscan_gui.py`, `hbnweb.py`, `hbntui.py` | code | yes |
 | `start.sh`, `install_autostart.sh`, `requirements.txt` | bootstrap | yes |
 | `.env` | secrets and transport | **no** |
 | `.env.example` | template | yes |
@@ -1217,4 +1385,4 @@ Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.
 | `watchdog_state.db` (+`-wal`, `-shm`) | all collected data | **no** |
 | `latest_report.md` | most recent report | **no** |
 | `scan.lock`, `.hb-briefing-gui.lock` | mutual exclusion | **no** (`*.lock`) |
-| `docs/` | these documents | yes |
+| `docs/` | these documents, including `WEB-APP.md` for the browser and terminal front ends | yes |

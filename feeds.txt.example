@@ -39,6 +39,72 @@ https://broadbandbreakfast.com/feed/
 # work: the redirect is resolved to the publisher URL before the article is fetched.
 https://news.google.com/rss/search?q=site%3Atelecompetitor.com&hl=en-US&gl=US&ceid=US:en
 
+# ------------------------------------------------- World and business news (optional)
+# Major outlets that publish working RSS/Atom feeds, each verified reachable and current.
+# They are commented out because the default profile is deliberately narrow: a dozen
+# general-news feeds would add hundreds of items to every scan. Uncomment the URL lines
+# you want, or start from profiles/general_news.json, which is built for this.
+#
+# Checked and *not* included: Reuters retired public RSS (404); AP and USA Today refuse
+# automated clients (403/402); CNN's edition feed and the WSJ world feed still resolve but
+# have stopped publishing.
+
+# World
+# BBC News (world)
+# https://feeds.bbci.co.uk/news/world/rss.xml
+# BBC News (top stories)
+# https://feeds.bbci.co.uk/news/rss.xml
+# The Guardian (world)
+# https://www.theguardian.com/world/rss
+# The Guardian (business)
+# https://www.theguardian.com/uk/business/rss
+# NPR News
+# https://feeds.npr.org/1001/rss.xml
+# Al Jazeera
+# https://www.aljazeera.com/xml/rss/all.xml
+# Deutsche Welle
+# https://rss.dw.com/rdf/rss-en-all
+# France 24
+# https://www.france24.com/en/rss
+# Sky News (world)
+# https://feeds.skynews.com/feeds/rss/world.xml
+# CBC News (world)
+# https://www.cbc.ca/webfeed/rss/rss-world
+# The New York Times (world)
+# https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+# The New York Times (business)
+# https://rss.nytimes.com/services/xml/rss/nyt/Business.xml
+# Washington Post (world)
+# https://feeds.washingtonpost.com/rss/world
+# CBS News (top stories)
+# https://www.cbsnews.com/latest/rss/main
+# ABC News (top stories)
+# https://abcnews.go.com/abcnews/topstories
+# NBC News (top stories)
+# https://feeds.nbcnews.com/nbcnews/public/news
+# The Straits Times (world)
+# https://www.straitstimes.com/news/world/rss.xml
+# Times of India (world)
+# https://timesofindia.indiatimes.com/rssfeeds/296589292.cms
+
+# Business and finance
+# Financial Times
+# https://www.ft.com/rss/home
+# Bloomberg (markets)
+# https://feeds.bloomberg.com/markets/news.rss
+# The Economist
+# https://www.economist.com/finance-and-economics/rss.xml
+# Politico Europe
+# https://www.politico.eu/feed/
+# Axios
+# https://api.axios.com/feed/
+
+# Technology
+# Ars Technica
+# https://feeds.arstechnica.com/arstechnica/index
+# The Verge
+# https://www.theverge.com/rss/index.xml
+
 # ---------------------------------------------------------- Google News queries
 # fcc.gov and justice.gov publish HTML or dead endpoints, not feeds, so FCC
 # coverage comes via search. State AGs and general litigation have no feed at all.

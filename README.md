@@ -12,13 +12,46 @@ regulator, a market, a competitor, a research field or a single company.
 - **Works with no configuration**: a fresh clone seeds its feeds, topics and examples and scans.
 - **Works with no spend**: a deterministic offline heuristic grades every headline; an LLM key
   adds article verification and a written briefing.
-- **Works on any subject**: ten profiles ship, a topic library covers ~210 subjects across 20
+- **Works on any subject**: ten profiles ship, a topic library covers over 200 subjects across 20
   interest areas, and your own files always layer on top.
 
 ```bash
-./start.sh          # checks the machine, installs what is missing, opens the GUI
-python3 hbnscan.py  # or: one headless scan
+./start.sh              # checks the machine, installs what is missing, opens the desktop GUI
+python3 hbnscan.py      # one headless scan
+python3 hbnscan.py --serve   # the web app, in your browser
+python3 hbnscan.py --tui     # the terminal UI
 ```
+
+## Four front ends, one engine
+
+| Front end | Start it with | Best for |
+| --- | --- | --- |
+| **Desktop GUI** | `./start.sh` or `python3 hbnscan_gui.py` | everyday use on a workstation: grid, detail pane, editors, log |
+| **Web app** | `python3 hbnscan.py --serve` | a browser window, a second screen, or a machine without Tk |
+| **Terminal UI** | `python3 hbnscan.py --tui` | SSH and headless servers: table, filters, detail, scan control |
+| **CLI** | `python3 hbnscan.py` | cron, scripts, one-shot scans and exports |
+
+They share one database and one `settings.json`, so a scan started anywhere appears everywhere,
+and the schedule or theme you set in one is what the others show. None of them contains pipeline
+logic: they all call the same engine.
+
+The web app is a single self-contained page — no framework, no CDN, no build step — bound to
+loopback and gated by a per-run token. The terminal UI is curses, so it works over SSH with
+nothing installed but Python. Details and the HTTP API: [Web app and terminal UI](./docs/WEB-APP.md).
+
+**Scheduling** is exposed in each of them, so the timer is never buried in a file:
+
+| Where | On/off | Interval | Quiet hours |
+| --- | --- | --- | --- |
+| GUI | **Auto-Scan** in the toolbar | the `every` menu beside it | Settings → Scanning |
+| Web | **Scan on a schedule** | the `every` menu | the `quiet` field |
+| TUI | `a` | `i` | `settings.json` |
+| CLI | `--auto` / `--no-auto` | `--interval N` | `--quiet HH:MM-HH:MM` or `off` |
+
+**Themes** ship as five named palettes shared by the desktop and web apps — `dark`, `light`,
+`midnight`, `solarized`, `contrast` — stored as one setting so the choice follows you.
+
+---
 
 ## What it does
 
@@ -85,7 +118,7 @@ how far the same file can move the tool:
 | `general_news.json` | policy, litigation and business across beats |
 
 **A topic is a standing subject** — interesting on its own, with no enforcement verb required.
-Write one line in **🎯 Topics** (`topics.txt`), or start from the bundled library of ~210
+Write one line in **🎯 Topics** (`topics.txt`), or start from the bundled library of over 200
 subjects in 20 interest groups:
 
 ```
@@ -143,6 +176,12 @@ article-level verification is lost.
 Where a feed is missing, a query is the practical answer; where a feed exists, it is always
 better: it carries full summaries, publication dates and a stable identity. A feed that starts
 failing prints its HTTP status with a hint (blocked, gone, rate limited) rather than a bare error.
+
+`feeds.txt.example` ships with a verified block of major world, business and technology news
+feeds — BBC, Guardian, NPR, Al Jazeera, NYT, Washington Post, the US networks, CBC, DW, France 24,
+Sky, FT, Bloomberg, the Economist, Politico, Axios, Ars Technica, The Verge — commented out so the
+default narrow profile stays narrow. Uncomment what you want, or start from
+`profiles/general_news.json`.
 `python3 hbnscan.py --check` validates the AI path; a normal scan's log names every feed it
 touches and why it skipped one.
 
@@ -256,7 +295,8 @@ Manual equivalent:
 2. `pip install -r requirements.txt` (Tkinter ships with most Python builds; if not:
    Debian/Ubuntu `sudo apt install python3-tk`, Arch `sudo pacman -S tk`,
    Fedora `sudo dnf install python3-tkinter`).
-3. `python3 hbnscan_gui.py` for the desktop interface, or `python3 hbnscan.py` for one scan.
+3. `python3 hbnscan_gui.py` for the desktop interface, `python3 hbnscan.py` for one scan,
+   `--serve` for the browser, `--tui` for the terminal.
 4. *(Optional)* `./install_autostart.sh` to add a desktop menu entry and login autostart.
 
 ## Documentation
@@ -266,5 +306,6 @@ Manual equivalent:
 | [Instructions](./docs/INSTRUCTIONS.md) | Short, task-oriented steps: install, scan, tune, schedule, notify, export |
 | [User Manual](./docs/USER-MANUAL.md) | Every screen, setting and file, with the reasoning behind it |
 | [Technical Reference](./docs/TECHNICAL-REFERENCE.md) | Architecture, profiles and scoring, AI contract, schema, security, runbook |
+| [Web App and Terminal UI](./docs/WEB-APP.md) | The browser and terminal front ends, the HTTP API, scheduling and themes from each |
 
 HB Briefing is MIT licensed and uses only the Python standard library plus `python-dotenv`.

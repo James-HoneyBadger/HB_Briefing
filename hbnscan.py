@@ -609,8 +609,10 @@ def apply_profile(profile=None):
     global TRUSTED_SOURCE_HOSTS, AGGREGATOR_HOSTS, LITIGATION_SIGNALS, REGULATOR_SIGNALS
     global TRIAGE_SYSTEM, DEEP_SYSTEM, BRIEFING_SYSTEM
     global PROFILE_TOPICS, PROFILE_TARGETS, PROFILE_GENERATION
+    global PROFILE
 
     profile = profile or load_profile()
+    PROFILE = profile
     APP_NAME = profile["name"]
     CATEGORIES = tuple(profile["categories"])
     CORE_CATEGORIES = tuple(profile["core_categories"])
@@ -744,6 +746,40 @@ def seconds_until_window(settings, now=None):
     return ((start - minute) % (24 * 60)) * 60
 
 
+def next_scan_delay(settings, last_started=None, now=None):
+    """Seconds until a scheduler should start a scan, or None when it should stop.
+
+    One rule shared by every front end, so the desktop GUI, the web app, the terminal UI and
+    the daemon cannot disagree about when to scan:
+
+      * `auto_scan` off            -> None (nothing scheduled)
+      * outside the quiet window   -> the wait until it opens, capped at one interval
+      * startup (`last_started` is None) -> 0, scan now
+      * otherwise                  -> whatever remains of the interval
+    """
+    if not settings.get("auto_scan"):
+        return None
+    now = now or datetime.now()
+    interval = max(1, int(settings.get("scan_interval_minutes") or 30)) * 60
+    if not in_scan_window(settings, now):
+        return min(max(seconds_until_window(settings, now), 60), interval)
+    if last_started is None:
+        return 0
+    elapsed = (now - last_started).total_seconds()
+    return max(0, int(interval - elapsed))
+
+
+def describe_schedule(settings):
+    """Short human label for the current schedule, used by every front end."""
+    if not settings.get("auto_scan"):
+        return "manual"
+    interval = int(settings.get("scan_interval_minutes") or 30)
+    start = (settings.get("scan_window_start") or "").strip()
+    end = (settings.get("scan_window_end") or "").strip()
+    quiet = f", quiet {start or '00:00'}-{end or '24:00'}" if start or end else ""
+    return f"every {interval} min{quiet}"
+
+
 def _parse_pubdate(value):
     """Normalise an RSS RFC-822 or Atom ISO-8601 date to an ISO timestamp."""
     raw = (value or "").strip()
@@ -766,10 +802,11 @@ ROW_LIMITS = (50, 100, 250, 500, 1000, 5000)
 # list is profile-dependent, so it is served by setting_choices() rather than stored here:
 # a frozen copy would silently reject another profile's categories.
 SETTING_CHOICES = {
-    "filter_severity": ("all",) + SEVERITIES[:-1],
+    # `none` is a triage verdict, not a severity anyone filters for; every real level is.
+    "filter_severity": ("all",) + tuple(s for s in SEVERITIES if s != "none"),
     "filter_group": ("all", "watchlist", "topic", "core", "context"),
     "row_order": ("priority", "newest", "oldest", "severity", "title", "category"),
-    "theme": ("dark", "light"),
+    "theme": ("dark", "light", "midnight", "solarized", "contrast"),
     "window_state": ("normal", "zoomed"),
     "notify_min_severity": ("high", "medium"),
     "scan_interval_minutes": ("5", "10", "15", "30", "60", "120", "240"),
@@ -794,6 +831,11 @@ INT_SETTINGS = {
 }
 
 WINDOW_GEOMETRY_RE = re.compile(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}){2}$")
+
+# Settings where an empty string means "no restriction / default": clearing them is a change,
+# not a mistake to be ignored.
+BLANK_SETTINGS = ("feed_since", "feed_until", "scan_window_start", "scan_window_end",
+                  "profile", "window_geometry")
 
 # Order fragments are fixed strings, never interpolated from user input.
 _SEVERITY_RANK = ("CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 "
@@ -829,6 +871,10 @@ def row_order(name="priority"):
     clause = ROW_ORDERS.get(name, ROW_ORDERS["priority"])
     return clause.replace("{GROUP_RANK}", _group_rank())
 
+
+# Palettes are defined by the front ends (hbnscan_gui.THEMES, hbnweb CSS); this is the
+# shared vocabulary that validation and every picker read, so a name cannot drift.
+THEME_NAMES = SETTING_CHOICES["theme"]
 
 DEFAULT_SETTINGS = {
     "profile": "",
@@ -906,11 +952,20 @@ def parse_setting_date(value):
 
 
 def save_settings(**values):
-    """Merge values into settings.json; invalid values are reset to their default."""
+    """Merge values into settings.json; a value that cannot be used leaves the key alone.
+
+    The fallback for a rejected write is the value already stored, not the factory default:
+    a caller that sends nonsense (or a name from an older version) must not silently revert a
+    setting the user chose. Blank is a real choice for the string settings, so it clears them.
+    """
     settings = load_settings()
     for key, value in values.items():
-        if key in DEFAULT_SETTINGS:
-            settings[key] = _coerce_setting(key, value, DEFAULT_SETTINGS[key])
+        if key not in DEFAULT_SETTINGS:
+            continue
+        if key in BLANK_SETTINGS and value is not None and not str(value).strip():
+            settings[key] = ""
+        else:
+            settings[key] = _coerce_setting(key, value, settings[key])
     write_atomic(SETTINGS_PATH, json.dumps(settings, indent=2) + "\n")
     return settings
 
@@ -2511,15 +2566,19 @@ def notification_config():
     gateway = SMS_GATEWAYS.get(gateway, gateway)
 
     emails = [a.strip() for a in env.get("NOTIFY_EMAIL_TO", "").split(",") if a.strip()]
-    sms = []
+    sms, unresolved = [], []
     for raw in env.get("NOTIFY_SMS_TO", "").split(","):
         raw = raw.strip()
         if not raw:
             continue
         if "@" in raw:
             sms.append(raw)
-        elif gateway:
-            sms.append(f"{re.sub(r'[^0-9+]', '', raw)}@{gateway}")
+            continue
+        digits = re.sub(r"[^0-9]", "", raw)      # gateways want digits, never a leading +
+        if gateway and digits:
+            sms.append(f"{digits}@{gateway}")
+        elif digits:
+            unresolved.append(raw)
 
     port = env.get("SMTP_PORT", "").strip()
     security = env.get("SMTP_SECURITY", "starttls").lower()
@@ -2532,6 +2591,7 @@ def notification_config():
         "security": security if security in ("starttls", "ssl", "none") else "starttls",
         "emails": emails,
         "sms": sms,
+        "unresolved_sms": unresolved,
         "recipients": emails + sms,
     }
 
@@ -2544,9 +2604,16 @@ def notifications_configured(config=None):
 def describe_notifications(config=None):
     config = config or notification_config()
     if not notifications_configured(config):
+        if config.get("unresolved_sms"):
+            return ("not configured - set SMTP_HOST, NOTIFY_EMAIL_TO and "
+                    "SMS_GATEWAY_DOMAIN (a bare number needs a gateway)")
         return "not configured - set SMTP_HOST and NOTIFY_EMAIL_TO in .env"
-    return (f"{config['host']}:{config['port']} ({config['security']}) - "
+    text = (f"{config['host']}:{config['port']} ({config['security']}) - "
             f"{len(config['emails'])} email, {len(config['sms'])} SMS")
+    if config.get("unresolved_sms"):
+        text += (f" - {len(config['unresolved_sms'])} number(s) skipped: "
+                 "set SMS_GATEWAY_DOMAIN")
+    return text
 
 
 def _notify_subject(items):
@@ -2621,6 +2688,8 @@ def _pending_alerts(conn, settings):
 
 def send_notifications(conn, settings=None, log_callback=print):
     """Mail new high-priority signals. Never raises: a scan must not fail on SMTP."""
+    if conn is None:
+        conn = init_db()          # lets a front end send without plumbing a connection
     settings = settings or load_settings()
     if not settings["notify_enabled"]:
         return 0
@@ -3393,7 +3462,76 @@ def check_api(log_callback=print, api_key=None):
     return 0
 
 
+def _apply_cli_schedule(argv):
+    """Persist scheduling switches given on the command line, without starting anything.
+
+    `--auto` / `--no-auto` and `--interval N` (also `--quiet HH:MM-HH:MM`) edit settings.json
+    so they apply to every front end, which is the point: the same two knobs are in the GUI
+    toolbar, the web app and the terminal UI.
+    """
+    values = {}
+    if "--auto" in argv:
+        values["auto_scan"] = True
+    if "--no-auto" in argv:
+        values["auto_scan"] = False
+    if "--interval" in argv:
+        try:
+            values["scan_interval_minutes"] = argv[argv.index("--interval") + 1]
+        except IndexError:
+            print("--interval needs a number of minutes")
+            return False
+    if "--quiet" in argv:
+        try:
+            window = argv[argv.index("--quiet") + 1]
+        except IndexError:
+            print("--quiet needs HH:MM-HH:MM (or 'off')")
+            return False
+        if window.strip().lower() in ("off", "none", ""):
+            values["scan_window_start"] = ""
+            values["scan_window_end"] = ""
+        else:
+            try:
+                start, end = [part.strip() for part in window.split("-", 1)]
+            except ValueError:
+                print("--quiet needs HH:MM-HH:MM")
+                return False
+            if (parse_setting_clock(start) is None or parse_setting_clock(end) is None):
+                print("--quiet needs valid HH:MM times")
+                return False
+            values["scan_window_start"] = start
+            values["scan_window_end"] = end
+    if not values:
+        return None
+    saved = save_settings(**values)
+    print(f"[OK] schedule: {describe_schedule(saved)}")
+    return True
+
+
 if __name__ == "__main__":
+    if "--serve" in sys.argv or "--web" in sys.argv:
+        try:
+            import hbnweb
+        except ImportError as exc:
+            print(f"[FAIL] web front end unavailable: {exc}")
+            sys.exit(2)
+        argv = [arg for arg in sys.argv[1:] if arg not in ("--serve", "--web")]
+        sys.exit(hbnweb.main(argv))
+    if "--tui" in sys.argv:
+        try:
+            import hbntui
+        except ImportError as exc:
+            print(f"[FAIL] terminal front end unavailable: {exc}")
+            sys.exit(2)
+        argv = [arg for arg in sys.argv[1:] if arg != "--tui"]
+        sys.exit(hbntui.main(argv))
+    changed = _apply_cli_schedule(sys.argv)
+    if changed is False:
+        sys.exit(2)
+    # The scheduling flags are a settings edit on their own: applying them must not also
+    # start a scan. Combine them with --daemon/--serve/--tui to act on the new value.
+    if changed and not ({"--check", "--export", "--daemon", "--watch", "--reclassify",
+                         "--serve", "--web", "--tui"} & set(sys.argv)):
+        sys.exit(0)
     if "--check" in sys.argv:
         sys.exit(check_api())
     if "--export" in sys.argv:
