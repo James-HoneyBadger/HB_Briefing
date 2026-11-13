@@ -62,6 +62,7 @@ class State:
         self.running = True
         self.pending = ""
         self.confirm = ""
+        self.cancel = None
 
     # -- data ---------------------------------------------------------------
     def filters(self):
@@ -393,8 +394,12 @@ def handle_key(state, key):
         state.status = export_current(state)
     elif key == ord("R"):
         state.settings = hbnscan.load_settings()
+        state.severity = state.settings["filter_severity"]
+        state.category = state.settings["filter_category"]
+        state.group = state.settings["filter_group"]
+        state.order = state.settings["row_order"]
         state.reload()
-        state.status = "reloaded"
+        state.status = "reloaded settings and filters"
 
 
 def export_current(state):

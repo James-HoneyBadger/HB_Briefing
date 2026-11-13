@@ -202,7 +202,7 @@ runs offline.
 
 ## 6. Schedule scanning
 
-Every front end exposes the same three controls — on/off, interval, quiet hours — and writes the
+Every front end exposes the same three controls — on/off, interval, scanning window — and writes the
 same two settings.
 
 | Front end | On/off | Interval |
@@ -214,15 +214,15 @@ same two settings.
 
 ```bash
 python3 hbnscan.py --interval 15          # save the interval and exit
-python3 hbnscan.py --quiet 22:00-06:00    # quiet hours, wraps midnight
-python3 hbnscan.py --quiet off            # back to all day
+python3 hbnscan.py --window 22:00-06:00   # scan only overnight; wraps midnight
+python3 hbnscan.py --window off           # back to all day
 python3 hbnscan.py --auto --daemon        # headless loop honouring the above
 ```
 
 | Goal | Do this |
 | --- | --- |
 | Scan on a timer while any front end is open | the on/off control above + an interval |
-| Scan only outside working hours | the quiet window (`22:00-06:00` wraps midnight) |
+| Scan only outside working hours | the window (`20:00-08:00` means overnight runs only) |
 | Run headless forever | `python3 hbnscan.py --daemon` |
 | Run headless via systemd/user session | an `ExecStart` line pointing at `--daemon` |
 | Scan once, from cron | `*/30 * * * * cd /path/to/hb-news-scan && python3 hbnscan.py` |
@@ -402,7 +402,7 @@ targets syntax are in
 | `python3 hbnscan.py --tui` | Terminal interface |
 | `python3 hbnscan.py --interval 15` | Set the scan interval and exit |
 | `python3 hbnscan.py --auto` / `--no-auto` | Turn scheduled scanning on or off and exit |
-| `python3 hbnscan.py --quiet 22:00-06:00` | Set quiet hours (wraps midnight); `--quiet off` clears them |
+| `python3 hbnscan.py --window 22:00-06:00` | Scans only inside those hours (wraps midnight); `--window off` clears it |
 | `python3 -m hbnscan_gui` | Start the desktop interface |
 
 Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.

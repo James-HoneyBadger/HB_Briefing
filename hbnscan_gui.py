@@ -15,9 +15,10 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
+from pathlib import Path
 
 import tkinter as tk
-from pathlib import Path
 from tkinter import ttk, messagebox, filedialog
 
 import hbnscan
@@ -111,6 +112,7 @@ class NewsScanApp(tk.Tk):
         self._ui_queue = queue.Queue()
         self._ui_after_id = None
         self._auto_after_id = None
+        self._auto_last_started = None
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._setup_styles()
@@ -1398,26 +1400,27 @@ class NewsScanApp(tk.Tk):
         self._schedule_auto_scan(initial=False)
 
     def _schedule_auto_scan(self, initial=False):
+        """Wake on the engine's own schedule rule, so the GUI agrees with the web app."""
         if self._closing:
             return
         settings = hbnscan.load_settings()
-        if not self.auto_enabled.get():
+        delay = hbnscan.next_scan_delay(settings, self._auto_last_started)
+        if delay is None:                       # automatic scanning switched off
             self._auto_after_id = self.after(60000, self._schedule_auto_scan)
             return
-
-        interval_ms = max(1, int(settings["scan_interval_minutes"])) * 60000
-        if hbnscan.in_scan_window(settings):
-            if not self.is_scanning:
+        if delay <= 0:
+            if self.is_scanning:
+                delay = 60
+            else:
                 self.log("[AUTO] Startup scan triggered." if initial
-                         else f"[AUTO] Scheduled scan ({settings['scan_interval_minutes']}m).")
+                         else f"[AUTO] Scheduled scan ({hbnscan.describe_schedule(settings)}).")
+                self._auto_last_started = datetime.now()
                 self.start_scan_thread()
-            delay = interval_ms
-        else:
-            wait = hbnscan.seconds_until_window(settings) * 1000
-            delay = min(max(wait, 60000), interval_ms)
-            if initial:
-                self.log("[AUTO] Outside the scanning window; waiting.")
-        self._auto_after_id = self.after(delay, self._schedule_auto_scan)
+                delay = max(1, int(settings["scan_interval_minutes"])) * 60
+        elif initial:
+            self.log(f"[AUTO] Outside the scanning window; waiting "
+                     f"{max(1, delay // 60)} min.")
+        self._auto_after_id = self.after(max(1, int(delay)) * 1000, self._schedule_auto_scan)
 
     def _rebuild_ui(self):
         """Recreate every widget so a new palette or text size takes effect."""

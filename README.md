@@ -44,9 +44,9 @@ nothing installed but Python. Details and the HTTP API: [Web app and terminal UI
 | Where | On/off | Interval | Quiet hours |
 | --- | --- | --- | --- |
 | GUI | **Auto-Scan** in the toolbar | the `every` menu beside it | Settings → Scanning |
-| Web | **Scan on a schedule** | the `every` menu | the `quiet` field |
+| Web | **Scan on a schedule** | the `every` menu | the *scan only between* field |
 | TUI | `a` | `i` | `settings.json` |
-| CLI | `--auto` / `--no-auto` | `--interval N` | `--quiet HH:MM-HH:MM` or `off` |
+| CLI | `--auto` / `--no-auto` | `--interval N` | `--window HH:MM-HH:MM` or `off` |
 
 **Themes** ship as five named palettes shared by the desktop and web apps — `dark`, `light`,
 `midnight`, `solarized`, `contrast` — stored as one setting so the choice follows you.
@@ -230,7 +230,7 @@ limit included.
 before. E-mail goes through any SMTP server; SMS uses the carrier's free e-mail-to-SMS gateway,
 so no third-party messaging account is needed.
 
-**Scheduling** is a first-class feature: an interval, a quiet-hours window that wraps midnight, and
+**Scheduling** is a first-class feature: an interval, a scanning window that wraps midnight, and
 a headless daemon for machines without a desktop.
 
 ```bash

@@ -177,7 +177,7 @@ and secrets.
 | **📄 Open Report** | Opens `latest_report.md` in your default viewer |
 | **🗑 Clear Logs** | Clears the log pane only (no data is deleted) |
 | **■ Stop** | Requests cancellation; the scan finishes the item in flight |
-| **Auto-Scan** | Enables the scheduled loop according to the interval and quiet window |
+| **Auto-Scan** | Enables the scheduled loop according to the interval and scanning window |
 | **every [N ▾]** | The scan interval: 5, 10, 15, 30, 60, 120 or 240 minutes, saved the moment you pick it |
 
 **Signal table** — five columns: time detected, severity, category, headline, assessment.
@@ -437,8 +437,8 @@ no key the engine runs offline and says so.
   this one are the same setting.
 - **Every N minutes** — 5, 10, 15, 30, 60, 120 or 240 (5–1440 accepted in the file). Also
   available from the toolbar's **every** menu without opening this dialog.
-- **Quiet window start / end** — no scans between these clock times; the window wraps midnight
-  correctly (`22:00`–`06:00` means overnight). Blank disables the restriction.
+- **Scan only between / and** — scans run **only** inside these clock times; the window wraps
+  midnight correctly (`22:00`–`06:00` means overnight runs only). Blank means all day.
 
 These three are shared with the web app, the terminal UI and the CLI; setting them anywhere
 sets them everywhere ([§9](#9-scheduling)).
@@ -472,24 +472,24 @@ One schedule, reachable from every interface:
 | Front end | On/off | Interval | Quiet hours |
 | --- | --- | --- | --- |
 | Desktop GUI | **Auto-Scan** checkbox | the `every` menu beside it | Settings → Scanning |
-| Web app | **Scan on a schedule** checkbox | the `every` menu in the same bar | the `quiet` field |
+| Web app | **Scan on a schedule** checkbox | the `every` menu in the same bar | the *scan only between* field |
 | Terminal UI | `a` | `i` (cycles the six presets) | `settings.json` |
-| CLI | `--auto` / `--no-auto` | `--interval N` | `--quiet HH:MM-HH:MM`, or `--quiet off` |
+| CLI | `--auto` / `--no-auto` | `--interval N` | `--window HH:MM-HH:MM`, or `--window off` |
 
 ```bash
 python3 hbnscan.py --interval 15            # save and exit; nothing else runs
 python3 hbnscan.py --no-auto --interval 60  # a longer timer, currently paused
-python3 hbnscan.py --quiet 22:00-06:00      # overnight gap
+python3 hbnscan.py --window 22:00-06:00     # overnight runs only
 python3 hbnscan.py --auto --daemon          # headless loop honouring all of it
 ```
 
 **Auto-Scan (any interface)** — while the front end is open, a timer starts scans at the
-configured interval, skipping any tick inside the quiet window or while a scan is already
+configured interval, skipping any tick outside the scanning window or while a scan is already
 running.
 
 **Every change is remembered.** The controls above write `settings.json` the moment you touch
 them — there is no *Apply* or *Save* step for the schedule, and no scan will ever put them back.
-The timer, the interval, the quiet window, the grid filters and the theme change only when you
+The timer, the interval, the scanning window, the grid filters and the theme change only when you
 change them. Because every front end reads that one file, an interval you set in the web app is
 the interval the desktop window and a headless daemon use as well.
 
@@ -515,7 +515,7 @@ Design notes:
   re-reads settings, so re-enabling in any front end takes effect without a restart.
 - **The rule is shared.** `next_scan_delay()` in the engine decides every wait, so the daemon,
   the GUI, the web app and the TUI cannot drift apart: auto off means no schedule, a scan fires
-  immediately at startup when auto is on, and a tick inside quiet hours waits for the window.
+  immediately at startup when auto is on, and a tick outside the window waits for it to open.
 - **Quiet hours are inclusive of the end boundary and wrap midnight.**
 - **Overlap is impossible** thanks to the scan lock; a slow scan delays the next tick rather
   than stacking.
@@ -964,7 +964,7 @@ tells you whether curses is present.
 
 ### A CLI option changed my settings but nothing ran
 
-By design: `--interval`, `--auto`/`--no-auto` and `--quiet` edit `settings.json` and exit 0.
+By design: `--interval`, `--auto`/`--no-auto` and `--window` edit `settings.json` and exit 0.
 Add `--daemon` to act on them, or press Run Scan in any front end.
 
 ### Does it work without any API key at all?

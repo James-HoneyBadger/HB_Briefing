@@ -18,6 +18,9 @@ __pycache__/
 .venv/
 venv/
 
+# Exports written next to the app (TUI 'e', --export without a directory)
+hb-briefing-*.md
+
 # Runtime locks
 *.lock
 

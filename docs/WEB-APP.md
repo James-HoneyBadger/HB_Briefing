@@ -38,7 +38,7 @@ beyond your own machine.
 - **Run / Stop** a scan, with the live log in the *Log* tab and the digest in *Briefing*.
 - **Dismiss** a row (*Not relevant*): it leaves the grid, report, exports and alerts but stays in
   the database, auditable.
-- **Schedule** — on/off, interval and quiet hours, in one bar above the grid (see §3). Each
+- **Schedule** — on/off, interval and the scanning window, in one bar above the grid (see §3). Each
   change is saved the moment you make it; there is no *Apply* step and no state that a scan can
   reset.
 - **Filters that stick** — severity, category, priority, order and row limit are ordinary
@@ -50,11 +50,20 @@ beyond your own machine.
 
 ### 1.2 Security model
 
-The web app is a **local** tool. It binds to loopback by default, and every mutating request needs
-the per-run token embedded in the page:
+The web app is a **local** tool with no accounts. The token is a **CSRF guard, not a login**: it
+protects every request that *changes* something, while reads are open to anything that can reach
+the port.
 
-- `--host 0.0.0.0` is possible and prints a warning. Anyone who can reach the port *and* knows the
-  token can read your signals and start scans; there are no accounts.
+- **Reads need no token.** `GET /api/state`, `/api/signals`, `/api/briefing` and `/api/export`
+  answer anyone who can reach the port, which is why the default bind is `127.0.0.1`. A page on
+  another origin cannot read those responses: they are `application/json` behind the same-origin
+  policy, and `X-Content-Type-Options: nosniff` stops the old JSON-hijacking trick of loading one
+  as a script. It can still *trigger* a GET — an export link would download your signals to your
+  own machine — but it cannot see them.
+- **Writes need the token**: scan, cancel, dismiss and settings. The page carries its own credential
+  (`secrets.token_urlsafe(18)`, replaced per run), which a foreign origin cannot read.
+- `--host 0.0.0.0` is possible and prints a warning: on a shared network every participant can read
+  your signals, and any of them could start a scan if they also read the token from the page.
 - Requests whose `Host` header is not the address the server bound are rejected (421), which
   defeats DNS-rebinding tricks.
 - No path serving: the only bytes it returns are pages and exports it renders itself.
@@ -80,7 +89,8 @@ Useful for scripting or a dashboard of your own.
 | POST | `/api/dismiss` | `{"hash": "...", "undo": false}` |
 | POST | `/api/settings` | persist `profile`, `feed_since`, `feed_until`, `table_limit`, `row_order`, `filter_*`, `topics_as_feeds`, `theme`, `auto_scan`, `scan_interval_minutes`, `scan_window_start`, `scan_window_end` |
 
-Mutating calls need `X-HB-Token: <token>` (or `?token=` for downloads).
+Mutating calls need `X-HB-Token: <token>`; the page's own download link passes it as `?token=`,
+which is accepted everywhere for convenience. Reads need nothing — see §1.2.
 
 `POST /api/settings` takes a **partial** body — send just the keys you are changing, for example
 `{"scan_interval_minutes": 15}` — and answers with the full editable set including the recomputed
@@ -127,36 +137,37 @@ One rule decides when to scan, and every interface exposes it:
 | Where | On/off | Interval | Quiet hours |
 | --- | --- | --- | --- |
 | Desktop GUI | **Auto-Scan** checkbox in the toolbar | the `every` menu beside it (or Settings → Scanning) | Settings → Scanning |
-| Web app | **Scan on a schedule** checkbox | the `every` menu in the same bar | the `quiet` field, `HH:MM-HH:MM` |
+| Web app | **Scan on a schedule** checkbox | the `every` menu in the same bar | the *scan only between* field, `HH:MM-HH:MM` |
 | Terminal UI | `a` | `i` | `settings.json`, or the CLI below |
-| CLI | `--auto` / `--no-auto` | `--interval N` | `--quiet HH:MM-HH:MM` (or `off`) |
+| CLI | `--auto` / `--no-auto` | `--interval N` | `--window HH:MM-HH:MM` (or `off`) |
 
 Every one of those controls writes `settings.json` as you use it — the GUI and the web app save on
-the spot, with no *Apply* button, and the bar echoes the new schedule (*"every 15 min, quiet
-22:00-06:00"*) once the write lands. Nothing else writes settings: a scan reads them and leaves
-them alone, so an interval, a quiet window, a filter or a theme can only change because someone
-changed it.
+the spot, with no *Apply* button, and the bar echoes the new schedule (*"every 15 min,
+22:00-06:00 only"*) once the write lands. Nothing else writes settings: a scan reads them and
+leaves them alone, so an interval, a scanning window, a filter or a theme can only change because
+someone changed it.
 
 ```bash
 python3 hbnscan.py --interval 15           # edit settings and exit; add --daemon to act on it
-python3 hbnscan.py --quiet 22:00-06:00
+python3 hbnscan.py --window 22:00-06:00
 python3 hbnscan.py --no-auto --daemon      # run the loop but never scan on a timer
 ```
 
 The scheduling flags are a settings edit on their own and exit 0, so pass them in their own
 invocation rather than alongside `--serve` or `--tui` — those start their own argument parsers,
-where `--quiet` means "do not log each request". Setting quiet hours for a web app therefore
-looks like this:
+where `--no-request-log` is the flag that silences per-request output. Setting a window for a web
+app therefore looks like this:
 
 ```bash
-python3 hbnscan.py --quiet 22:00-06:00     # writes settings.json, exits
+python3 hbnscan.py --window 22:00-06:00    # writes settings.json, exits
 python3 hbnscan.py --serve                 # the running app picks it up on its next tick
 ```
 
-The rule itself lives in the engine (`next_scan_delay`):
+The rule itself lives in the engine (`next_scan_delay`), and every front end reads it — the GUI,
+the web app, the terminal UI and `--daemon`:
 
 - `auto_scan` off → nothing is scheduled; manual runs still work everywhere.
-- Outside the quiet window → wait until it opens, re-checking at least once per interval.
+- Outside the scanning window → wait until it opens, re-checking at least once per interval.
 - At startup with auto on → scan immediately.
 - Otherwise → the remainder of the interval since the last scan this front end started.
 

@@ -29,6 +29,7 @@ import shutil
 import smtplib
 import sqlite3
 import sys
+import tempfile
 import time
 from email.message import EmailMessage
 import urllib.error
@@ -270,17 +271,25 @@ def write_atomic(path, text, mode=None):
 
     Every small config file here (settings.json, .env, feeds/topics, the report) is
     rewritten in place, and an interrupted write would otherwise leave the next load
-    reading a half file and silently falling back to defaults.
+    reading a half file and silently falling back to defaults. The temp name is unique
+    because two front ends (say the GUI and the web app) can save at the same moment.
     """
     path = Path(path)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    if mode is not None:
-        try:
-            os.chmod(tmp, mode)
-        except OSError:
-            pass
-    os.replace(tmp, path)
+    handle, tmpname = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.",
+                                       suffix=".tmp")
+    tmp = Path(tmpname)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        if mode is not None:
+            try:
+                os.chmod(tmp, mode)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _env_int(name, default):
@@ -700,7 +709,7 @@ PROFILE = apply_profile()
 
 
 def _parse_clock(value):
-    """Parse an "HH:MM" quiet-hours boundary; None when blank or malformed."""
+    """Parse an "HH:MM" scanning-window boundary; None when blank or malformed."""
     try:
         hour, minute = (value or "").strip().split(":")
         hour, minute = int(hour), int(minute)
@@ -712,10 +721,10 @@ def _parse_clock(value):
 
 
 def in_scan_window(settings, now=None):
-    """True when `now` falls inside the configured scanning hours.
+    """True when `now` falls inside the window in which scans are allowed.
 
-    Blank boundaries mean all day. A window whose end is before its start wraps
-    midnight, so 22:00-06:00 means overnight.
+    This is an allow-list, not a quiet-hours deny-list: 22:00-06:00 means *only* overnight,
+    and blank boundaries mean all day. A window whose end is before its start wraps midnight.
     """
     start = _parse_clock(settings.get("scan_window_start", ""))
     end = _parse_clock(settings.get("scan_window_end", ""))
@@ -752,7 +761,7 @@ def next_scan_delay(settings, last_started=None, now=None):
     the daemon cannot disagree about when to scan:
 
       * `auto_scan` off            -> None (nothing scheduled)
-      * outside the quiet window   -> the wait until it opens, capped at one interval
+      * outside the scanning window -> the wait until it opens, capped at one interval
       * startup (`last_started` is None) -> 0, scan now
       * otherwise                  -> whatever remains of the interval
     """
@@ -775,8 +784,8 @@ def describe_schedule(settings):
     interval = int(settings.get("scan_interval_minutes") or 30)
     start = (settings.get("scan_window_start") or "").strip()
     end = (settings.get("scan_window_end") or "").strip()
-    quiet = f", quiet {start or '00:00'}-{end or '24:00'}" if start or end else ""
-    return f"every {interval} min{quiet}"
+    window = f", {start or '00:00'}-{end or '24:00'} only" if start or end else ""
+    return f"every {interval} min{window}"
 
 
 def _parse_pubdate(value):
@@ -3123,7 +3132,10 @@ def export_items(conn, path, fmt=None, filters=None, title=None, log_callback=pr
 
 
 def run_daemon(log_callback=print, cancel=None, sleep=None, clock=None, max_cycles=None):
-    """Scan on the configured interval, honouring the quiet-hours window.
+    """Scan on the configured interval, honouring the scanning window.
+
+    Wakes through `next_scan_delay`, the same rule the web app and the terminal UI use,
+    so a headless run and a visible one cannot drift apart.
 
     `sleep`, `clock` and `max_cycles` are injectable so the loop is testable.
     Returns the number of scans actually performed.
@@ -3132,6 +3144,7 @@ def run_daemon(log_callback=print, cancel=None, sleep=None, clock=None, max_cycl
     clock = clock or datetime.now
     performed = 0
     cycles = 0
+    last_started = None
     # max_cycles bounds loop iterations, not scans: a disabled or out-of-window
     # daemon still has to terminate when asked.
     while cancel is None or not cancel.is_set():
@@ -3140,22 +3153,26 @@ def run_daemon(log_callback=print, cancel=None, sleep=None, clock=None, max_cycl
         cycles += 1
 
         settings = load_settings()
-        if settings["auto_scan"] and in_scan_window(settings, clock()):
-            log_callback(f"[{_now_hms()}] Scheduled scan starting.")
+        delay = next_scan_delay(settings, last_started, clock())
+        if delay is None:
+            log_callback(f"[{_now_hms()}] Scanning is disabled; waiting.")
+        elif delay > 0:
+            log_callback(f"[{_now_hms()}] Outside the scanning window; next scan in "
+                         f"{delay // 60} min ({describe_schedule(settings)}).")
+        else:
+            log_callback(f"[{_now_hms()}] Scheduled scan starting "
+                         f"({describe_schedule(settings)}).")
+            last_started = clock()
             try:
                 run_scan(log_callback=log_callback, cancel=cancel)
             except Exception as exc:  # keep the daemon alive across a failed cycle
                 log_callback(f"[ERROR] Scan failed: {type(exc).__name__}: {exc}")
             performed += 1
-        elif not settings["auto_scan"]:
-            log_callback(f"[{_now_hms()}] Scanning is disabled; waiting.")
-        else:
-            log_callback(f"[{_now_hms()}] Outside the scanning window; waiting.")
+            delay = max(1, int(settings["scan_interval_minutes"])) * 60
 
         if max_cycles is not None and cycles >= max_cycles:
             break
-        interval = max(1, int(settings["scan_interval_minutes"])) * 60
-        remaining = interval
+        remaining = max(1, int(delay if delay is not None else 60))
         while remaining > 0 and (cancel is None or not cancel.is_set()):
             step = min(30, remaining)
             sleep(step)
@@ -3465,9 +3482,11 @@ def check_api(log_callback=print, api_key=None):
 def _apply_cli_schedule(argv):
     """Persist scheduling switches given on the command line, without starting anything.
 
-    `--auto` / `--no-auto` and `--interval N` (also `--quiet HH:MM-HH:MM`) edit settings.json
-    so they apply to every front end, which is the point: the same two knobs are in the GUI
-    toolbar, the web app and the terminal UI.
+    `--auto` / `--no-auto`, `--interval N` and `--window HH:MM-HH:MM` edit settings.json so
+    they apply to every front end, which is the point: the same knobs are in the GUI toolbar,
+    the web app and the terminal UI. The window is when scans are *allowed*, not when they are
+    suppressed, so a value of `22:00-06:00` means overnight runs only. `--quiet` is the old
+    spelling of `--window` and still works.
     """
     values = {}
     if "--auto" in argv:
@@ -3480,11 +3499,14 @@ def _apply_cli_schedule(argv):
         except IndexError:
             print("--interval needs a number of minutes")
             return False
-    if "--quiet" in argv:
+    flag = "--window" if "--window" in argv else ("--quiet" if "--quiet" in argv else None)
+    if flag:
+        if flag == "--quiet":
+            print("[!] --quiet is now --window: the value says when scans run, not when they stop.")
         try:
-            window = argv[argv.index("--quiet") + 1]
+            window = argv[argv.index(flag) + 1]
         except IndexError:
-            print("--quiet needs HH:MM-HH:MM (or 'off')")
+            print(f"{flag} needs HH:MM-HH:MM (or 'off')")
             return False
         if window.strip().lower() in ("off", "none", ""):
             values["scan_window_start"] = ""
@@ -3493,10 +3515,10 @@ def _apply_cli_schedule(argv):
             try:
                 start, end = [part.strip() for part in window.split("-", 1)]
             except ValueError:
-                print("--quiet needs HH:MM-HH:MM")
+                print(f"{flag} needs HH:MM-HH:MM")
                 return False
             if (parse_setting_clock(start) is None or parse_setting_clock(end) is None):
-                print("--quiet needs valid HH:MM times")
+                print(f"{flag} needs valid HH:MM times")
                 return False
             values["scan_window_start"] = start
             values["scan_window_end"] = end

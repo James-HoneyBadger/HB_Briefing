@@ -213,7 +213,7 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 | `row_order` | enum | One of `priority`, `newest`, `oldest`, `severity`, `title`, `category` |
 | `auto_scan` | bool | `"1"/"true"/"yes"/"on"` accepted |
 | `scan_interval_minutes` | int | Clamped 5–1440 |
-| `scan_window_start`, `scan_window_end` | string | `HH:MM` or `""` |
+| `scan_window_start`, `scan_window_end` | string | `HH:MM` or `""`; scans happen **only inside** this window (an allow-list, not quiet hours) |
 | `topics_as_feeds` | bool | Synthesise Google News feeds for the first topics (default off) |
 | `notify_enabled` | bool | Master switch for the digest |
 | `notify_include_watchlist` | bool | Keep (`true`) or exclude declared-interest hits from the digest — **`[Watchlist]` rules and `[Topic]` matches both** |
@@ -233,11 +233,11 @@ A write that cannot be used falls back to **the value already stored**, not to t
 default, so a bad number, an unknown theme name or a malformed date leaves the setting exactly as
 it was; a legal-but-out-of-range number is still clamped (`scan_interval_minutes=9999` → `1440`).
 Keys in `BLANK_SETTINGS` (`feed_since`, `feed_until`, `scan_window_start`, `scan_window_end`,
-`profile`, `window_geometry`) accept `""` as a real choice — that is how a date window or a quiet
-period is cleared.
+`profile`, `window_geometry`) accept `""` as a real choice — that is how a date filter or a
+scanning window is cleared.
 
 **Only a user action writes settings.** `run_scan()` and every other scan path read
-`settings.json` and never write it, so completing a scan cannot revert an interval, a quiet
+`settings.json` and never write it, so completing a scan cannot revert an interval, a scanning
 window, a filter or a theme; a caller that persists a *partial* change passes only the keys it
 touched, because the merge base is always the file on disk, not an in-memory snapshot. Each front
 end persists the moment the control changes rather than on a separate *Apply* step, so what the
@@ -282,16 +282,16 @@ def next_scan_delay(settings, last_started=None, now=None):
 
 - `None` means *stop scheduling* — the caller sleeps and re-reads settings, so switching auto
   back on in another front end takes effect within one poll.
-- Outside quiet hours the wait is **capped at one interval**, so a long quiet window still
+- Outside the scanning window the wait is **capped at one interval**, so a long window still
   produces a poll per interval rather than a multi-hour sleep that would miss a settings change.
 - The floor of 60 s keeps a window boundary from spinning.
 - `now` and `last_started` are injectable, which is what the verification harnesses use to test
   a whole week of boundaries without waiting.
-- `describe_schedule(settings)` turns the same state into `every 30 min, quiet 22:00-06:00` (or
+- `describe_schedule(settings)` turns the same state into `every 30 min, 22:00-06:00 only` (or
   `manual`), used verbatim by the GUI status line, the web schedule bar and the TUI footer.
 
 Writing the setting is deliberately separate from acting on it: `--interval`, `--auto` and
-`--quiet` persist to `settings.json` and exit 0, and only `--daemon` (or a running front end)
+`--window` persist to `settings.json` and exit 0, and only `--daemon` (or a running front end)
 reads the result.
 
 ---
@@ -1116,6 +1116,10 @@ Design notes:
 - **The page never builds HTML from feed text.** Everything is written with `textContent`, so a
   headline containing markup is displayed, not interpreted. The alternative — string-concatenated
   rows — is the classic stored-XSS route in a feed reader.
+- **Only writes are token-guarded.** `do_POST` calls `_token_ok`; `do_GET` relies on the Host
+  guard plus the same-origin policy and `nosniff`, so a foreign page can neither read a response
+  nor drive a mutation. Treating the token as a login would be wrong — `GET /` hands it to any
+  caller that can reach the loopback port, which is the documented single-user model.
 - **Scan state is a dict, not a thread handle.** `SCAN` holds `running`, `started`, `cancel` and
   the log deque; `SCAN_LOCK` guards it. `/api/scan` returns 409 when `running` is true, which
   matches the engine's own scan lock rather than duplicating the decision.
@@ -1283,7 +1287,7 @@ that exist and are worth repeating after a change:
 | Cache invalidation | Change profile twice and assert `load_topics()`/`load_watchlist()` lengths follow `PROFILE_GENERATION` |
 | Full scan offline | Copy the DB to a temp path, set `hbnscan.DB_PATH`, stub `deepseek_configured` to `False`, run `_run_scan`, then `write_report` and one export per format |
 | Export formats | Generate all six; a `.docx` must list `[Content_Types].xml`, `_rels/.rels`, `word/document.xml` in its zip |
-| Daemon loop | `run_daemon(sleep=lambda s: None, clock=fake, max_cycles=N)` with `auto_scan` off and inside/outside the quiet window |
+| Daemon loop | `run_daemon(sleep=lambda s: None, clock=fake, max_cycles=N)` with `auto_scan` off and inside/outside the scanning window |
 | GUI smoke | `DISPLAY=:0 python3 -c "import hbnscan_gui; a=hbnscan_gui.NewsScanApp(); a.update(); a.destroy()"`, then exercise dialogs by walking `winfo_children()` |
 | GUI filters follow the profile | Walk the main window for the `OptionMenu` whose entries include `other`, switch profile, call `_rebuild_ui()`, assert the entries are now the new profile's categories |
 | GUI settings ordering | Monkeypatch `set_api_key`/`set_llm_config`, change profile **and** theme **and** type a key in one Save, assert all three were applied (the appearance branch returns early) |
@@ -1367,7 +1371,7 @@ RETRYABLE_STATUS      = (408, 429, 500, 502, 503, 504)
 | `--tui` | Terminal UI |
 | `--interval N` | Persist the scan interval (5–1440), then exit |
 | `--auto` / `--no-auto` | Persist scheduled scanning on/off, then exit |
-| `--quiet HH:MM-HH:MM` / `--quiet off` | Persist quiet hours, then exit |
+| `--window HH:MM-HH:MM` / `--window off` | Persist the scanning window, then exit (`--quiet` is the old spelling and still works) |
 | `python3 -m hbnscan_gui` | Desktop interface |
 
 `_apply_cli_schedule(argv)` returns `None` when no schedule flag was given, `True` when it

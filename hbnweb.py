@@ -107,6 +107,17 @@ def _signal_payload(row):
     }
 
 
+def _int_param(query, name, default):
+    """Read one integer query parameter, refusing anything that is not a number."""
+    raw = (query.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number, not {raw!r}") from None
+
+
 def list_signals(filters):
     """Filtered page of signals plus the unpaged total for the same filter."""
     where, params, limit = hbnscan._export_filters(filters)
@@ -245,7 +256,9 @@ EDITABLE_SETTINGS = ("profile", "feed_since", "feed_until", "table_limit", "row_
 
 def update_settings(values):
     """Persist the web-editable subset, then rebind the profile if it changed."""
-    accepted = {k: v for k, v in (values or {}).items() if k in EDITABLE_SETTINGS}
+    if not isinstance(values, dict):
+        raise ValueError("settings body must be a JSON object")
+    accepted = {k: v for k, v in values.items() if k in EDITABLE_SETTINGS}
     if not accepted:
         raise ValueError("no editable setting supplied")
     before = hbnscan.load_settings()["profile"]
@@ -299,9 +312,11 @@ def scheduler_step(now=None):
     delay = hbnscan.next_scan_delay(settings, SCHEDULER["last_started"], now)
     if delay is None or delay > 0:
         return False
-    SCHEDULER["last_started"] = now or hbnscan.datetime.now()
     started = start_scan()
     if started:
+        # Record the slot only when a scan really began: a manual scan holding the engine
+        # lock must not silently consume the next automatic one.
+        SCHEDULER["last_started"] = now or hbnscan.datetime.now()
         _log(f"[AUTO] Scheduled scan ({hbnscan.describe_schedule(settings)}).")
     return started
 
@@ -439,13 +454,13 @@ class Handler(BaseHTTPRequestHandler):
                     "group": query.get("group", "all"),
                     "query": query.get("query", ""),
                     "order": query.get("order", "priority"),
-                    "limit": query.get("limit", 200),
-                    "offset": query.get("offset", 0),
+                    "limit": _int_param(query, "limit", 200),
+                    "offset": _int_param(query, "offset", 0),
                 }
                 rows, total = list_signals(filters)
                 return self._send(200, {"rows": rows, "total": total,
-                                        "limit": int(filters["limit"]),
-                                        "offset": int(filters["offset"])})
+                                        "limit": filters["limit"],
+                                        "offset": filters["offset"]})
             if route.startswith("/api/signal/"):
                 found = one_signal(route.rsplit("/", 1)[-1])
                 return self._send(200, found) if found else self._error(404, "no such signal")
@@ -630,8 +645,8 @@ PAGE = r"""<!DOCTYPE html>
       <option value="240">4 h</option>
     </select>
   </label>
-  <label class="sub">quiet
-    <input type="text" id="quietHours" size="12" placeholder="22:00-06:00">
+  <label class="sub">scan only between
+    <input type="text" id="scanWindow" size="12" placeholder="22:00-06:00">
   </label>
   <label class="sub">theme
     <select id="themeSel">
@@ -741,7 +756,7 @@ async function persistSettings(fields, controls) {
   }
 }
 
-function parseQuietHours(raw) {
+function parseWindow(raw) {
   const parts = raw.trim().split("-").map((p) => p.trim()).filter(Boolean);
   if (!parts.length) return ["", ""];
   if (parts.length !== 2 || !parts.every((p) => /^\d{1,2}:\d{2}$/.test(p))) return null;
@@ -758,8 +773,8 @@ function syncControls() {
   if (!busy("intervalSel")) {
     selectOption($("intervalSel"), String(s.scan_interval_minutes || 30), `${s.scan_interval_minutes} min`);
   }
-  if (!busy("quietHours")) {
-    $("quietHours").value = s.scan_window_start || s.scan_window_end
+  if (!busy("scanWindow")) {
+    $("scanWindow").value = s.scan_window_start || s.scan_window_end
       ? `${s.scan_window_start || "00:00"}-${s.scan_window_end || "24:00"}` : "";
   }
   if (!busy("sev") && s.filter_severity) $("sev").value = s.filter_severity;
@@ -776,9 +791,9 @@ function syncControls() {
 }
 
 async function saveSchedule() {
-  const quiet = parseQuietHours($("quietHours").value);
-  if (!quiet) {
-    alert("Quiet hours must look like 22:00-06:00, or be blank.");
+  const window = parseWindow($("scanWindow").value);
+  if (!window) {
+    alert("The scanning window must look like 22:00-06:00, or be blank for all day.");
     syncControls();
     return;
   }
@@ -786,9 +801,9 @@ async function saveSchedule() {
     const saved = await persistSettings({
       auto_scan: $("autoOn").checked,
       scan_interval_minutes: $("intervalSel").value,
-      scan_window_start: quiet[0],
-      scan_window_end: quiet[1],
-    }, ["autoOn", "intervalSel", "quietHours"]);
+      scan_window_start: window[0],
+      scan_window_end: window[1],
+    }, ["autoOn", "intervalSel", "scanWindow"]);
     setText("scheduleLabel", saved.schedule_label);
   } catch (e) {
     alert(e.message);
@@ -991,8 +1006,8 @@ $("themeSel").addEventListener("change", async () => {
 });
 $("autoOn").addEventListener("change", saveSchedule);
 $("intervalSel").addEventListener("change", saveSchedule);
-$("quietHours").addEventListener("change", saveSchedule);
-$("quietHours").addEventListener("keydown", (event) => {
+$("scanWindow").addEventListener("change", saveSchedule);
+$("scanWindow").addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); saveSchedule(); }
 });
 $("tabDetail").addEventListener("click", () => showTab("detail"));
@@ -1061,8 +1076,8 @@ def main(argv=None):
     parser.add_argument("--token", default=None,
                         help="shared token for mutating requests (default: generated)")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser")
-    # Deliberately not --quiet: the main CLI uses that name for quiet hours, and this flag
-    # only silences per-request logging.
+    # Deliberately not --quiet: the main CLI's scheduling flag is --window now, but --quiet
+    # lingers as its alias, and this flag only silences per-request logging.
     parser.add_argument("--no-request-log", action="store_true",
                         help="do not log each HTTP request to stderr")
     args = parser.parse_args(argv)
