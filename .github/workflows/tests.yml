@@ -16,7 +16,10 @@ concurrency:
 
 jobs:
   unittest:
-    runs-on: ubuntu-latest
+    # Pinned rather than `ubuntu-latest`: the 26.04 image no longer ships a Python 3.8
+    # build, and 3.8 is the floor this project promises. 22.04 carries every version
+    # below and stays supported.
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
