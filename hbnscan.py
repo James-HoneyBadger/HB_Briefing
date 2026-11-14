@@ -397,7 +397,8 @@ FETCH_CMD_ALWAYS = _env_flag("WATCHDOG_FETCH_CMD_ALWAYS", False)
 PDFTOTEXT = shutil.which("pdftotext") or ""
 
 # Local near-duplicate grouping: 0 disables the pass.
-SIMILARITY_THRESHOLD = float(os.getenv("WATCHDOG_SIMILARITY", "0.7") or 0.7)
+SIMILARITY_THRESHOLD = float(os.getenv("WATCHDOG_SIMILARITY", str(hbsimilar.DEFAULT_THRESHOLD))
+                           or hbsimilar.DEFAULT_THRESHOLD)
 
 
 def reload_env_limits():
@@ -433,9 +434,10 @@ def reload_env_limits():
     FETCH_CMD_TIMEOUT = as_int("WATCHDOG_FETCH_CMD_TIMEOUT", 30)
     FETCH_CMD_ALWAYS = as_flag("WATCHDOG_FETCH_CMD_ALWAYS", False)
     try:
-        SIMILARITY_THRESHOLD = float(str(env.get("WATCHDOG_SIMILARITY", "")).strip() or 0.7)
+        SIMILARITY_THRESHOLD = float(str(env.get("WATCHDOG_SIMILARITY", "")).strip()
+                                     or hbsimilar.DEFAULT_THRESHOLD)
     except ValueError:
-        SIMILARITY_THRESHOLD = 0.7
+        SIMILARITY_THRESHOLD = hbsimilar.DEFAULT_THRESHOLD
     return {
         "deep_read": DEEP_READ_ENABLED,
         "briefing": BRIEFING_ENABLED,

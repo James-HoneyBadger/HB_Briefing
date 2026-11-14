@@ -66,12 +66,21 @@ jobs:
         run: python packaging/build.py appimage
       - name: Build the web-app host bundle (iPadOS / ChromeOS)
         run: python packaging/build.py pwa
+      - name: Build the WebAssembly app
+        run: python packaging/build.py wasm
+      - name: Check the WebAssembly bundle is complete
+        run: |
+          cd dist/hb-briefing-*-wasm
+          for file in index.html runtime.json hbwasm.py hbnscan.py hbsimilar.py hbversion.py; do
+            test -s "$file" || { echo "missing $file"; exit 1; }
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
           path: |
             dist/*.AppImage
             dist/*-web.zip
+            dist/*-wasm.zip
           if-no-files-found: error
 
   # ---------------------------------------------------------------- Fedora .rpm
@@ -201,6 +210,7 @@ jobs:
             | Windows 10/11 | `hb-briefing-<version>-windows-setup.exe` | run the installer |
             | macOS 10.15+ | `hb-briefing-<version>-macos-*.dmg` | drag to Applications |
             | iPadOS, ChromeOS, Android | `*-web.zip` | run `hb-briefing-web` and add to the home screen |
+            | Nothing installed | `*-wasm.zip` | unzip, serve with `python3 -m http.server`, open the page |
             | Source | `hb-briefing-<version>.tar.gz` | `pip install -r requirements.txt` |
 
             See `docs/INSTALL.md` in the repository for the details of each route.

@@ -38,6 +38,7 @@ key in your own user directory rather than in the program files:
 | Windows 10/11 | `.exe` | run `hb-briefing-1.0.0-windows-setup.exe` (per user, no admin) |
 | macOS 10.15+ | `.dmg` | drag **HB Briefing** to *Applications* |
 | iPadOS, iPhone, ChromeOS, Android | web app | run `hb-briefing-web --host 0.0.0.0` and *Add to Home Screen* |
+| Nothing installed at all | WebAssembly | serve `dist/hb-briefing-*-wasm/` and open the page |
 
 The packages install four commands — `hb-briefing` (desktop), `hb-briefing-cli`,
 `hb-briefing-web`, `hb-briefing-tui` — plus a menu entry and icons. The web app registers a
@@ -45,7 +46,7 @@ manifest, a service worker and its own icons, so an iPad or a Chromebook install
 screen or shelf and keeps reading offline. Full per-platform details, including how to override
 the state directory with `HB_BRIEFING_HOME`, are in [Installing](./docs/INSTALL.md).
 
-## Four front ends, one engine
+## Five front ends, one engine
 
 | Front end | Start it with | Best for |
 | --- | --- | --- |
@@ -53,8 +54,9 @@ the state directory with `HB_BRIEFING_HOME`, are in [Installing](./docs/INSTALL.
 | **Web app** | `python3 hbnscan.py --serve` | a browser window, a second screen, or a machine without Tk |
 | **Terminal UI** | `python3 hbnscan.py --tui` | SSH and headless servers: table, filters, detail, scan control |
 | **CLI** | `python3 hbnscan.py` | cron, scripts, one-shot scans and exports |
+| **WebAssembly** | `python3 packaging/build.py wasm` | no install at all: the engine in a browser tab, on any machine or phone |
 
-They share one database and one `settings.json`, so a scan started anywhere appears everywhere,
+The first four share one database and one `settings.json`, so a scan started anywhere appears everywhere,
 and the schedule or theme you set in one is what the others show. None of them contains pipeline
 logic: they all call the same engine.
 

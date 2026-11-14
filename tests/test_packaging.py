@@ -40,8 +40,17 @@ class PayloadTest(unittest.TestCase):
     def test_every_runtime_module_is_declared_for_packaging(self):
         modules = {path.name for path in ROOT.glob("hb*.py")}
         self.assertTrue(modules, "no runtime modules found")
-        missing = modules - set(build.RUNTIME_MODULES)
+        declared = set(build.RUNTIME_MODULES) | set(build.BROWSER_ONLY)
+        missing = modules - declared
         self.assertFalse(missing, f"add {sorted(missing)} to RUNTIME_MODULES in build.py")
+        self.assertEqual(set(build.BROWSER_ONLY) - modules, set(),
+                         "BROWSER_ONLY names a module that no longer exists")
+
+    def test_the_browser_build_ships_the_modules_it_imports(self):
+        self.assertIn("hbwasm.py", build.WASM_MODULES)
+        for name in ("hbnscan.py", "hbsimilar.py", "hbversion.py"):
+            self.assertIn(name, build.WASM_MODULES)
+        self.assertTrue((ROOT / build.WASM_MODULES[0]).is_file())
 
     def test_declared_modules_exist(self):
         for name in build.RUNTIME_MODULES:

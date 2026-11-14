@@ -14,6 +14,7 @@ in your own user account.
 | macOS 10.15+ | `.dmg` | drag to Applications |
 | iPadOS, ChromeOS, Android | web app | open the URL, *Add to Home Screen* |
 | Anything with Python 3.8+ | source | `./start.sh` or `pip install -r requirements.txt` |
+| Nothing at all (no install, any device) | WebAssembly | serve `dist/hb-briefing-1.0.0-wasm/` |
 
 Every package keeps two things apart:
 
@@ -190,6 +191,37 @@ closest thing to a native iPadOS package that the platform allows.
 
 > Serving on `0.0.0.0` exposes the signals to anyone who can reach the port. Keep it on a
 > trusted network, or put a TLS proxy with authentication in front of it.
+
+---
+
+## Nothing installed: the WebAssembly page
+
+A single page that runs the engine itself, compiled to WebAssembly by
+[Pyodide](https://pyodide.org). Useful for a locked-down laptop, a machine that will never get
+Python, or a tablet that already has a browser but no way to install anything.
+
+```bash
+python3 packaging/build.py wasm
+cd dist/hb-briefing-1.0.0-wasm
+python3 -m http.server 8765
+# open http://127.0.0.1:8765/ and drop a file on it
+```
+
+Or take `hb-briefing-1.0.0-wasm.zip` from the release, unzip it anywhere, and serve that folder
+the same way. A local server is required — a `file://` page cannot fetch its own modules.
+
+It accepts a JSON or CSV export from the desktop app, an RSS/Atom feed, an OPML feed list (it
+will offer to fetch the feeds, subject to the publisher's CORS policy), or plain headlines. An
+export keeps the verdicts it was exported with; anything else is scored in the tab by the same
+`heuristic_verdict()` the desktop app uses, and rewrites are grouped by the same MinHash pass.
+
+What it cannot do is honest to state: there is no database in the tab (nothing survives a
+reload), no AI stages (they need a key and a long-lived process), and no feed polling, because
+browsers cannot bypass CORS. For those, run `hb-briefing-web` on a machine and use the phone or
+Chromebook as the screen.
+
+The first load downloads the Python runtime from the Pyodide CDN — that is the only network
+request the page makes. After that it works offline for files and pasted text.
 
 ---
 

@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HB Briefing · WebAssembly</title>
+<meta name="theme-color" content="#252f5e">
+<link rel="icon" href="./icon-192.png" sizes="any">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="description" content="HB Briefing in a browser tab: the same engine, compiled to WebAssembly.">
+<style>
+  :root {
+    --bg:#0f131c; --panel:#171d29; --line:#253044; --line-soft:#1b2331; --hover:#141b27;
+    --bg-input:#0c111a; --ink:#e6edf7; --muted:#94a3b8;
+    --amber:#f5b642; --green:#3fb950; --red:#e5534b; --blue:#58a6ff; --violet:#a371f7;
+  }
+  html[data-theme="light"] {
+    --bg:#eef2f6; --panel:#ffffff; --line:#c7d3e0; --line-soft:#e3e9f0; --hover:#e6edf5;
+    --bg-input:#f8fafc; --ink:#0f172a; --muted:#475569;
+    --amber:#b45309; --green:#047857; --red:#b91c1c; --blue:#1d4ed8; --violet:#6d28d9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+             env(safe-area-inset-left);
+  }
+  header {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 14px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header img { width: 30px; height: 30px; border-radius: 7px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+  header .tag {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--amber);
+    border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px;
+  }
+  header .grow { flex: 1; }
+  main { max-width: 1400px; margin: 0 auto; padding: 18px; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  .pad { padding: 14px 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+       margin: 0 0 10px; font-weight: 600; }
+  button, .button {
+    font: inherit; color: var(--ink); background: var(--bg-input); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 12px; cursor: pointer;
+  }
+  button:hover, .button:hover { background: var(--hover); }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #06101f; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  textarea {
+    width: 100%; min-height: 110px; resize: vertical; font: 12px/1.5 ui-monospace, monospace;
+    color: var(--ink); background: var(--bg-input); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px;
+  }
+  select, input[type="number"] {
+    font: inherit; color: var(--ink); background: var(--bg-input); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 8px;
+  }
+  .drop {
+    border: 1.5px dashed var(--line); border-radius: 10px; padding: 20px; text-align: center;
+    color: var(--muted); transition: border-color .15s, background .15s;
+  }
+  .drop.hot { border-color: var(--blue); background: var(--hover); color: var(--ink); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > .grow { flex: 1; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; }
+  .card { background: var(--bg-input); border: 1px solid var(--line-soft); border-radius: 10px;
+          padding: 10px 12px; }
+  .card b { display: block; font-size: 20px; line-height: 1.2; }
+  .card span { color: var(--muted); font-size: 11px; text-transform: uppercase;
+               letter-spacing: .06em; }
+  .scroll { overflow: auto; max-height: 62vh; border-radius: 10px; border: 1px solid var(--line); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line-soft);
+           vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--hover); font-size: 11px;
+       text-transform: uppercase; letter-spacing: .05em; color: var(--muted); z-index: 1; }
+  tr:hover td { background: var(--hover); }
+  td.title a { color: var(--ink); text-decoration: none; }
+  td.title a:hover { text-decoration: underline; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+          border: 1px solid var(--line); white-space: nowrap; }
+  .sev-high { color: var(--red); border-color: var(--red); }
+  .sev-medium { color: var(--amber); border-color: var(--amber); }
+  .sev-low { color: var(--green); border-color: var(--green); }
+  .sev-none { color: var(--muted); }
+  .layer-watchlist { color: var(--violet); border-color: var(--violet); }
+  .layer-topic { color: var(--blue); border-color: var(--blue); }
+  .meta { color: var(--muted); font-size: 12px; }
+  .group { border-left: 2px solid var(--violet); padding-left: 6px; }
+  #status { font: 12px/1.5 ui-monospace, monospace; color: var(--muted);
+            white-space: pre-wrap; min-height: 18px; }
+  #status.err { color: var(--red); }
+  #status.ok { color: var(--green); }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; padding: 6px 0 20px; }
+</style>
+</head>
+<body>
+<header>
+  <img src="./icon-192.png" alt="">
+  <h1>HB Briefing</h1>
+  <span class="tag">WebAssembly</span>
+  <span class="grow"></span>
+  <span id="engine" class="meta">runtime not loaded</span>
+  <button id="theme" title="Light or dark">◐</button>
+</header>
+
+<main>
+  <section class="pad">
+    <h2>1 · Load something</h2>
+    <div class="drop" id="drop">
+      <div><strong>Drop a file</strong> or <button id="pick" class="button">choose one</button></div>
+      <div class="meta" style="margin-top:6px">
+        JSON or CSV export from the desktop app · an RSS/Atom feed · an OPML feed list ·
+        or plain headlines, one per line
+      </div>
+      <input type="file" id="file" accept=".json,.csv,.xml,.rss,.atom,.opml,.txt,.md" hidden>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <textarea id="pasted" placeholder="…or paste here: a feed, an export, or one headline per line"></textarea>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="analyse" class="primary">Analyse</button>
+      <button id="sampleButton">Load sample</button>
+      <button id="clear">Clear</button>
+      <span class="grow"></span>
+      <label class="meta">Order
+        <select id="order">
+          <option value="priority">priority</option>
+          <option value="newest">newest</option>
+          <option value="oldest">oldest</option>
+        </select>
+      </label>
+      <label class="meta">Rewrite threshold
+        <input id="threshold" type="number" min="0" max="1" step="0.05" value="0.7"
+               style="width:74px">
+      </label>
+    </div>
+    <div id="status" style="margin-top:10px">Loading the Python runtime…</div>
+  </section>
+
+  <details id="feedBox" class="pad" hidden>
+    <summary>Feeds found in this OPML file</summary>
+    <div class="row" style="margin-top:10px">
+      <button id="fetchFeeds">Fetch these feeds</button>
+      <span class="meta">Browsers block cross-origin reads; a feed that refuses will say so.</span>
+    </div>
+    <ul id="feedList" class="meta" style="margin:8px 0 0; padding-left:18px"></ul>
+  </details>
+
+  <section class="pad" id="results" hidden>
+    <h2>2 · What the engine says</h2>
+    <div class="cards" id="cards"></div>
+    <div class="row" style="margin:12px 0">
+      <input id="search" placeholder="Filter titles, categories, assessments…"
+             style="flex:1;min-width:200px;padding:7px 10px;border-radius:8px;
+                    border:1px solid var(--line);background:var(--bg-input);color:var(--ink)">
+      <select id="severityFilter"></select>
+      <select id="categoryFilter"></select>
+      <label class="meta"><input type="checkbox" id="storiesOnly"> grouped stories only</label>
+      <span class="grow"></span>
+      <button id="exportMd">Markdown</button>
+      <button id="exportCsv">CSV</button>
+      <button id="exportJson">JSON</button>
+    </div>
+    <div class="scroll">
+      <table id="table">
+        <thead>
+          <tr><th>Date</th><th>Title</th><th>Source</th><th>Category</th><th>Severity</th>
+              <th>Layer</th><th>Assessment</th><th>Group</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="meta" id="count" style="margin-top:8px"></div>
+  </section>
+
+  <footer>
+    Everything runs in this tab. No feed, file or assessment is sent anywhere; the only network
+    request is the Python runtime itself.
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.29.5/full/pyodide.js"></script>
+<script>
+"use strict";
+
+const RUNTIME_BASE = new URLSearchParams(location.search).get("base") || "./";
+const statusEl = document.getElementById("status");
+const engineEl = document.getElementById("engine");
+let pyodide = null;
+let result = null;
+let feeds = [];
+
+function $(id) { return document.getElementById(id); }
+
+function setStatus(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = kind || "";
+}
+
+function setBusy(value) {
+  for (const id of ["analyse", "sampleButton", "fetchFeeds"]) $(id).disabled = value;
+}
+
+/* Python is called with strings in and JSON out, so no proxy objects leak into the UI. */
+function pyText(expression, bindings) {
+  for (const [name, value] of Object.entries(bindings || {})) pyodide.globals.set(name, value);
+  return pyodide.runPython(expression);
+}
+
+async function boot() {
+  try {
+    pyodide = await loadPyodide({
+      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.5/full/",
+      stdout: (line) => console.debug(line),
+    });
+    // Pyodide unvendors sqlite3; the engine imports it even when it never opens a database.
+    await pyodide.loadPackage("sqlite3");
+    const manifest = await (await fetch(`${RUNTIME_BASE}runtime.json`)).json();
+    for (const name of manifest.modules) {
+      const response = await fetch(`${RUNTIME_BASE}${name}`);
+      if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+      pyodide.FS.writeFile(`/home/pyodide/${name}`, await response.text());
+    }
+    await pyodide.runPythonAsync(
+      "import sys; sys.path.insert(0, '/home/pyodide'); import hbwasm");
+    const version = pyText("import sys; sys.version.split()[0]");
+    engineEl.textContent = `engine ${manifest.version} · Python ${version}`;
+    setStatus("Ready. Drop a file, paste text, or load the sample.", "ok");
+  } catch (error) {
+    setStatus(`Could not start the runtime: ${error.message}\n` +
+      "The page needs one download from the Pyodide CDN. Serve it over http(s) — " +
+      "python3 -m http.server in this folder — rather than opening the file directly.", "err");
+    setBusy(true);
+  }
+}
+
+async function analyseText(text, filename) {
+  if (!pyodide) { setStatus("The runtime is still loading.", "err"); return; }
+  if (!text || !text.trim()) { setStatus("Nothing to analyse.", "err"); return; }
+  setBusy(true);
+  setStatus("Analysing…");
+  try {
+    const started = performance.now();
+    const threshold = parseFloat($("threshold").value);
+    const payload = pyText(
+      "import json, hbwasm\n" +
+      "json.dumps(hbwasm.analyse(_document, _filename, threshold=_threshold, order=_order))",
+      {
+        _document: text,
+        _filename: filename || "",
+        _order: $("order").value,
+        _threshold: Number.isFinite(threshold) ? threshold : 0.7,
+      });
+    result = JSON.parse(payload);
+    feeds = result.feeds || [];
+    renderFeeds();
+    render();
+    const elapsed = Math.round(performance.now() - started);
+    const notes = result.notes.length ? ` · ${result.notes.join(" ")}` : "";
+    setStatus(`Analysed ${result.rows.length} item(s) in ${elapsed} ms as ${result.kind}, ` +
+      `${result.rescored ? "scored here" : "verdicts kept from the export"}` +
+      ` · threshold ${result.threshold}${notes}`, "ok");
+  } catch (error) {
+    setStatus(String(error.message || error), "err");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderFeeds() {
+  const list = $("feedList");
+  list.innerHTML = "";
+  $("feedBox").hidden = !feeds.length;
+  for (const feed of feeds) {
+    const item = document.createElement("li");
+    item.textContent = `${feed.title || feed.url} — ${feed.url}`;
+    list.appendChild(item);
+  }
+}
+
+function card(label, value) {
+  const div = document.createElement("div");
+  div.className = "card";
+  const strong = document.createElement("b");
+  strong.textContent = value;
+  const span = document.createElement("span");
+  span.textContent = label;
+  div.append(strong, span);
+  return div;
+}
+
+function fillSelect(id, values, allLabel) {
+  const select = $(id);
+  const previous = select.value;
+  select.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = allLabel;
+  select.appendChild(all);
+  for (const value of values) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  }
+  select.value = values.includes(previous) || previous === "all" ? previous : "all";
+}
+
+function visibleRows() {
+  const query = $("search").value.trim().toLowerCase();
+  const severity = $("severityFilter").value;
+  const category = $("categoryFilter").value;
+  const grouped = $("storiesOnly").checked;
+  return result.rows.filter((row) => {
+    if (severity !== "all" && row.severity !== severity) return false;
+    if (category !== "all" && row.category !== category) return false;
+    if (grouped && row.cluster_size < 2) return false;
+    if (!query) return true;
+    return [row.title, row.category, row.assessment, row.action, row.source, row.layer]
+      .join(" ").toLowerCase().includes(query);
+  });
+}
+
+function render() {
+  if (!result) return;
+  $("results").hidden = false;
+  const summary = result.summary;
+  const cards = $("cards");
+  cards.innerHTML = "";
+  cards.append(
+    card("items", summary.items),
+    card("flagged", summary.flagged),
+    card("stories", summary.stories),
+    card("rewrites grouped", summary.rewrites),
+    card("undated", summary.undated),
+    card("high", summary.by_severity.high || 0),
+    card("publishers", Object.keys(summary.by_source).length));
+  fillSelect("severityFilter", Object.keys(summary.by_severity), "all severities");
+  fillSelect("categoryFilter", Object.keys(summary.by_category), "all categories");
+  drawTable();
+}
+
+function drawTable() {
+  const rows = visibleRows();
+  const body = document.querySelector("#table tbody");
+  body.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    const date = document.createElement("td");
+    date.className = "meta";
+    date.textContent = row.published || "undated";
+
+    const title = document.createElement("td");
+    title.className = "title";
+    const link = document.createElement("a");
+    link.textContent = row.title || "(no title)";
+    if (row.link) {
+      link.href = row.link;
+      link.target = "_blank";
+      link.rel = "noreferrer noopener";
+    }
+    title.appendChild(link);
+    if (row.freshness) {
+      const fresh = document.createElement("div");
+      fresh.className = "meta";
+      fresh.textContent = row.freshness;
+      title.appendChild(fresh);
+    }
+
+    const source = document.createElement("td");
+    source.className = "meta";
+    source.textContent = row.source || "—";
+
+    const category = document.createElement("td");
+    category.textContent = row.category;
+
+    const severity = document.createElement("td");
+    const sev = document.createElement("span");
+    sev.className = `pill sev-${row.severity || "none"}`;
+    sev.textContent = row.severity;
+    severity.appendChild(sev);
+
+    const layer = document.createElement("td");
+    const lay = document.createElement("span");
+    lay.className = `pill layer-${row.layer || "heuristic"}`;
+    lay.textContent = row.layer;
+    layer.appendChild(lay);
+
+    const assessment = document.createElement("td");
+    assessment.className = "meta";
+    assessment.textContent = row.assessment || row.action || "";
+
+    const group = document.createElement("td");
+    if (row.cluster_size > 1) {
+      const tag = document.createElement("span");
+      tag.className = "pill group";
+      tag.textContent = `${row.cluster_size}×` + (row.similarity ? ` ${row.similarity}` : "");
+      tag.title = "Grouped with near-identical copy";
+      group.appendChild(tag);
+    }
+    tr.append(date, title, source, category, severity, layer, assessment, group);
+    fragment.appendChild(tr);
+  }
+  body.appendChild(fragment);
+  $("count").textContent = `${rows.length} of ${result.rows.length} item(s) shown` +
+    (result.summary.span.first
+      ? ` · coverage ${result.summary.span.first} → ${result.summary.span.last}` : "");
+}
+
+function download(name, text, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function exportAs(kind) {
+  if (!result) return;
+  const stamp = new Date().toISOString().slice(0, 10);
+  if (kind === "json") {
+    download(`hb-briefing-${stamp}.json`, JSON.stringify(result, null, 2), "application/json");
+    return;
+  }
+  const bindings = { _result: JSON.stringify(result) };
+  if (kind === "csv") {
+    download(`hb-briefing-${stamp}.csv`,
+      pyText("import json, hbwasm; hbwasm.to_csv(json.loads(_result)['rows'])", bindings),
+      "text/csv");
+    return;
+  }
+  download(`hb-briefing-${stamp}.md`,
+    pyText("import json, hbwasm; hbwasm.to_markdown(json.loads(_result))", bindings),
+    "text/markdown");
+}
+
+async function readFile(file) {
+  await analyseText(await file.text(), file.name);
+}
+
+async function fetchFeeds() {
+  if (!feeds.length) return;
+  setBusy(true);
+  const collected = [];
+  const failures = [];
+  for (const feed of feeds) {
+    setStatus(`Fetching ${feed.url}…`);
+    try {
+      const response = await fetch(feed.url, { redirect: "follow" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const xml = await response.text();
+      const items = JSON.parse(pyText(
+        "import json, hbwasm; json.dumps(hbwasm.parse_feed(_feed, _feed_url))",
+        { _feed: xml, _feed_url: feed.url }));
+      collected.push(...items);
+    } catch (error) {
+      failures.push(`${feed.url}: ${error.message}`);
+    }
+  }
+  setBusy(false);
+  if (!collected.length) {
+    setStatus("No feed could be read from the browser.\n" + failures.join("\n") +
+      "\nBrowsers require the publisher to allow cross-origin reads (CORS), and most do not. " +
+      "Run hb-briefing-web on a machine instead, or paste a feed's XML.", "err");
+    return;
+  }
+  if (failures.length) {
+    setStatus(`${failures.length} feed(s) could not be read:\n${failures.join("\n")}`, "err");
+  }
+  await analyseText(JSON.stringify(collected), "fetched feeds");
+}
+
+$("pick").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (file) readFile(file);
+});
+$("analyse").addEventListener("click", () => analyseText($("pasted").value, "pasted text"));
+$("sampleButton").addEventListener("click", () => {
+  if (!pyodide) return;
+  const text = pyText("import hbwasm; hbwasm.sample()");
+  $("pasted").value = text;
+  analyseText(text, "sample.json");
+});
+$("clear").addEventListener("click", () => {
+  $("pasted").value = "";
+  $("search").value = "";
+  $("results").hidden = true;
+  $("feedBox").hidden = true;
+  result = null;
+  feeds = [];
+  setStatus("Cleared.");
+});
+$("fetchFeeds").addEventListener("click", fetchFeeds);
+$("exportMd").addEventListener("click", () => exportAs("md"));
+$("exportCsv").addEventListener("click", () => exportAs("csv"));
+$("exportJson").addEventListener("click", () => exportAs("json"));
+$("search").addEventListener("input", drawTable);
+$("severityFilter").addEventListener("change", drawTable);
+$("categoryFilter").addEventListener("change", drawTable);
+$("storiesOnly").addEventListener("change", drawTable);
+$("theme").addEventListener("click", () => {
+  const root = document.documentElement;
+  root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+});
+
+const drop = $("drop");
+for (const name of ["dragenter", "dragover"]) {
+  drop.addEventListener(name, (event) => {
+    event.preventDefault();
+    drop.classList.add("hot");
+  });
+}
+for (const name of ["dragleave", "drop"]) {
+  drop.addEventListener(name, (event) => {
+    event.preventDefault();
+    drop.classList.remove("hot");
+  });
+}
+drop.addEventListener("drop", (event) => {
+  const file = event.dataTransfer.files && event.dataTransfer.files[0];
+  if (file) readFile(file);
+});
+
+boot();
+</script>
+</body>
+</html>

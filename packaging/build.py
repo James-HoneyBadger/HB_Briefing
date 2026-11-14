@@ -8,6 +8,7 @@
     python3 packaging/build.py windows      # installer on Windows (needs PyInstaller + Inno Setup)
     python3 packaging/build.py macos        # .app + .dmg on macOS (needs PyInstaller)
     python3 packaging/build.py pwa          # web-app host bundle for iPadOS/ChromeOS
+    python3 packaging/build.py wasm         # single-page WebAssembly app (Pyodide)
     python3 packaging/build.py source       # tarball for distro packagers and Homebrew
     python3 packaging/build.py frozen       # the self-contained tree, no installer
     python3 packaging/build.py icons        # regenerate the icon set from hbicons.py
@@ -18,6 +19,7 @@ database: they stage a copy, so a package can be built while the app is running.
 """
 import argparse
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -46,6 +48,11 @@ RUNTIME_MODULES = ("hbnscan.py", "hbworkspace.py", "hbconfig.py", "hbnconfig_gui
                    "hbversion.py")
 RUNTIME_ASSETS = ("feeds.txt.example", "watchlist.txt.example", "topics.txt.example",
                   ".env.example", "LICENSE", "README.md", "requirements.txt")
+# Only what hbwasm.py needs: the engine, the similarity pass and the version. The browser app
+# runs the same scoring code, so it ships the same files.
+WASM_MODULES = ("hbwasm.py", "hbnscan.py", "hbsimilar.py", "hbversion.py")
+# Deliberately absent from the desktop payloads: the browser adapter is only useful in the tab.
+BROWSER_ONLY = ("hbwasm.py",)
 DOC_FILES = {"README.md": "README.md", "USER-MANUAL.md": "USER-MANUAL.md",
              "TECHNICAL-REFERENCE.md": "TECHNICAL-REFERENCE.md", "WEB-APP.md": "WEB-APP.md",
              "INSTALL.md": "INSTALL.md"}
@@ -579,6 +586,31 @@ installed app to open with no network at all.
 """
 
 
+# --------------------------------------------------------------------- WebAssembly
+
+
+def build_wasm():
+    """A single-page app that runs the engine in the browser, via Pyodide."""
+    out = DIST / f"{SLUG}-{VERSION}-wasm"
+    clean(out)
+    for name in WASM_MODULES:
+        shutil.copy2(ROOT / name, out / name)
+    shutil.copy2(ROOT / "wasm" / "index.html", out / "index.html")
+    (out / "icon-192.png").write_bytes(hbicons.png_bytes(192))
+    (out / "runtime.json").write_text(json.dumps({
+        "version": VERSION,
+        "modules": list(WASM_MODULES),
+        "runtime": "pyodide 0.29.5",
+    }, indent=2) + "\n", encoding="utf-8")
+    guide = (ROOT / "wasm" / "README.md")
+    if guide.is_file():
+        shutil.copy2(guide, out / "README.md")
+    target = DIST / f"{SLUG}-{VERSION}-wasm.zip"
+    zip_tree(out, target)
+    log(f"{out.relative_to(ROOT)}: serve it with 'python3 -m http.server' inside that folder")
+    return target
+
+
 # --------------------------------------------------------------------- entry point
 
 
@@ -594,6 +626,7 @@ def targets():
         "windows": build_windows,
         "macos": build_macos,
         "pwa": build_pwa,
+        "wasm": build_wasm,
     }
 
 
@@ -610,7 +643,7 @@ def build_all():
             order.append("rpm")
         if shutil.which("makepkg"):
             order.append("arch")
-    order.append("pwa")
+    order += ["pwa", "wasm"]
     for name in order:
         log(f"=== {name} ===")
         available[name]()
