@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=HB Briefing (web)
+GenericName=Signal Monitor
+Comment=Open the HB Briefing web app in your browser
+Exec=hb-briefing-web
+TryExec=hb-briefing-web
+Icon=hb-briefing
+Terminal=true
+Categories=Office;News;Utility;
+Keywords=news;rss;monitor;compliance;dossier;briefing;

@@ -1,0 +1,207 @@
+name: Release
+
+# Builds every installable artefact for a tag like v1.0.0 and attaches them to a GitHub
+# Release. Nothing is published until the test workflow on main has passed, so a broken commit
+# cannot ship a package.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (for example v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  # ---------------------------------------------------------------- Linux: deb + tarball
+  debian:
+    name: Debian/Ubuntu .deb
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime dependency for the icon/version probes
+        run: python -m pip install --disable-pip-version-check python-dotenv
+      - name: Build
+        run: |
+          python packaging/build.py source
+          python packaging/build.py deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Linux: AppImage + PWA
+  appimage:
+    name: Linux AppImage and web bundle
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: |
+          python -m pip install --disable-pip-version-check pyinstaller python-dotenv
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-tk libfuse2
+      - name: Build AppImage
+        run: python packaging/build.py appimage
+      - name: Build the web-app host bundle (iPadOS / ChromeOS)
+        run: python packaging/build.py pwa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: |
+            dist/*.AppImage
+            dist/*-web.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Fedora .rpm
+  rpm:
+    name: Fedora/RHEL .rpm
+    runs-on: ubuntu-22.04
+    container: fedora:latest
+    timeout-minutes: 20
+    steps:
+      - name: Install build tools
+        run: dnf install -y --setopt=install_weak_deps=False git python3 rpm-build python3-dotenv tar gzip
+      - uses: actions/checkout@v4
+      - name: Build
+        run: python3 packaging/build.py rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Windows installer
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: |
+          python -m pip install --disable-pip-version-check pyinstaller python-dotenv
+          choco install -y innosetup --no-progress
+      - name: Build portable zip and installer
+        run: python packaging/build.py windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*setup.exe
+            dist/*windows-portable.zip
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------- macOS
+  macos:
+    name: macOS .dmg
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check pyinstaller python-dotenv
+      - name: Build
+        run: python packaging/build.py macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Arch package recipe
+  arch:
+    name: Arch PKGBUILD
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check python-dotenv
+      - name: Render the PKGBUILD and the Homebrew formula with real checksums
+        run: |
+          python packaging/build.py arch
+          python packaging/build.py source
+          bash -n dist/PKGBUILD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distro-recipes
+          path: |
+            dist/PKGBUILD
+            dist/hb-briefing.rb
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Publish
+  publish:
+    name: Publish the release
+    needs: [debian, appimage, rpm, windows, macos, arch]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect the files into one folder
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release
+      - name: Write the checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: HB Briefing ${{ inputs.tag || github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          body: |
+            Local-first news and regulatory signal monitor: feeds, verdicts, dossiers, actions
+            and source health, all in one SQLite file on your own machine.
+
+            | Platform | File | Install |
+            | --- | --- | --- |
+            | Debian, Ubuntu, Mint, Pop!_OS | `hb-briefing_<version>_all.deb` | `sudo apt install ./hb-briefing_*.deb` |
+            | Fedora, RHEL, openSUSE | `hb-briefing-<version>-1.*.noarch.rpm` | `sudo dnf install ./hb-briefing-*.rpm` |
+            | Any Linux | `hb-briefing-<version>-linux-x86_64.AppImage` | `chmod +x` then run |
+            | Arch, Manjaro | `PKGBUILD` | `makepkg -si` |
+            | Windows 10/11 | `hb-briefing-<version>-windows-setup.exe` | run the installer |
+            | macOS 10.15+ | `hb-briefing-<version>-macos-*.dmg` | drag to Applications |
+            | iPadOS, ChromeOS, Android | `*-web.zip` | run `hb-briefing-web` and add to the home screen |
+            | Source | `hb-briefing-<version>.tar.gz` | `pip install -r requirements.txt` |
+
+            See `docs/INSTALL.md` in the repository for the details of each route.
+          files: release/*

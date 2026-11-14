@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=HB Briefing
+GenericName=Signal Monitor
+Comment=Local-first news and regulatory signal monitor with dossiers
+Exec=hb-briefing
+TryExec=hb-briefing
+Icon=hb-briefing
+Terminal=false
+Categories=Office;News;Utility;
+Keywords=news;rss;monitor;compliance;dossier;briefing;
+StartupNotify=true
+StartupWMClass=HB Briefing
+X-GNOME-UsesNotifications=true

@@ -24,6 +24,27 @@ python3 hbnscan.py --serve   # the web app, in your browser
 python3 hbnscan.py --tui     # the terminal UI
 ```
 
+## Install it
+
+Every major desktop platform has a package, and every package keeps your database, feeds and
+key in your own user directory rather than in the program files:
+
+| Platform | Package | One-line install |
+| --- | --- | --- |
+| Debian, Ubuntu, Mint, Pop!_OS, Kali | `.deb` | `sudo apt install ./hb-briefing_1.0.0_all.deb` |
+| Fedora, RHEL, Rocky, openSUSE | `.rpm` | `sudo dnf install ./hb-briefing-1.0.0-1.*.noarch.rpm` |
+| Any x86_64 Linux | `.AppImage` | `chmod +x hb-briefing-*.AppImage && ./hb-briefing-*.AppImage` |
+| Arch, Manjaro | `PKGBUILD` | `makepkg -si` |
+| Windows 10/11 | `.exe` | run `hb-briefing-1.0.0-windows-setup.exe` (per user, no admin) |
+| macOS 10.15+ | `.dmg` | drag **HB Briefing** to *Applications* |
+| iPadOS, iPhone, ChromeOS, Android | web app | run `hb-briefing-web --host 0.0.0.0` and *Add to Home Screen* |
+
+The packages install four commands — `hb-briefing` (desktop), `hb-briefing-cli`,
+`hb-briefing-web`, `hb-briefing-tui` — plus a menu entry and icons. The web app registers a
+manifest, a service worker and its own icons, so an iPad or a Chromebook installs it to the home
+screen or shelf and keeps reading offline. Full per-platform details, including how to override
+the state directory with `HB_BRIEFING_HOME`, are in [Installing](./docs/INSTALL.md).
+
 ## Four front ends, one engine
 
 | Front end | Start it with | Best for |
@@ -347,7 +368,7 @@ the older `DEEPSEEK_*` names remain as fallbacks).
 - **Private by default**: keys live in `.env` (`0600`), masked in logs, never exported; your
   feeds, topics, priority rules and settings are git-ignored.
 
-## Quick start
+## Quick start from source
 
 One command checks the machine over, installs whatever is missing, and opens the GUI:
 
@@ -374,6 +395,7 @@ Manual equivalent:
 
 | Document | For |
 | --- | --- |
+| [Installing](./docs/INSTALL.md) | Every packaging route: deb, rpm, AppImage, Arch, Windows, macOS, iPadOS/ChromeOS, source |
 | [Instructions](./docs/INSTRUCTIONS.md) | Short, task-oriented steps: install, scan, tune, schedule, notify, export |
 | [User Manual](./docs/USER-MANUAL.md) | Every screen, setting and file, with the reasoning behind it |
 | [Technical Reference](./docs/TECHNICAL-REFERENCE.md) | Architecture, profiles and scoring, AI contract, schema, security, runbook |

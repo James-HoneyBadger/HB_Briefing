@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="256" height="256" role="img" aria-label="HB Briefing">
+  <rect width="1" height="1" rx="0.22" ry="0.22" fill="#252f5e"/>
+  <line x1="0.3" y1="0.76" x2="0.3" y2="0.58" stroke-width="0.17" stroke-linecap="round" stroke="#ffffff"/>
+  <line x1="0.5" y1="0.76" x2="0.5" y2="0.42" stroke-width="0.17" stroke-linecap="round" stroke="#ffffff"/>
+  <line x1="0.7" y1="0.76" x2="0.7" y2="0.24" stroke-width="0.17" stroke-linecap="round" stroke="#f59e0b"/>
+</svg>

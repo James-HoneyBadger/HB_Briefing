@@ -1,0 +1,44 @@
+# Arch / Manjaro / EndeavourOS package. `packaging/build.py arch` fills in the version and the
+# real checksum of the source tarball and writes the result to dist/PKGBUILD.
+pkgname=hb-briefing
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Local-first news and regulatory signal monitor with dossiers and actions"
+arch=('any')
+url="https://github.com/James-HoneyBadger/HB_Briefing"
+license=('MIT')
+depends=('python' 'python-dotenv' 'tk')
+optdepends=('poppler: read PDF orders and filings during deep reads')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('@SHA256@')
+
+package() {
+  install -dm755 "$pkgdir/usr/lib/$pkgname" "$pkgdir/usr/bin" \
+                 "$pkgdir/usr/share/applications" "$pkgdir/usr/share/doc/$pkgname"
+  cp -a ./*.py ./profiles ./*.example ./LICENSE ./README.md ./docs "$pkgdir/usr/lib/$pkgname/"
+
+  local pair name script
+  for pair in "hb-briefing:hbnscan_gui.py" "hb-briefing-cli:hbnscan.py" \
+              "hb-briefing-web:hbnweb.py" "hb-briefing-tui:hbntui.py"; do
+    name="${pair%%:*}"
+    script="${pair##*:}"
+    cat > "$pkgdir/usr/bin/$name" <<EOF
+#!/bin/sh
+set -e
+: "\${HB_BRIEFING_HOME:=\${XDG_DATA_HOME:-\$HOME/.local/share}/hb-briefing}"
+export HB_BRIEFING_HOME
+exec python3 /usr/lib/$pkgname/$script "\$@"
+EOF
+    chmod 0755 "$pkgdir/usr/bin/$name"
+  done
+
+  install -Dm644 ./hb-briefing.desktop "$pkgdir/usr/share/applications/hb-briefing.desktop"
+  local size
+  for size in 16 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/hb-briefing-${size}.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/hb-briefing.png"
+  done
+  install -Dm644 ./docs/USER-MANUAL.md "$pkgdir/usr/share/doc/$pkgname/USER-MANUAL.md"
+  install -Dm644 ./docs/TECHNICAL-REFERENCE.md \
+    "$pkgdir/usr/share/doc/$pkgname/TECHNICAL-REFERENCE.md"
+}

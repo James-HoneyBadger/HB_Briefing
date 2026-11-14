@@ -34,3 +34,7 @@ htmlcov/
 
 # Atomic-write temporaries
 .*.tmp
+
+# Packaging output
+/dist/
+/build/
