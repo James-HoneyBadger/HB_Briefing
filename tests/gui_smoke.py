@@ -89,7 +89,7 @@ def main():
         assert len(rows) == 1, f"expected one grid row, got {len(rows)}"
         values = app.tree.item(rows[0], "values")
         assert values[4] == "Acme fined", values
-        assert values[5].startswith("★ watchlist"), values
+        assert values[5].startswith("★ "), values
         assert values[1] == "2026-11-12", f"publication date not shown: {values}"
 
         app.filter_vars["filter_recent"].set("3d")
@@ -156,6 +156,16 @@ def main():
         buttons["Save"].invoke()
         app.update()
         assert len(app.actions_tree.get_children()) == 1
+
+        # Column widths: defaults are applied, drags persist, reset restores the defaults.
+        assert int(app.tree.column("analysis", "width")) == app.COLUMN_WIDTHS["analysis"]
+        assert app.tree.column("analysis", "stretch")
+        app.tree.column("analysis", width=520)
+        app._capture_column_widths()
+        saved = json.loads((tmp / "s.json").read_text(encoding="utf-8"))
+        assert json.loads(saved["column_widths"])["analysis"] == 520, saved.get("column_widths")
+        app._reset_column_widths()
+        assert int(app.tree.column("analysis", "width")) == app.COLUMN_WIDTHS["analysis"]
 
         # Configuration workspace: every section builds, edits write, diagnostics run.
         app.open_configuration()

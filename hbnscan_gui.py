@@ -392,12 +392,7 @@ class NewsScanApp(tk.Tk):
         for column, label in self._heading_labels.items():
             self.tree.heading(column, text=label,
                               command=lambda col=column: self._sort_by_column(col))
-        self.tree.column("time", width=126, stretch=False)
-        self.tree.column("fresh", width=92, stretch=False)
-        self.tree.column("severity", width=58, stretch=False, anchor="center")
-        self.tree.column("category", width=138, stretch=False)
-        self.tree.column("title", width=300)
-        self.tree.column("analysis", width=330)
+        self._apply_column_widths()
         tree_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_scroll.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -414,6 +409,7 @@ class NewsScanApp(tk.Tk):
         self.row_menu.add_command(label="Open in browser", command=self._open_selected)
         self.row_menu.add_command(label="Copy headline", command=self._copy_selected)
         self.row_menu.add_command(label="Detach from story", command=self._detach_story)
+        self.row_menu.add_command(label="Reset column widths", command=self._reset_column_widths)
         self.row_menu.add_separator()
         self.row_menu.add_command(label="Not relevant (dismiss)", command=self._dismiss_selected)
         self.tree.bind("<Delete>", lambda _e: self._dismiss_selected())
@@ -429,6 +425,45 @@ class NewsScanApp(tk.Tk):
         self.detail_text.pack(fill=tk.X, expand=True)
         self.detail_text.tag_configure("key", foreground=AMBER, font=("Sans", 9, "bold"))
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
+
+    def _apply_column_widths(self):
+        """Restore the user's column widths, falling back to the defaults per column."""
+        stored = {}
+        raw = (self.settings or {}).get("column_widths") or ""
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                stored = parsed
+        for column, default in self.COLUMN_WIDTHS.items():
+            try:
+                width = int(stored.get(column, default))
+            except (TypeError, ValueError):
+                width = default
+            self.tree.column(column, width=max(30, min(2000, width)),
+                             stretch=column in self.STRETCH_COLUMNS,
+                             anchor="center" if column == "severity" else "w")
+
+    def _capture_column_widths(self):
+        """Persist whatever the user dragged, so the layout survives a restart."""
+        if not hasattr(self, "tree") or not self.tree.winfo_exists():
+            return
+        widths = {}
+        for column in self.COLUMN_WIDTHS:
+            try:
+                widths[column] = int(self.tree.column(column, "width"))
+            except tk.TclError:
+                continue
+        if widths:
+            self.settings = hbnscan.save_settings(column_widths=widths)
+
+    def _reset_column_widths(self):
+        hbnscan.save_settings(column_widths="")
+        self.settings = hbnscan.load_settings()
+        self._apply_column_widths()
+        self.log("[INFO] Column widths reset to their defaults.")
 
     def _build_briefing_tab(self, briefing_tab):
         self.brief_text = tk.Text(briefing_tab, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT,
@@ -1241,13 +1276,17 @@ class NewsScanApp(tk.Tk):
 
     @staticmethod
     def _assessment_cell(row):
-        """Assessment plus a text tag for declared interest, so colour is not the only cue."""
+        """Assessment plus a one-glyph tag for declared interest (a text cue, not colour).
+
+        The word is deliberately not spelled out here: the detail pane names the deciding
+        layer, and two characters keep the explanation readable in a narrow column.
+        """
         text = hbnscan.strip_provenance(row["summary"])
         layer = hbnscan.layer_of(row["source_layer"], row["summary"])
         if layer == "watchlist":
-            return "★ watchlist · " + text
+            return "★ " + text
         if layer == "topic":
-            return "◆ topic · " + text
+            return "◆ " + text
         return text
 
     def _on_filter_changed(self, key, value):
@@ -1308,6 +1347,13 @@ class NewsScanApp(tk.Tk):
                 "muted"
             )
         self.brief_text.configure(state="disabled")
+
+    # Detected/Published/Sev/Category/Headline are sized to their content; Assessment takes
+    # every spare pixel, because its text is the one that varies most. Users can drag any
+    # divider and the widths persist in settings.json.
+    COLUMN_WIDTHS = {"time": 108, "fresh": 78, "severity": 50,
+                     "category": 118, "title": 320, "analysis": 380}
+    STRETCH_COLUMNS = ("analysis",)
 
     COLUMN_ORDERS = {"time": "detected", "fresh": "newest", "severity": "severity",
                      "category": "category", "title": "title"}
@@ -2116,6 +2162,7 @@ class NewsScanApp(tk.Tk):
 
     def _rebuild_ui(self):
         """Recreate every widget so a new palette or text size takes effect."""
+        self._capture_column_widths()
         for child in self.winfo_children():
             child.destroy()
         self.settings = hbnscan.load_settings()
@@ -2131,6 +2178,7 @@ class NewsScanApp(tk.Tk):
         self.refresh_workspace()
 
     def _persist_window_state(self):
+        self._capture_column_widths()
         try:
             state = "zoomed" if self.state() == "zoomed" else "normal"
             values = {"window_geometry": self.geometry(), "window_state": state}

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -184,6 +185,28 @@ class FilterTest(DatabaseCase):
         self.add_signal(conn, "acme", summary="[Local Heuristic] Matched merger.")
         _rows, total = hbnscan.select_signals(conn, {"query": "merger"})
         self.assertEqual(total, 1)
+
+
+class ColumnWidthTest(unittest.TestCase):
+    def test_valid_widths_are_kept_and_clamped(self):
+        stored = hbnscan._coerce_setting(
+            "column_widths", {"title": "300", "analysis": 9999, "bad": "x", "": 100}, "")
+        self.assertEqual(json.loads(stored), {"title": 300})
+
+    def test_garbage_falls_back_and_out_of_range_values_are_dropped(self):
+        self.assertEqual(hbnscan._coerce_setting("column_widths", "not json", ""), "")
+        # Below the 30 px floor, so there is nothing usable left and the default applies.
+        self.assertEqual(hbnscan._coerce_setting("column_widths", {"time": 5}, ""), "")
+
+    def test_save_can_clear_the_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            with mock.patch.object(hbnscan, "SETTINGS_PATH", path):
+                hbnscan.save_settings(column_widths={"title": 350})
+                self.assertEqual(json.loads(hbnscan.load_settings()["column_widths"]),
+                                 {"title": 350})
+                hbnscan.save_settings(column_widths="")
+                self.assertEqual(hbnscan.load_settings()["column_widths"], "")
 
 
 class PagingTest(DatabaseCase):

@@ -588,6 +588,9 @@ not dropped: they stay pending and go out on a later scan.
   keeps both looking the same.
 - **Text size** — 80 % to 150 % scaling for the whole interface, for dense tables or large displays.
 - Window size, position, maximised state and pane divider position persist automatically.
+- **Column widths persist too.** Drag any divider in the signal table and the layout is saved
+  when the window closes. Assessment takes the spare width by default; **right-click → Reset
+  column widths** returns every column to its default.
 
 ### 8.7 Data
 

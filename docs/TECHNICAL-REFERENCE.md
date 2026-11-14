@@ -237,6 +237,7 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 | `window_geometry` | string | `WINDOW_GEOMETRY_RE` (`1200x800+10+10`) |
 | `window_state` | enum | `normal`, `zoomed` |
 | `sash` | int | 0–4000 |
+| `column_widths` | JSON object | Treeview column → pixels. Parsed defensively: unknown keys and widths outside 30–2000 are dropped, and a value that is not JSON falls back to the front end's defaults. `""` clears it |
 | `font_scale` | int | 80–150 (percent) |
 
 `save_settings(**values)` merges, coercing each value, and rewrites the whole file. Because

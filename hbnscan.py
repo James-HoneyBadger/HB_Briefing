@@ -1053,7 +1053,7 @@ WINDOW_GEOMETRY_RE = re.compile(r"^\d{2,5}x\d{2,5}([+-]\d{1,5}){2}$")
 # Settings where an empty string means "no restriction / default": clearing them is a change,
 # not a mistake to be ignored.
 BLANK_SETTINGS = ("feed_since", "feed_until", "scan_window_start", "scan_window_end",
-                  "profile", "window_geometry")
+                  "profile", "window_geometry", "column_widths")
 
 # Order fragments are fixed strings, never interpolated from user input.
 _SEVERITY_RANK = ("CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 "
@@ -1250,6 +1250,8 @@ DEFAULT_SETTINGS = {
     "window_geometry": "",
     "window_state": "normal",
     "sash": 360,
+    # JSON object of Treeview column -> pixel width; empty means the front end's defaults.
+    "column_widths": "",
     "font_scale": 100,
 }
 
@@ -1272,6 +1274,28 @@ def _coerce_setting(key, value, default):
         return value if value in setting_choices(key) else default
     if key == "window_geometry":
         return value if isinstance(value, str) and WINDOW_GEOMETRY_RE.match(value) else default
+    if key == "column_widths":
+        # A dict of column id -> width. Anything unparseable or out of range is dropped, so a
+        # hand-edited settings.json cannot make the grid unreadable.
+        parsed = value
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except ValueError:
+                return default
+        if not isinstance(parsed, dict):
+            return default
+        clean = {}
+        for name, width in parsed.items():
+            if not isinstance(name, str) or not name.strip():
+                continue
+            try:
+                width = int(width)
+            except (TypeError, ValueError):
+                continue
+            if 30 <= width <= 2000:
+                clean[name.strip()[:24]] = width
+        return json.dumps(clean, sort_keys=True) if clean else default
     if key == "profile":
         return value.strip() if isinstance(value, str) else default
     if key in ("feed_since", "feed_until"):
