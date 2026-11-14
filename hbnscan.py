@@ -27,8 +27,10 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import smtplib
+import subprocess
 import sqlite3
 import sys
 import tempfile
@@ -49,16 +51,52 @@ from urllib.parse import parse_qsl, quote_plus, urlencode, urlparse, urlsplit
 
 from dotenv import dotenv_values, load_dotenv
 
-APP_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "watchdog_state.db"
-FEEDS_PATH = APP_DIR / "feeds.txt"
-WATCHLIST_PATH = APP_DIR / "watchlist.txt"
-TOPICS_PATH = APP_DIR / "topics.txt"
-SETTINGS_PATH = APP_DIR / "settings.json"
-PROFILE_PATH = APP_DIR / "profile.json"
-REPORT_PATH = APP_DIR / "latest_report.md"
+import hbsimilar
+from hbversion import VERSION
 
-load_dotenv(APP_DIR / ".env")
+__version__ = VERSION
+
+# Code, bundled assets and user state are three different places once the app is installed.
+# A source checkout collapses all three onto APP_DIR, which is what every existing install has;
+# a distro package or a frozen build points HB_BRIEFING_HOME at a writable directory instead.
+APP_DIR = Path(__file__).resolve().parent
+ASSET_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+
+
+def default_home():
+    """The writable state directory: an explicit override, else a per-user data dir."""
+    override = (os.getenv("HB_BRIEFING_HOME") or os.getenv("WATCHDOG_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    if getattr(sys, "frozen", False):
+        return _platform_data_dir()
+    return APP_DIR
+
+
+def _platform_data_dir():
+    """Per-user state location for an installed (frozen) build, by platform convention."""
+    home = Path.home()
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
+        if base:
+            return Path(base) / "HB Briefing"
+        return home / "HB Briefing"
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "HB Briefing"
+    return Path(os.getenv("XDG_DATA_HOME") or home / ".local" / "share") / "hb-briefing"
+
+
+HOME_DIR = default_home()
+DB_PATH = HOME_DIR / "watchdog_state.db"
+FEEDS_PATH = HOME_DIR / "feeds.txt"
+WATCHLIST_PATH = HOME_DIR / "watchlist.txt"
+TOPICS_PATH = HOME_DIR / "topics.txt"
+SETTINGS_PATH = HOME_DIR / "settings.json"
+PROFILE_PATH = HOME_DIR / "profile.json"
+REPORT_PATH = HOME_DIR / "latest_report.md"
+PROFILES_DIR = HOME_DIR / "profiles"
+
+load_dotenv(HOME_DIR / ".env")
 
 # Provider-agnostic names win; the DEEPSEEK_* names stay as a silent fallback so an
 # existing .env keeps working untouched.
@@ -266,6 +304,8 @@ SEEN_EXTRA_COLUMNS = (
     # the normalised headline, so the same story under two URLs still meets its siblings.
     ("cluster_key", "TEXT"),
     ("title_key", "TEXT"),
+    # Bounded copy of the feed summary, used for near-duplicate grouping and entity lookup.
+    ("excerpt", "TEXT"),
 )
 
 FEED_STATE_EXTRA_COLUMNS = (
@@ -285,7 +325,7 @@ SCAN_RUN_EXTRA_COLUMNS = (
 
 # Bumped when a step is added to _MIGRATIONS; stored in PRAGMA user_version so a database
 # can be upgraded exactly once. Additive column sync alone cannot backfill or index.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SOURCE_LAYERS = ("watchlist", "topic", "heuristic", "model")
 
@@ -348,6 +388,17 @@ DEEP_READ_BUDGET = _env_int("WATCHDOG_MAX_DEEP_READS", MAX_DEEP_READS)
 TRIAGE_BUDGET = _env_int("WATCHDOG_MAX_TRIAGE", 40)
 BRIEF_WINDOW_HOURS = _env_int("WATCHDOG_BRIEF_HOURS", 24)
 
+# Optional external fetcher for publishers that block the built-in client. The command runs
+# without a shell: the URL is one argv element (when a `{url}` placeholder is present) or the
+# whole stdin, so URL text can never become a command.
+FETCH_CMD = (os.getenv("WATCHDOG_FETCH_CMD") or "").strip()
+FETCH_CMD_TIMEOUT = _env_int("WATCHDOG_FETCH_CMD_TIMEOUT", 30)
+FETCH_CMD_ALWAYS = _env_flag("WATCHDOG_FETCH_CMD_ALWAYS", False)
+PDFTOTEXT = shutil.which("pdftotext") or ""
+
+# Local near-duplicate grouping: 0 disables the pass.
+SIMILARITY_THRESHOLD = float(os.getenv("WATCHDOG_SIMILARITY", "0.7") or 0.7)
+
 
 def reload_env_limits():
     """Re-read the budget switches from .env, so a settings edit applies without a restart.
@@ -357,7 +408,8 @@ def reload_env_limits():
     read fresh here (not `os.getenv`) because the editor writes it while the process runs.
     """
     global DEEP_READ_ENABLED, BRIEFING_ENABLED, DEEP_READ_BUDGET, TRIAGE_BUDGET
-    global BRIEF_WINDOW_HOURS
+    global BRIEF_WINDOW_HOURS, FETCH_CMD, FETCH_CMD_TIMEOUT, FETCH_CMD_ALWAYS
+    global SIMILARITY_THRESHOLD
     env = _env_values()
 
     def as_int(key, default):
@@ -377,6 +429,13 @@ def reload_env_limits():
     DEEP_READ_BUDGET = as_int("WATCHDOG_MAX_DEEP_READS", MAX_DEEP_READS)
     TRIAGE_BUDGET = as_int("WATCHDOG_MAX_TRIAGE", 40)
     BRIEF_WINDOW_HOURS = as_int("WATCHDOG_BRIEF_HOURS", 24)
+    FETCH_CMD = str(env.get("WATCHDOG_FETCH_CMD", "")).strip()
+    FETCH_CMD_TIMEOUT = as_int("WATCHDOG_FETCH_CMD_TIMEOUT", 30)
+    FETCH_CMD_ALWAYS = as_flag("WATCHDOG_FETCH_CMD_ALWAYS", False)
+    try:
+        SIMILARITY_THRESHOLD = float(str(env.get("WATCHDOG_SIMILARITY", "")).strip() or 0.7)
+    except ValueError:
+        SIMILARITY_THRESHOLD = 0.7
     return {
         "deep_read": DEEP_READ_ENABLED,
         "briefing": BRIEFING_ENABLED,
@@ -414,7 +473,7 @@ def _config_update_lock(path):
             handle.close()
 
 
-ENV_PATH = APP_DIR / ".env"
+ENV_PATH = HOME_DIR / ".env"
 
 
 def update_env_file(**values):
@@ -598,11 +657,20 @@ def profile_summary(value=""):
 
 
 def available_profiles():
-    """Profile choices for the UI: [("built-in default", ""), ("regulatory", path), ...]."""
+    """Profile choices for the UI: [("built-in default", ""), ("regulatory", path), ...].
+
+    User profiles (PROFILES_DIR) come first and shadow a bundled profile of the same name, so
+    saving a profile never has to write into a read-only install directory.
+    """
     choices = [("built-in default", "")]
-    folder = APP_DIR / "profiles"
-    if folder.is_dir():
+    seen = set()
+    for folder in (PROFILES_DIR, ASSET_DIR / "profiles"):
+        if not folder.is_dir():
+            continue
         for path in sorted(folder.glob("*.json")):
+            if path.stem in seen:
+                continue
+            seen.add(path.stem)
             choices.append((path.stem, str(path)))
     return choices
 
@@ -623,21 +691,25 @@ def _profile_setting_name():
 def resolve_profile_path(value):
     """Map a profile name or path to a file, or None when nothing matches.
 
-    A path is tried against the working directory *and* the app directory, so
-    `WATCHDOG_PROFILE=profiles/cybersecurity.json` works from a .env, a desktop
+    A path is tried against the working directory, the state directory and the bundled
+    assets, so `WATCHDOG_PROFILE=profiles/cybersecurity.json` works from a .env, a desktop
     launcher or a cron job without depending on where the process was started.
     """
     value = (value or "").strip()
     if not value:
         return None
     candidate = Path(value).expanduser()
-    for path in (candidate, APP_DIR / candidate) if not candidate.is_absolute() else (candidate,):
+    if candidate.is_absolute():
+        return candidate if candidate.is_file() else None
+    for root in (Path.cwd(), HOME_DIR, ASSET_DIR):
+        path = root / candidate
         if path.is_file():
             return path
     if candidate.suffix.lower() != ".json":
-        named = APP_DIR / "profiles" / f"{value}.json"
-        if named.is_file():
-            return named
+        for folder in (PROFILES_DIR, ASSET_DIR / "profiles"):
+            named = folder / f"{value}.json"
+            if named.is_file():
+                return named
     return None
 
 
@@ -1549,16 +1621,38 @@ def acquire_lock(path):
     return handle
 
 
+BUSY_TIMEOUT_MS = 30000
+
+
 def _connect_raw(path=None, timeout=10):
-    """A connection configured the same way everywhere: row access by name, WAL, busy wait."""
-    conn = sqlite3.connect(str(path or DB_PATH), timeout=timeout)
+    """A connection configured the same way everywhere.
+
+    WAL lets the GUI, web app, TUI and daemon read while a scan writes; `busy_timeout` makes a
+    writer wait for the write lock instead of failing with "database is locked"; NORMAL
+    synchronous is the recommended pairing for WAL (a power loss can lose the last commit, never
+    corrupt the file) and keeps a batch ingest from fsyncing per row.
+    """
+    target = Path(path or DB_PATH)
+    if not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(target), timeout=timeout)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 10000")
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     try:
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
     except sqlite3.DatabaseError:
         pass
     return conn
+
+
+def connection_settings(conn):
+    """The pragmas actually in force, for the diagnostics view and the tests."""
+    return {
+        "journal_mode": str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
+        "busy_timeout": conn.execute("PRAGMA busy_timeout").fetchone()[0],
+        "synchronous": conn.execute("PRAGMA synchronous").fetchone()[0],
+    }
 
 
 def _create_schema(conn):
@@ -1686,6 +1780,17 @@ def _create_schema(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_status "
                  "ON actions (status, priority)")
+    # MinHash band keys: a shared band makes two rows candidates for an exact Jaccard check.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS story_bands (
+            item_hash TEXT NOT NULL,
+            band INTEGER NOT NULL,
+            sig TEXT NOT NULL,
+            PRIMARY KEY (item_hash, band)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_story_bands_lookup "
+                 "ON story_bands (band, sig)")
 
 
 def _ensure_columns(conn, table, columns):
@@ -1746,6 +1851,73 @@ def _backfill_cluster_keys(conn):
                 (first[0], title_key, first[0]))
 
 
+def index_story_bands(conn, item_hash_value, title, excerpt=""):
+    """Store the LSH band keys for one row, so later near-duplicates can find it cheaply."""
+    text = hbsimilar.document_text(title, excerpt)
+    sketch = hbsimilar.signature(hbsimilar.shingles(text))
+    if not sketch:
+        conn.execute("DELETE FROM story_bands WHERE item_hash = ?", (item_hash_value,))
+        return []
+    keys = hbsimilar.bands(sketch)
+    conn.execute("DELETE FROM story_bands WHERE item_hash = ?", (item_hash_value,))
+    conn.executemany(
+        "INSERT INTO story_bands (item_hash, band, sig) VALUES (?, ?, ?)",
+        [(item_hash_value, band, key) for band, key in keys])
+    return keys
+
+
+def adopt_similar(conn, item_hash_value, title, excerpt="", threshold=None, limit=40):
+    """Group a near-duplicate rewrite into an existing story.
+
+    Candidates come from the band index (locality-sensitive hashing), then each one is scored
+    with exact Jaccard over word shingles. Returns a dict with the score and sibling, or None.
+    """
+    threshold = SIMILARITY_THRESHOLD if threshold is None else float(threshold)
+    if threshold <= 0:
+        return None
+    text = hbsimilar.document_text(title, excerpt)
+    words = hbsimilar.shingles(text)
+    if len(words) < 8:
+        return None                       # too short to judge reliably
+    sketch = hbsimilar.signature(words)
+    candidates = []
+    for band, key in hbsimilar.bands(sketch):
+        rows = conn.execute(
+            "SELECT item_hash FROM story_bands WHERE band = ? AND sig = ? LIMIT 5",
+            (band, key)).fetchall()
+        for row in rows:
+            if row[0] != item_hash_value and row[0] not in candidates:
+                candidates.append(row[0])
+        if len(candidates) >= limit:
+            break
+    best = None
+    for other in candidates[:limit]:
+        sibling = conn.execute(
+            "SELECT title, excerpt, cluster_key FROM seen_items WHERE item_hash = ?",
+            (other,)).fetchone()
+        if sibling is None:
+            continue
+        score = hbsimilar.jaccard(
+            words, hbsimilar.shingles(hbsimilar.document_text(sibling[0], sibling[1] or "")))
+        if score >= threshold and (best is None or score > best[0]):
+            best = (score, other, sibling[2])
+    if best is None:
+        return None
+    score, other, sibling_key = best
+    target = sibling_key or f"row:{other}"
+    conn.execute("UPDATE seen_items SET cluster_key = ? WHERE item_hash = ?",
+                 (target, item_hash_value))
+    return {"cluster_key": target, "score": score, "other": other}
+
+
+def _backfill_story_bands(conn):
+    """Index existing rows for near-duplicate matching (their summaries were never stored)."""
+    conn.execute("DELETE FROM story_bands")
+    rows = conn.execute("SELECT item_hash, title, excerpt FROM seen_items").fetchall()
+    for item_hash_value, title, excerpt in rows:
+        index_story_bands(conn, item_hash_value, title, excerpt or "")
+
+
 def _backfill_feed_health(conn):
     """Treat an existing `checked_at` as a successful contact; leave the status unknown."""
     conn.execute(
@@ -1760,6 +1932,7 @@ _MIGRATIONS = (
     (1, "source_layer backfill", _backfill_source_layer),
     (2, "story clustering keys", _backfill_cluster_keys),
     (3, "feed health backfill", _backfill_feed_health),
+    (4, "story band index", _backfill_story_bands),
 )
 
 
@@ -1864,6 +2037,9 @@ def set_feed_state(conn, feed_url, etag, last_modified):
 
 def prune_old_items(conn, days=RETENTION_DAYS):
     cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    conn.execute(
+        "DELETE FROM story_bands WHERE item_hash IN "
+        "(SELECT item_hash FROM seen_items WHERE flagged = 0 AND seen_at < ?)", (cutoff,))
     conn.execute("DELETE FROM seen_items WHERE flagged = 0 AND seen_at < ?", (cutoff,))
 
 
@@ -2121,25 +2297,47 @@ def topic_feeds():
 
 DATA_FILES = (("feeds.txt", "feeds.txt.example"),
               ("watchlist.txt", "watchlist.txt.example"),
-              ("topics.txt", "topics.txt.example"))
+              ("topics.txt", "topics.txt.example"),
+              (".env", ".env.example"))
 
 
 def ensure_data_files(log_callback=None):
-    """Seed feeds.txt/watchlist.txt from their .example twins on first run.
+    """Seed the state directory from the bundled defaults on first run.
 
-    Keeps the repo generic (no personal feeds in git) while still working out of the box.
-    Returns the names of the files that were created.
+    Keeps the repo generic (no personal feeds in git), lets an installed copy start from a
+    read-only code directory, and never overwrites a file the user already has. Returns the
+    names of the files that were created.
     """
     created = []
     for target, example in DATA_FILES:
-        target_path, example_path = APP_DIR / target, APP_DIR / example
+        target_path, example_path = HOME_DIR / target, ASSET_DIR / example
         if target_path.exists() or not example_path.exists():
             continue
+        if not target_path.parent.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(example_path, target_path)
         created.append(target)
         if log_callback:
             log_callback(f"[INFO] Created {target} from {example}")
+    bundled = ASSET_DIR / "profiles"
+    if bundled.is_dir() and not PROFILES_DIR.exists():
+        try:
+            shutil.copytree(bundled, PROFILES_DIR)
+            created.append("profiles/")
+            if log_callback:
+                log_callback("[INFO] Installed the bundled profiles")
+        except OSError:
+            pass
     return created
+
+
+def bootstrap_home(log_callback=None):
+    """Make the state directory usable: create it, then seed whatever is missing."""
+    try:
+        HOME_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SystemExit(f"[ERROR] cannot use data directory {HOME_DIR}: {exc}") from None
+    return ensure_data_files(log_callback)
 
 
 def load_feeds():
@@ -2311,21 +2509,119 @@ def _html_to_text(markup, limit=MAX_ARTICLE_CHARS):
     return parser.text(limit)
 
 
-def fetch_article(url, timeout=FETCH_TIMEOUT):
-    """Fetch the linked page and return readable text (empty when unusable)."""
+def _looks_like_pdf(raw, content_type, url):
+    return (raw[:5] == b"%PDF-"
+            or "pdf" in (content_type or "")
+            or urlparse(url or "").path.lower().endswith(".pdf"))
+
+
+def pdf_to_text(raw):
+    """Extract text from a PDF with the host's `pdftotext`, or return "" when it is absent."""
+    if not PDFTOTEXT:
+        return ""
+    try:
+        proc = subprocess.run([PDFTOTEXT, "-q", "-", "-"], input=raw,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=max(5, FETCH_CMD_TIMEOUT), check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    text = proc.stdout.decode("utf-8", errors="replace")
+    return " ".join(text.split())[:MAX_ARTICLE_CHARS]
+
+
+def _extract_article(raw, url, content_type="", charset="utf-8", log_callback=None):
+    """Turn a fetched payload into readable text, routing PDFs through pdftotext."""
+    if _looks_like_pdf(raw, content_type, url):
+        text = pdf_to_text(raw)
+        if log_callback:
+            log_callback("     [PDF] extracted text with pdftotext" if text else
+                         "     [!] PDF detected but pdftotext is not installed; "
+                         "install poppler-utils to read filings")
+        return text
+    if any(bad in (content_type or "") for bad in ("image/", "audio/", "video/", "octet-stream")):
+        return ""
+    return _html_to_text(raw.decode(charset, errors="replace"))
+
+
+def _run_fetch_command(url):
+    """Fetch `url` through WATCHDOG_FETCH_CMD and return its raw output.
+
+    The command is split with `shlex` and executed without a shell. `{url}` is replaced inside
+    an argument when present; otherwise the URL is written to stdin. That keeps untrusted URL
+    text out of any shell grammar, which is the whole point of not using `shell=True`.
+    """
+    if not FETCH_CMD:
+        raise FeedError("WATCHDOG_FETCH_CMD is not configured")
+    argv = shlex.split(FETCH_CMD)
+    if not argv:
+        raise FeedError("WATCHDOG_FETCH_CMD is empty")
+    if any("{url}" in part for part in argv):
+        argv = [part.replace("{url}", url) for part in argv]
+        stdin = None
+    else:
+        stdin = url.encode("utf-8")
+    try:
+        proc = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=max(1, FETCH_CMD_TIMEOUT),
+                              check=False)
+    except FileNotFoundError as exc:
+        raise FeedError(f"WATCHDOG_FETCH_CMD not found: {argv[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise FeedError(
+            f"WATCHDOG_FETCH_CMD timed out after {FETCH_CMD_TIMEOUT}s") from exc
+    except OSError as exc:
+        raise FeedError(f"WATCHDOG_FETCH_CMD could not start: {exc}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        tail = f": {detail[-1][:160]}" if detail else ""
+        raise FeedError(f"WATCHDOG_FETCH_CMD failed (exit {proc.returncode}){tail}")
+    if not proc.stdout:
+        raise FeedError("WATCHDOG_FETCH_CMD returned no output")
+    if len(proc.stdout) > MAX_ARTICLE_BYTES:
+        raise FeedError("WATCHDOG_FETCH_CMD output exceeds the article size cap")
+    return proc.stdout
+
+
+def fetch_article(url, timeout=FETCH_TIMEOUT, log_callback=None):
+    """Fetch a linked page (or filing) and return readable text (``""`` when unusable).
+
+    Order: the built-in HTTP client first; on 401/403 — or on any failure when
+    `WATCHDOG_FETCH_CMD_ALWAYS` is set — the optional external fetcher; then extraction, with
+    PDFs handed to the host's `pdftotext`.
+    """
     url = safe_link(url)
     if url and is_aggregator_link(url):
         url = resolve_aggregator_link(url)
     if not url:
         return ""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": ARTICLE_ACCEPT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        content_type = (resp.headers.get("Content-Type") or "").lower()
-        if any(bad in content_type for bad in ("pdf", "image/", "octet-stream", "audio/", "video/")):
-            return ""
-        charset = resp.headers.get_content_charset() or "utf-8"
-        raw = resp.read(MAX_ARTICLE_BYTES)
-    return _html_to_text(raw.decode(charset, errors="replace"))
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
+                                               "Accept": ARTICLE_ACCEPT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            charset = resp.headers.get_content_charset() or "utf-8"
+            raw = _read_capped(resp, MAX_ARTICLE_BYTES)
+    except urllib.error.HTTPError as exc:
+        blocked = exc.code in (401, 403)
+        if not FETCH_CMD or not (blocked or FETCH_CMD_ALWAYS):
+            raise
+        if log_callback:
+            log_callback(f"     [HOOK] HTTP {exc.code}; retrying through WATCHDOG_FETCH_CMD")
+        raw = _run_fetch_command(url)
+        if log_callback:
+            log_callback(f"     [HOOK] fetched {len(raw)} byte(s)")
+        return _extract_article(raw, url, "", "utf-8", log_callback)
+    except urllib.error.URLError as exc:
+        if not (FETCH_CMD and FETCH_CMD_ALWAYS):
+            raise
+        if log_callback:
+            log_callback(f"     [HOOK] network error ({exc.reason}); retrying through "
+                         "WATCHDOG_FETCH_CMD")
+        raw = _run_fetch_command(url)
+        return _extract_article(raw, url, "", "utf-8", log_callback)
+    return _extract_article(raw, url, content_type, charset, log_callback)
 
 
 # --------------------------------------------------------------------------- AI layer
@@ -2734,13 +3030,20 @@ def deep_read_item(item, verdict, log_callback=print):
     if host in _BLOCKED_HOSTS:
         return verdict
     try:
-        article = fetch_article(link)
+        article = fetch_article(link, log_callback=log_callback)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            _BLOCKED_HOSTS[host] = exc.code
-            log_callback(
-                f"  [!] {host} blocks automated fetches (HTTP {exc.code}); "
-                "deep reads skipped for that source for the rest of this scan")
+            if FETCH_CMD:
+                # The hook was configured but did not get through; do not block the host for
+                # the rest of the scan, the next article may still succeed.
+                log_callback(f"  [!] {host} returned HTTP {exc.code} and the fetch hook "
+                             "did not bypass it")
+            else:
+                _BLOCKED_HOSTS[host] = exc.code
+                log_callback(
+                    f"  [!] {host} blocks automated fetches (HTTP {exc.code}); "
+                    "deep reads skipped for that source for the rest of this scan. "
+                    "Set WATCHDOG_FETCH_CMD to route it through a fetcher that works")
         else:
             log_callback(f"  [!] Deep read skipped ({exc})")
         return verdict
@@ -3051,14 +3354,15 @@ def _verdict_row(item, url, verdict):
         _clean_text(verdict.get("reason", ""), 200),
         cluster_key,
         title_key,
+        _clean_text(item.get("description", ""), hbsimilar.TEXT_LIMIT),
     )
 
 
 INSERT_SQL = (
     "INSERT INTO seen_items (item_hash, title, link, feed_url, flagged, summary, seen_at, "
     "category, severity, entities, action, facts, confidence, deep_read, dismissed, published, "
-    "source_layer, verdict_reason, cluster_key, title_key) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "source_layer, verdict_reason, cluster_key, title_key, excerpt) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -3094,7 +3398,7 @@ def record_feed_result(conn, url, ok, status=None, error="", new_items=0):
 def run_scan(log_callback=print, cancel=None):
     """Run one scan, guarded against a concurrent scan in another process."""
     ensure_data_files(log_callback)
-    lock = acquire_lock(APP_DIR / "scan.lock")
+    lock = acquire_lock(HOME_DIR / "scan.lock")
     if lock is None:
         log_callback("[!] Another scan is already running; this one was skipped.")
         return 0, 0
@@ -3240,7 +3544,12 @@ def _scan_feed(conn, url, since, until, budget, cancel, log_callback, max_new=MA
         verdict = budget.assess(item, url, log_callback)
         row = _verdict_row(item, url, verdict)
         conn.execute(INSERT_SQL, row)
-        adopt_cluster(conn, row[0], row[-2], row[-1])
+        adopt_cluster(conn, row[0], row[-3], row[-2])
+        similar = adopt_similar(conn, row[0], item["title"], row[-1])
+        if similar:
+            log_callback(f"  [SIMILAR] grouped with {similar['other'][:12]} "
+                         f"({similar['score']:.2f})")
+        index_story_bands(conn, row[0], item["title"], row[-1])
         processed += 1
         stats["new"] += 1
         if verdict["flagged"]:
@@ -4432,8 +4741,17 @@ def _apply_cli_schedule(argv):
     return True
 
 
-if __name__ == "__main__":
-    if sys.argv[1:2] and sys.argv[1] in ("dossier", "action", "sources"):
+def cli_main(argv=None):
+    """The command line entry point: scan, export, schedule, or hand off to a front end.
+
+    `argv` is injected so a frozen build can share this code path instead of duplicating the
+    dispatch; when it arrives, `sys.argv` is rewritten because the flag parsing below reads it
+    directly (it predates this function and is deliberately left alone).
+    """
+    if argv is not None:
+        sys.argv = [sys.argv[0], *argv]
+    bootstrap_home()
+    if sys.argv[1:2] and sys.argv[1] in ("entity", "dossier", "action", "sources"):
         try:
             import hbworkspace
         except ImportError as exc:
@@ -4507,3 +4825,8 @@ if __name__ == "__main__":
             conn.close()
         sys.exit(0)
     run_scan()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli_main())

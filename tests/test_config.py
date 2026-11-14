@@ -22,6 +22,9 @@ class ConfigCase(unittest.TestCase):
             "DB_PATH": root / "state.db",
             "ENV_PATH": root / ".env",
             "APP_DIR": root,
+            "ASSET_DIR": root,
+            "HOME_DIR": root,
+            "PROFILES_DIR": root / "profiles",
             "PROFILE_PATH": root / "profile.json",
         }
         for name, value in self.paths.items():
@@ -158,7 +161,7 @@ class ProfileTest(ConfigCase):
         self.assertTrue(data["builtin"])
         self.assertEqual(data["data"]["name"], hbnscan.DEFAULT_PROFILE["name"])
 
-        path = self.paths["APP_DIR"] / "profiles" / "custom.json"
+        path = self.paths["PROFILES_DIR"] / "custom.json"
         path.write_text(json.dumps({"name": "Custom", "categories": ["policy", "other"]}),
                         encoding="utf-8")
         loaded = hbconfig.profile_editor_data("custom")

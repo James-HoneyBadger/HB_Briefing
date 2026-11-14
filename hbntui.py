@@ -448,7 +448,7 @@ def handle_key(state, key):
 def export_current(state):
     """Write the current filter to a Markdown file and report where it went."""
     stamp = time.strftime("%Y%m%d-%H%M")
-    path = Path(hbnscan.APP_DIR) / f"hb-briefing-{stamp}.md"
+    path = hbnscan.HOME_DIR / f"hb-briefing-{stamp}.md"
     try:
         conn = hbnscan.connect(timeout=10)
         try:
@@ -502,6 +502,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.db:
         hbnscan.DB_PATH = Path(args.db).expanduser()
+    hbnscan.bootstrap_home()
     try:
         curses.wrapper(run)
     except KeyboardInterrupt:

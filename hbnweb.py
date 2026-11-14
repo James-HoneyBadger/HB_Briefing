@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse, urlsplit
 
+import hbicons
 import hbnscan
 
 MAX_BODY = 64 * 1024
@@ -383,6 +384,93 @@ def export_document(fmt):
 # --------------------------------------------------------------------------- HTTP layer
 
 
+_ICON_CACHE = {}
+_MODULE_DIR = Path(__file__).resolve().parent
+
+
+def _icon_size(route):
+    """`/icon-192.png` -> 192, so the icon routes do not need one branch per size."""
+    if not route.startswith("/icon-") or not route.endswith(".png"):
+        return None
+    digits = route[len("/icon-"):-len(".png")]
+    if not digits.isdigit():
+        return None
+    size = int(digits)
+    return size if 16 <= size <= 1024 else None
+
+
+def _icon_png(size):
+    if size not in _ICON_CACHE:
+        _ICON_CACHE[size] = hbicons.png_bytes(size)
+    return _ICON_CACHE[size]
+
+
+def manifest_payload(token=""):
+    """The web app manifest: what makes this installable on iPadOS, ChromeOS and desktop."""
+    return {
+        "name": "HB Briefing",
+        "short_name": "HB Briefing",
+        "description": "Local-first signal monitor: feeds, verdicts and dossiers on your "
+                       "own machine.",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "display_override": ["standalone", "minimal-ui", "browser"],
+        "orientation": "any",
+        "background_color": "#0f131c",
+        "theme_color": "#252f5e",
+        "categories": ["news", "productivity"],
+        "icons": [
+            {"src": f"/icon-{size}.png", "sizes": f"{size}x{size}", "type": "image/png",
+             "purpose": "any"}
+            for size in (192, 256, 512)
+        ] + [{"src": "/icon-512.png", "sizes": "512x512", "type": "image/png",
+              "purpose": "maskable"}],
+    }
+
+
+SERVICE_WORKER = r"""// HB Briefing service worker: keep the shell and the last successful reads on the device,
+// so the installed app opens on a plane, a train or a locked-down network.
+const CACHE = "hb-briefing-v1";
+const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png",
+               "/apple-touch-icon.png"];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL))
+    .then(() => self.skipWaiting()).catch(() => self.skipWaiting()));
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(caches.keys()
+    .then((keys) => Promise.all(keys.filter((key) => key !== CACHE)
+      .map((key) => caches.delete(key))))
+    .then(() => self.clients.claim()));
+});
+
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/")) {
+    // Network first: the cache is a fallback for reading offline, never a silent override.
+    event.respondWith(fetch(request).then((response) => {
+      if (response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE).then((cache) => cache.put(request, copy));
+      }
+      return response;
+    }).catch(() => caches.match(request).then((hit) => hit || new Response(
+      JSON.stringify({error: "offline"}), 
+      {status: 503, headers: {"Content-Type": "application/json"}}))));
+    return;
+  }
+  event.respondWith(fetch(request).catch(() => caches.match(request)
+    .then((hit) => hit || caches.match("/"))));
+});
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "HBBriefing/1.0"
     token = ""
@@ -488,6 +576,19 @@ class Handler(BaseHTTPRequestHandler):
                 data, filename, ctype = export_document(query.get("fmt", "md"))
                 return self._send(200, data, ctype,
                                   {"Content-Disposition": f'attachment; filename="{filename}"'})
+            if route == "/manifest.webmanifest":
+                return self._send(200, manifest_payload(self.token),
+                                  "application/manifest+json")
+            if route == "/sw.js":
+                return self._send(200, SERVICE_WORKER.encode("utf-8"),
+                                  "text/javascript; charset=utf-8")
+            if route in ("/favicon.ico", "/apple-touch-icon.png") or _icon_size(route):
+                size = 180 if route == "/apple-touch-icon.png" else _icon_size(route)
+                if size is None:
+                    payload, ctype = hbicons.ico_bytes(), "image/x-icon"
+                else:
+                    payload, ctype = _icon_png(size), "image/png"
+                return self._send(200, payload, ctype)
             if route == "/api/log":
                 with SCAN_LOCK:
                     return self._send(200, {"log": list(SCAN["log"])})
@@ -541,8 +642,21 @@ PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>HB Briefing</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#252f5e">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="HB Briefing">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  /* Standalone launches (iPad home screen, ChromeOS shelf) must not hide under the notch. */
+  body { padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+</style>
 <style>
   :root, html[data-theme="dark"] {
     --bg:#0f131c; --panel:#171d29; --line:#253044; --line-soft:#1b2331; --hover:#141b27;
@@ -1056,6 +1170,14 @@ $("q").addEventListener("input", () => {
   await refresh();
   schedule();
 })();
+
+// The service worker only registers on a secure context (localhost or HTTPS). Over a plain
+// LAN address the app still installs to the home screen; it just does not cache offline.
+if ("serviceWorker" in navigator) {
+  addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
 </script>
 </body>
 </html>
@@ -1112,6 +1234,7 @@ def main(argv=None):
     parser.add_argument("--no-request-log", action="store_true",
                         help="do not log each HTTP request to stderr")
     args = parser.parse_args(argv)
+    hbnscan.bootstrap_home()
     serve(host=args.host, port=args.port, token=args.token,
           open_browser=not args.no_browser, quiet=args.no_request_log)
     return 0

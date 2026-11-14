@@ -527,7 +527,7 @@ def save_profile(choice, data, overwrite=False):
     if not name:
         raise ValueError("the profile needs a name")
     slug = profile_slug(choice if choice and choice.strip() else name)
-    directory = hbnscan.APP_DIR / "profiles"
+    directory = hbnscan.PROFILES_DIR
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{slug}.json"
     if path.exists() and not overwrite:

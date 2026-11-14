@@ -1618,7 +1618,7 @@ class NewsScanApp(tk.Tk):
 
         def insert_library():
             """Append the shipped topic library, skipping anything already present."""
-            example = hbnscan.APP_DIR / "topics.txt.example"
+            example = hbnscan.ASSET_DIR / "topics.txt.example"
             if not example.exists():
                 messagebox.showwarning("HB Briefing", "topics.txt.example is not installed.",
                                        parent=win)
@@ -2200,14 +2200,22 @@ class NewsScanApp(tk.Tk):
         self.destroy()
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    """Start the desktop app. Returns the process exit code."""
+    del argv
+    hbnscan.bootstrap_home()
     # One GUI only: a second copy would scan over the first.
-    instance_lock = hbnscan.acquire_lock(hbnscan.APP_DIR / ".hb-briefing-gui.lock")
+    instance_lock = hbnscan.acquire_lock(hbnscan.HOME_DIR / ".hb-briefing-gui.lock")
     if instance_lock is None:
         _root = tk.Tk()
         _root.withdraw()
         messagebox.showwarning("HB Briefing", "HB Briefing is already running.")
         _root.destroy()
-        sys.exit(0)
+        return 0
     app = NewsScanApp()
     app.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

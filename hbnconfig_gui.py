@@ -32,7 +32,7 @@ SECTIONS = (
 
 def _topic_library():
     """Active-ready topics from the shipped library (commented lines in the .example file)."""
-    path = hbnscan.APP_DIR / "topics.txt.example"
+    path = hbnscan.ASSET_DIR / "topics.txt.example"
     if not path.exists():
         return []
     found = []

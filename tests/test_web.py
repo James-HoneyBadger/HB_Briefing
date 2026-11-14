@@ -87,6 +87,48 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         return json.loads(body)
 
+    def request_bytes(self, path):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read(), resp.headers.get("Content-Type", "")
+
+    def test_the_page_is_installable_as_a_web_app(self):
+        status, page = self.request("/")
+        self.assertEqual(status, 200)
+        for marker in ('rel="manifest"', "apple-touch-icon", "apple-mobile-web-app-capable",
+                       'name="theme-color"', "safe-area-inset-top"):
+            self.assertIn(marker, page, f"{marker} is needed to install on iPadOS and ChromeOS")
+
+        manifest = self.get_json("/manifest.webmanifest")
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertEqual(manifest["start_url"], "/")
+        sizes = {icon["sizes"] for icon in manifest["icons"]}
+        self.assertIn("192x192", sizes)
+        self.assertIn("512x512", sizes)
+        self.assertTrue(any(icon.get("purpose") == "maskable" for icon in manifest["icons"]),
+                        "ChromeOS crops the icon unless a maskable one is offered")
+
+    def test_service_worker_is_served_with_a_javascript_type(self):
+        status, body, ctype = self.request_bytes("/sw.js")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", ctype)
+        self.assertIn(b"addEventListener", body)
+        self.assertIn(b"/api/", body)
+
+    def test_icons_are_real_images(self):
+        import struct
+        for path, expected in (("/icon-192.png", 192), ("/apple-touch-icon.png", 180),
+                               ("/favicon.ico", None)):
+            status, body, ctype = self.request_bytes(path)
+            self.assertEqual(status, 200, path)
+            if expected is None:
+                self.assertEqual(body[:4], b"\x00\x00\x01\x00", "not an .ico")
+                self.assertIn("icon", ctype)
+                continue
+            self.assertEqual(body[:8], b"\x89PNG\r\n\x1a\n", path)
+            self.assertEqual(struct.unpack(">II", body[16:24]), (expected, expected))
+            self.assertEqual(ctype, "image/png")
+
     def test_page_and_signal_listing_carry_provenance_and_freshness(self):
         status, page = self.request("/")
         self.assertEqual(status, 200)
