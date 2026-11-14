@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+# The default GITHUB_TOKEN inherits whatever the repository setting allows; this job only
+# reads the checkout, so say so explicitly.
+permissions:
+  contents: read
+
+# A superseded push has no value once a newer one is running.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the supported range plus the two releases most users actually run.
+        python-version: ["3.8", "3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m py_compile hbnscan.py hbnscan_gui.py hbnweb.py hbntui.py
+      - run: python -m ruff check .
+      - run: python -m coverage run -m unittest discover -s tests -v
+      - run: python -m coverage report -m
+      - name: Desktop GUI smoke test
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python tests/gui_smoke.py
+          else
+            echo "xvfb-run is unavailable; skipping the desktop smoke test"
+          fi

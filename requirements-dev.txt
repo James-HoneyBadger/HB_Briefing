@@ -1,0 +1,9 @@
+# Development-only tools. The application itself needs requirements.txt only.
+-r requirements.txt
+
+# Pinned: a newer linter can add rules and fail a build that was green yesterday.
+ruff==0.17.5
+
+# Unpinned: pip resolves the newest release that still supports the running interpreter,
+# which keeps the 3.8 job working as coverage drops older runtimes.
+coverage>=7.0

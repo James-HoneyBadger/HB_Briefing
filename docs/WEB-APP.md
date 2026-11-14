@@ -11,7 +11,10 @@ start a scan from any of them and the others see the result on their next refres
 | CLI | `python3 hbnscan.py` | cron, scripts, one-shot scans and exports |
 
 All four share the same `settings.json`, so the scan schedule, filters and theme you set in one
-appear in the others. None of them re-implements the pipeline: they call the engine.
+appear in the others. None of them re-implements the pipeline: they call the engine. Dossiers,
+actions and source health are currently edited in the desktop app or through the workspace
+commands (`hbnscan.py dossier|action|sources`); the web app and TUI read signals, including each
+row's story group.
 
 ---
 
@@ -32,7 +35,8 @@ beyond your own machine.
 ### 1.1 What you can do
 
 - **Signal grid** with the same columns, filters, search, ordering and row limit as the desktop
-  app. *Priority* is a real column: `watchlist`, `topic`, `core` or `context`.
+  app, including the **Fresh** column (publication age, or `undated`) and the text tags for
+  declared interest. *Priority* is a real column: `watchlist`, `topic`, `core` or `context`.
 - **Detail pane** — assessment, next step, key facts, entities, confidence, verification state
   and the publisher link (resolved from a Google News redirect when the engine has it cached).
 - **Run / Stop** a scan, with the live log in the *Log* tab and the digest in *Briefing*.
@@ -41,8 +45,8 @@ beyond your own machine.
 - **Schedule** — on/off, interval and the scanning window, in one bar above the grid (see §3). Each
   change is saved the moment you make it; there is no *Apply* step and no state that a scan can
   reset.
-- **Filters that stick** — severity, category, priority, order and row limit are ordinary
-  settings: the web app saves them as you change them and restores them on the next visit, so a
+- **Filters that stick** — severity, category, priority, publication recency, order and row
+  limit are ordinary settings: the web app saves them as you change them and restores them on the next visit, so a
   reload or a scan never puts the grid back to defaults.
 - **Theme** — five palettes, shared with the desktop app.
 - **Export** — one click downloads the current signal set as HTML; every other format is served
@@ -63,7 +67,9 @@ the port.
 - **Writes need the token**: scan, cancel, dismiss and settings. The page carries its own credential
   (`secrets.token_urlsafe(18)`, replaced per run), which a foreign origin cannot read.
 - `--host 0.0.0.0` is possible and prints a warning: on a shared network every participant can read
-  your signals, and any of them could start a scan if they also read the token from the page.
+  your signals, and any of them could start a scan if they also read the token from the page. For
+  wildcard binds, use an IP address (including the machine's LAN address) in the browser; arbitrary
+  DNS hostnames are rejected by the Host check.
 - Requests whose `Host` header is not the address the server bound are rejected (421), which
   defeats DNS-rebinding tricks.
 - No path serving: the only bytes it returns are pages and exports it renders itself.
@@ -78,8 +84,8 @@ Useful for scripting or a dashboard of your own.
 | --- | --- | --- |
 | GET | `/` | the app |
 | GET | `/api/state` | profile, counts, AI mode, schedule, scan state, log tail |
-| GET | `/api/signals?severity=&category=&group=&order=&query=&limit=&offset=` | rows + total |
-| GET | `/api/signal/<hash>` | one row, with facts and entities |
+| GET | `/api/signals?severity=&category=&group=&recent=&order=&query=&limit=&offset=` | rows + total (`recent` is `all`, `1d`, `3d`, `7d` or `30d`, on publication time) |
+| GET | `/api/signal/<hash>` | one row, with facts, entities and the `story` summary (count and publishers) |
 | GET | `/api/briefing` | latest digest |
 | GET | `/api/settings` | web-editable settings |
 | GET | `/api/log` | scan log lines |
@@ -119,6 +125,7 @@ pane, the briefing, the live scan log, scan control and the schedule.
 | `a` | toggle scheduled scanning on or off |
 | `i` | cycle the scan interval (5, 10, 15, 30, 60, 120, 240 minutes) |
 | `f` `c` `p` `o` | cycle severity, category, priority and ordering |
+| `[` `]` | previous / next page (the header shows `1-200 of N`) |
 | `/` | search the whole database (`Esc` cancels) |
 | `b` / `l` | switch the bottom pane to briefing / scan log |
 | `e` | export the current filter to `hb-briefing-<stamp>.md` |

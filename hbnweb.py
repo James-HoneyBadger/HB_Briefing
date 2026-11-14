@@ -18,6 +18,8 @@ a single-user tool: there are no accounts, and nothing is exposed beyond the sig
 """
 import argparse
 import collections
+from contextlib import closing
+import ipaddress
 import json
 import os
 import secrets
@@ -29,16 +31,14 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 import hbnscan
 
 MAX_BODY = 64 * 1024
 LOG_LINES = 400
-SIGNAL_FIELDS = (
-    "item_hash", "title", "link", "severity", "category", "summary", "action", "facts",
-    "entities", "confidence", "deep_read", "published", "seen_at", "feed_url",
-)
+# The engine owns the column set and the read query, so the API cannot drift from the GUI.
+SIGNAL_FIELDS = hbnscan.SIGNAL_COLUMNS
 
 # Scan state shared by the worker thread and the request threads.
 SCAN = {
@@ -66,9 +66,7 @@ def _log(line):
 
 
 def _connect():
-    conn = sqlite3.connect(hbnscan.DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return hbnscan.connect(timeout=10)
 
 
 def _decodable(value, fallback):
@@ -79,21 +77,16 @@ def _decodable(value, fallback):
 
 
 def _signal_payload(row):
-    """One row, JSON-safe, with the provenance prefix moved into a dedicated field."""
-    summary = row["summary"] or ""
-    priority = hbnscan._priority_of(summary, row["category"])
-    shown = summary
-    for prefix in ("[Watchlist] ", "[Topic] ", "[Local Heuristic] "):
-        if shown.startswith(prefix):
-            shown = shown[len(prefix):]
+    """One row, JSON-safe, with provenance and freshness separated from the raw text."""
     return {
         "hash": row["item_hash"],
         "title": row["title"] or "",
         "link": hbnscan.safe_link(row["link"]),
         "severity": (row["severity"] or "none").lower(),
         "category": row["category"] or "other",
-        "priority": priority,
-        "assessment": shown,
+        "priority": hbnscan.priority_of(row["source_layer"], row["category"], row["summary"]),
+        "layer": hbnscan.layer_of(row["source_layer"], row["summary"]),
+        "assessment": hbnscan.strip_provenance(row["summary"]),
         "action": row["action"] or "",
         "facts": [str(f) for f in _decodable(row["facts"], []) if str(f).strip()],
         "entities": {str(k): [str(v) for v in vals]
@@ -102,8 +95,10 @@ def _signal_payload(row):
         "confidence": "" if row["confidence"] is None else f"{float(row['confidence']):.2f}",
         "verification": "deep read" if row["deep_read"] else "screened only",
         "published": (row["published"] or "")[:10],
+        "freshness": hbnscan.freshness_label(row["published"], row["seen_at"]),
         "detected": row["seen_at"] or "",
         "source": urlparse(row["feed_url"] or "").hostname or "",
+        "cluster": row["cluster_key"] or "",
     }
 
 
@@ -119,18 +114,11 @@ def _int_param(query, name, default):
 
 
 def list_signals(filters):
-    """Filtered page of signals plus the unpaged total for the same filter."""
-    where, params, limit = hbnscan._export_filters(filters)
-    order = hbnscan.row_order(filters.get("order") or "priority")
-    offset = max(0, int(filters.get("offset") or 0))
-    columns = ", ".join(SIGNAL_FIELDS)
-    with _connect() as conn:
-        rows = conn.execute(
-            f"SELECT {columns} FROM seen_items WHERE {where} "
-            f"ORDER BY {order} LIMIT ? OFFSET ?", (*params, limit, offset),
-        ).fetchall()
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM seen_items WHERE {where}", params).fetchone()[0]
+    """One filtered page of signals plus the unpaged total for the same filter."""
+    with closing(_connect()) as conn:
+        rows, total = hbnscan.select_signals(
+            conn, filters, order=filters.get("order"),
+            limit=filters.get("limit"), offset=filters.get("offset") or 0)
     return [_signal_payload(row) for row in rows], total
 
 
@@ -146,32 +134,41 @@ def cached_resolution(url):
 
 def one_signal(item_hash):
     columns = ", ".join(SIGNAL_FIELDS)
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.execute(
             f"SELECT {columns} FROM seen_items WHERE item_hash = ?", (item_hash,)).fetchone()
     if not row:
         return None
     payload = _signal_payload(row)
     payload["display_link"] = cached_resolution(payload["link"]) or payload["link"]
+    try:
+        with closing(_connect()) as conn:
+            payload["story"] = hbnscan.cluster_summary(conn, payload["cluster"])
+    except sqlite3.Error:
+        payload["story"] = None
     return payload
 
 
 def state_payload():
     settings = hbnscan.load_settings()
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         counts = dict(conn.execute(
-            "SELECT severity, COUNT(*) FROM seen_items WHERE flagged = 1 GROUP BY severity"))
+            f"SELECT severity, COUNT(*) FROM seen_items WHERE {hbnscan.VISIBLE_SQL} "
+            "GROUP BY severity"))
         total = conn.execute(
-            "SELECT COUNT(*) FROM seen_items WHERE flagged = 1").fetchone()[0]
+            f"SELECT COUNT(*) FROM seen_items WHERE {hbnscan.VISIBLE_SQL}").fetchone()[0]
         core = conn.execute(
-            f"SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
+            f"SELECT COUNT(*) FROM seen_items WHERE {hbnscan.VISIBLE_SQL} "
             f"AND {hbnscan._core_category_sql()}").fetchone()[0]
         watch = conn.execute(
-            "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
-            "AND summary LIKE '[Watchlist]%'").fetchone()[0]
+            f"SELECT COUNT(*) FROM seen_items WHERE {hbnscan.VISIBLE_SQL} "
+            f"AND {hbnscan._layer_sql()} = 'watchlist'").fetchone()[0]
         topic = conn.execute(
-            "SELECT COUNT(*) FROM seen_items WHERE flagged = 1 "
-            "AND summary LIKE '[Topic]%'").fetchone()[0]
+            f"SELECT COUNT(*) FROM seen_items WHERE {hbnscan.VISIBLE_SQL} "
+            f"AND {hbnscan._layer_sql()} = 'topic'").fetchone()[0]
+        undated = conn.execute(
+            f"SELECT COUNT(*) FROM seen_items WHERE {hbnscan.VISIBLE_SQL} "
+            "AND COALESCE(published, '') = ''").fetchone()[0]
         last_scan = conn.execute(
             "SELECT value FROM meta WHERE key = 'last_scan_at'").fetchone()
         dismissed = conn.execute(
@@ -199,6 +196,7 @@ def state_payload():
             "core": core,
             "watchlist": watch,
             "topic": topic,
+            "undated": undated,
             "dismissed": dismissed,
             "feeds": len(hbnscan.load_feeds()),
         },
@@ -214,6 +212,7 @@ def state_payload():
             "filter_severity": settings["filter_severity"],
             "filter_category": settings["filter_category"],
             "filter_group": settings["filter_group"],
+            "filter_recent": settings["filter_recent"],
             "table_limit": settings["table_limit"],
             "auto_scan": settings["auto_scan"],
             "scan_interval_minutes": settings["scan_interval_minutes"],
@@ -229,7 +228,7 @@ def state_payload():
 
 
 def briefing_payload():
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         content, created = hbnscan.latest_briefing(conn)
     return {"content": content or "", "created_at": created or ""}
 
@@ -242,16 +241,16 @@ def settings_payload():
     settings = hbnscan.load_settings()
     payload = {key: settings[key] for key in (
         "profile", "feed_since", "feed_until", "table_limit", "row_order",
-        "filter_severity", "filter_category", "filter_group", "topics_as_feeds",
-        "theme") + SCHEDULE_KEYS}
+        "filter_severity", "filter_category", "filter_group", "filter_recent",
+        "topics_as_feeds", "theme") + SCHEDULE_KEYS}
     payload["schedule_label"] = hbnscan.describe_schedule(settings)
     return payload
 
 
 EDITABLE_SETTINGS = ("profile", "feed_since", "feed_until", "table_limit", "row_order",
-                     "filter_severity", "filter_category", "filter_group", "topics_as_feeds",
-                     "theme", "auto_scan", "scan_interval_minutes", "scan_window_start",
-                     "scan_window_end")
+                     "filter_severity", "filter_category", "filter_group", "filter_recent",
+                     "topics_as_feeds", "theme", "auto_scan", "scan_interval_minutes",
+                     "scan_window_start", "scan_window_end")
 
 
 def update_settings(values):
@@ -348,7 +347,7 @@ def export_document(fmt):
     """Render the current signal set to (bytes, filename, content type)."""
     fmt = (fmt or "md").lower()
     filters = {"limit": 10000}
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = hbnscan.export_rows(conn, filters)
         briefing = hbnscan.latest_briefing(conn)
     stamp = time.strftime("%Y%m%d-%H%M")
@@ -398,8 +397,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_ok(self):
         """Reject Host headers we did not bind: this is the DNS-rebinding guard."""
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
-        return host in self.allowed_hosts
+        try:
+            parsed = urlsplit("//" + (self.headers.get("Host") or ""))
+            host = parsed.hostname
+            parsed.port
+        except ValueError:
+            return False
+        if not host or parsed.path or parsed.query or parsed.fragment:
+            return False
+        host = host.lower()
+        if host in self.allowed_hosts:
+            return True
+        if self.allow_ip_hosts:
+            try:
+                ipaddress.ip_address(host)
+                return True
+            except ValueError:
+                pass
+        return False
 
     def _token_ok(self):
         supplied = self.headers.get("X-HB-Token", "") or parse_qs(
@@ -453,7 +468,8 @@ class Handler(BaseHTTPRequestHandler):
                     "category": query.get("category", "all"),
                     "group": query.get("group", "all"),
                     "query": query.get("query", ""),
-                    "order": query.get("order", "priority"),
+                    "order": query.get("order", "relevance"),
+                    "recent_days": query.get("recent", "all"),
                     "limit": _int_param(query, "limit", 200),
                     "offset": _int_param(query, "offset", 0),
                 }
@@ -501,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
                 item_hash = str(body.get("hash") or "")
                 if not item_hash:
                     return self._error(400, "hash is required")
-                with _connect() as conn:
+                with closing(_connect()) as conn:
                     state = hbnscan.dismiss_item(conn, item_hash, undo=bool(body.get("undo")))
                 return self._send(200, {"state": state}) if state else self._error(
                     404, "no such signal")
@@ -594,6 +610,8 @@ PAGE = r"""<!DOCTYPE html>
                    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   th.title, td.title { width:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   th.when, td.when { width:104px; color:var(--muted); font-size:12px; }
+  th.fresh, td.fresh { width:64px; color:var(--muted); font-size:12px; }
+  td.fresh.undated { font-style:italic; }
   .high { color:var(--red); } .medium { color:var(--amber); }
   .low { color:var(--muted); } .none { color:var(--muted); }
   .tag { display:inline-block; padding:1px 6px; border-radius:999px; font-size:10px;
@@ -672,9 +690,15 @@ PAGE = r"""<!DOCTYPE html>
         <option value="topic">Topic</option><option value="core">Core</option>
         <option value="context">Context</option>
       </select>
+      <select id="rec">
+        <option value="all">Any date</option><option value="1d">Published today</option>
+        <option value="3d">Last 3 days</option><option value="7d">Last 7 days</option>
+        <option value="30d">Last 30 days</option>
+      </select>
       <select id="ord">
-        <option value="priority">Priority</option><option value="newest">Newest</option>
-        <option value="oldest">Oldest</option><option value="severity">Severity</option>
+        <option value="relevance">Relevance</option><option value="priority">Severity</option>
+        <option value="newest">Newest news</option><option value="detected">Newest ingest</option>
+        <option value="oldest">Oldest</option><option value="severity">Severity only</option>
         <option value="title">Title</option><option value="category">Category</option>
       </select>
       <select id="lim">
@@ -684,7 +708,7 @@ PAGE = r"""<!DOCTYPE html>
     <div class="counts" id="counts"></div>
     <div class="scroller">
       <table>
-        <thead><tr><th class="sev">Sev</th><th class="cat">Category</th><th>Headline</th><th class="when">Detected</th></tr></thead>
+        <thead><tr><th class="sev">Sev</th><th class="cat">Category</th><th>Headline</th><th class="fresh">Fresh</th><th class="when">Detected</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
       <div class="empty" id="empty" hidden>No signals match these filters.</div>
@@ -784,6 +808,7 @@ function syncControls() {
   }
   if (!busy("grp") && s.filter_group) $("grp").value = s.filter_group;
   if (!busy("ord") && s.row_order) $("ord").value = s.row_order;
+  if (!busy("rec") && s.filter_recent) $("rec").value = s.filter_recent;
   if (!busy("lim") && s.table_limit) {
     selectOption($("lim"), String(s.table_limit), String(s.table_limit));
   }
@@ -817,9 +842,10 @@ async function saveFilters() {
       filter_severity: $("sev").value,
       filter_category: $("cat").value,
       filter_group: $("grp").value,
+      filter_recent: $("rec").value,
       row_order: $("ord").value,
       table_limit: $("lim").value,
-    }, ["sev", "cat", "grp", "ord", "lim"]);
+    }, ["sev", "cat", "grp", "ord", "rec", "lim"]);
   } catch (e) {
     setText("saveState", "not saved: " + e.message);
   }
@@ -875,7 +901,9 @@ function rowElement(sig) {
   title.append(esc("span", sig.title));
   const when = esc("td", (sig.detected || "").replace("T", " ").slice(0, 16));
   when.className = "when";
-  tr.append(sev, cat, title, when);
+  const fresh = esc("td", sig.freshness || "undated");
+  fresh.className = "fresh" + (sig.published ? "" : " undated");
+  tr.append(sev, cat, title, fresh, when);
   tr.addEventListener("click", () => select(sig.hash));
   return tr;
 }
@@ -883,7 +911,8 @@ function rowElement(sig) {
 async function loadSignals() {
   const params = new URLSearchParams({
     severity: $("sev").value, category: $("cat").value, group: $("grp").value,
-    order: $("ord").value, limit: $("lim").value, query: $("q").value.trim(),
+    recent: $("rec").value, order: $("ord").value, limit: $("lim").value,
+    query: $("q").value.trim(),
   });
   const data = await api("/api/signals?" + params.toString());
   const body = $("rows");
@@ -914,7 +943,8 @@ async function select(hash) {
     dl.append(esc("dt", label), esc("dd", value));
   };
   add("Detected", (sig.detected || "").replace("T", " "));
-  add("Published", sig.published);
+  add("Published", sig.published ? sig.published + " (" + (sig.freshness || "") + ")"
+                                 : "undated: the feed supplied no date");
   add("Source", sig.source);
   add("Assessment", sig.assessment);
   add("Next step", sig.action);
@@ -1013,7 +1043,7 @@ $("scanWindow").addEventListener("keydown", (event) => {
 $("tabDetail").addEventListener("click", () => showTab("detail"));
 $("tabBrief").addEventListener("click", () => showTab("brief"));
 $("tabLog").addEventListener("click", () => showTab("log"));
-for (const id of ["sev", "cat", "grp", "ord", "lim"]) {
+for (const id of ["sev", "cat", "grp", "rec", "ord", "lim"]) {
   $(id).addEventListener("change", saveFilters);
 }
 let debounce = null;
@@ -1041,6 +1071,7 @@ def serve(host="127.0.0.1", port=8765, token=None, open_browser=True, quiet=Fals
     handler = type("BoundHandler", (Handler,), {
         "token": token,
         "allowed_hosts": {"127.0.0.1", "localhost", "::1", host.lower()},
+        "allow_ip_hosts": host in ("0.0.0.0", "::"),
         "quiet": quiet,
     })
     httpd = ThreadingHTTPServer((host, port), handler)

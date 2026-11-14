@@ -180,13 +180,18 @@ and secrets.
 | **Auto-Scan** | Enables the scheduled loop according to the interval and scanning window |
 | **every [N ▾]** | The scan interval: 5, 10, 15, 30, 60, 120 or 240 minutes, saved the moment you pick it |
 
-**Signal table** — five columns: time detected, severity, category, headline, assessment.
-Headlines are colour-coded by severity (high, medium, low); declared-interest hits are marked
-`[Watchlist]` or `[Topic]` and carry a group badge (the watchlist note or the topic's group). A
-`NEW` marker distinguishes items added by the most recent scan from the historical backlog.
+**Signal table** — six columns: time detected, publication date, severity, category, headline,
+assessment. The **Published** column shows the date the publisher gave, or `undated` when the
+feed supplied none — the tool never guesses a date. Headlines are colour-coded by severity
+(high, medium, low); declared-interest hits are also tagged in text (`★ watchlist`, `◆ topic`),
+so colour is not the only cue. A `NEW` marker distinguishes items added by the most recent scan
+from the historical backlog.
 
-**Detail pane** — for the selected row: full assessment, key facts as a list, named entities,
-model confidence, the suggested next step and the canonical link.
+**Detail pane** — for the selected row: full assessment, which layer decided it (`watchlist`,
+`topic`, `heuristic`, `model`), the suggested next step, publication date with its freshness
+label, detection time, key facts, named entities, model confidence and the canonical link. It
+looks the row up by its content hash, so two feeds carrying the same URL cannot show each
+other's verdict.
 
 **Log pane** — live telemetry with severity-tagged lines: feed fetches, per-item decisions,
 stage-2 outcomes, token usage, notification results, warnings. It is the first place to look
@@ -211,6 +216,79 @@ their next refresh, and the interval or theme you set in one is what the rest sh
 walkthrough of the browser and terminal interfaces, including the HTTP API and TUI key map:
 [Web App and Terminal UI](./WEB-APP.md).
 
+### 3.2 The Dossiers tab
+
+A dossier is a named research container: a subject, an entity or a question you are working. It
+holds the signals you chose, a note you wrote on each, open questions and its own actions — and
+it renders a cited report from exactly that material.
+
+**Left column** lists every dossier with its signal count, and marks closed ones. **Right pane**
+is a live preview of the report: scope, key developments, timeline, open questions, actions and
+evidence gaps. Nothing appears there that is not in the database.
+
+| Control | Effect |
+| --- | --- |
+| **New dossier** | Name, kind (`subject`, `entity`, `question`) and a scope note stating the question it answers |
+| **Edit** | Rename, re-describe, change the kind |
+| **Add current signal** | Adds the row selected in **Today** to the selected dossier (idempotent) |
+| **Add note** | Records an open question; it appears in the report and the timeline context |
+| **Export report** | Writes `.md`, `.html` or `.json` from the same structured report |
+| **Close / reopen** | Sets the dossier's status without deleting anything |
+| **Delete** | Removes the dossier, its notes and its membership list — the signals and actions stay |
+
+A report is **deterministic and offline**: it never calls a model, so the same dossier always
+renders the same report, and every development carries its publisher and date. Sections that
+would be speculative are replaced by *Evidence gaps* — for example "4 signals were screened
+from the feed only", "2 signals have no publication date", "source example.com failed its last
+fetch (HTTP 403)".
+
+### 3.3 The Actions tab
+
+Actions are the follow-ups a signal implies: call the clerk, request the filing, watch the
+docket. Each has a title, an optional detail, a priority (`high`, `medium`, `low`), an optional
+due date and an optional dossier. Statuses are `open`, `in_progress`, `done` and `dropped`;
+completing and reopening is one click and keeps `completed_at` honest.
+
+The tab lists actions by status, then priority, then due date. **Export list** writes the same
+ordering as Markdown so it can be pasted into a ticket, a mail or a report.
+
+### 3.4 The Sources tab
+
+Every configured feed with the result of its last fetch: `ok`, `failing`, `stale` (no successful
+fetch within twice the scan interval, with a six-hour floor) or `never`. A failure keeps the
+previous success time visible, which is what makes a silently dead source obvious.
+
+| Control | Effect |
+| --- | --- |
+| **Refresh** | Re-read coverage and status from the database |
+| **Scan now** | Starts a scan, which updates every row here |
+| **Edit feeds** | Opens `feeds.txt` |
+
+The **Today** tab carries the same numbers as a one-line strip: source totals, failing/stale
+counts, signal totals, how many arrived since the previous scan, undated signals, and when the
+last scan ran.
+
+### 3.5 The workspace from a shell
+
+Everything the tabs do is available without a display, which is also what makes it scriptable:
+
+```bash
+python3 hbnscan.py dossier list
+python3 hbnscan.py dossier new "Acme fiber build-out" --summary "Are they building?"
+python3 hbnscan.py dossier add "Acme fiber build-out" --latest 10 --search permit
+python3 hbnscan.py dossier note 1 "Does the permit cover the whole route?"
+python3 hbnscan.py dossier report 1                       # Markdown on stdout
+python3 hbnscan.py dossier report 1 --export report.md
+python3 hbnscan.py action new "Call the clerk" --dossier 1 --priority high --due 2026-12-01
+python3 hbnscan.py action list --all
+python3 hbnscan.py action done 1
+python3 hbnscan.py action export action-list.md
+python3 hbnscan.py sources                                # or --json
+```
+
+Exit code is `0` on success and `2` for a usage or validation error (`--json` on `sources` is
+the machine-readable form).
+
 ---
 
 ## 4. Scanning
@@ -225,10 +303,11 @@ walkthrough of the browser and terminal interfaces, including the HTTP API and T
 5. Applies the watchlist, then triage (model when configured, heuristic otherwise), within
    the per-scan triage budget; remaining items are scored offline.
 6. Deep-reads the strongest candidates within the deep-read budget.
-7. Persists verdicts, prunes unflagged items past the retention window, records the run.
-8. Regenerates `latest_report.md` **only when something new was found**, then refreshes the
-   briefing if it has aged past its window.
-9. Sends notifications for new qualifying signals, if enabled.
+7. Persists verdicts, prunes unflagged items past the retention window, then records the
+   timestamps and one `scan_runs` row in the same transaction.
+8. Regenerates `latest_report.md` with those timestamps already in place, including the
+   briefing when a new one was written.
+9. Sends any qualifying signals that have not been sent yet, if notifications are enabled.
 
 ### 4.2 Progress and cancellation
 
@@ -259,8 +338,9 @@ Offline scans finish in seconds.
 | --- | --- | --- |
 | **Severity** | all, high, medium, low | plus *none* only via reclassification output |
 | **Category** | all, or the profile's categories | default: regulatory_action, litigation, consumer_hardship, policy, market, other |
-| **Priority** | all, watchlist, core, context | *core* = the profile's core categories |
-| **Order** | priority, newest, oldest, severity, title, category | *priority* = severity → watchlist → core → recency |
+| **Priority** | all, watchlist, topic, core, context | *core* = the profile's core categories |
+| **Within** | any date, today, 3 days, 7 days, 30 days | publication recency; signals with no published date are left out rather than counted as new |
+| **Order** | relevance, priority, newest, oldest, detected, severity, title, category | *relevance* = declared interest → severity → recency; *priority* = severity → declared interest → core → recency; *newest* is publication date (not ingest), *detected* is ingest order |
 
 All filters persist across restarts, and the same ordering logic drives the report, the
 notification digest and exports — so what you see is what gets mailed and written.
@@ -291,7 +371,20 @@ table, report, exports and notifications, but is *not* deleted: it is marked dis
 can audit the decision later. Dismissal also teaches you something — if the same pattern keeps
 appearing, adjust `watchlist.txt` or the profile rather than dismissing repeatedly.
 
-### 5.6 Old rows and reclassification
+### 5.6 One story, several feeds
+
+Syndicated copies are grouped as one **story**, so the same ruling covered by four publishers
+does not read as four events. Grouping is deliberately exact rather than fuzzy: two rows join
+when their canonical URLs match (tracking parameters, `www.`, the fragment and odd ports are
+ignored) or when their normalised headlines match (a trailing ` - Publisher` is stripped). When
+a new row joins, it adopts the story of its earliest sibling.
+
+The detail pane reports the group — "3 item(s) from 2 publisher(s)" — and
+**Right-click → Detach from story** pulls a wrongly merged row back out. Detaching only affects
+that row; the rest of the story is untouched. Stories affect presentation and reporting, never
+whether a signal is flagged.
+
+### 5.7 Old rows and reclassification
 
 Heuristics improve; historical verdicts do not change by themselves. `--reclassify` re-derives
 category and severity for items that were scored offline, leaving the flag decision alone:
@@ -324,13 +417,14 @@ is fixed so it can be diffed and mailed:
 2. **Executive briefing** — a fresh stage-3 narrative, or the previous digest explicitly
    labelled as carried over (a scan with nothing new does not buy a new briefing).
 3. **Summary** — counts by severity; how many signals are core for the *active profile*, how
-   many are watchlist matches and how many are topic matches; source counts; last scan time;
-   last AI spend.
+   many are watchlist matches and how many are topic matches; source counts; how many signals
+   are undated; last scan time; last AI spend.
 4. **New since the previous scan** — the items that arrived after the last scan, with the true
    total when it exceeds the 15 listed.
-5. **Signals** — the top 50 in priority order (severity → watchlist or topic → core → recency),
-   each with detection time, severity, category, priority, headline, assessment, key facts,
-   entities, confidence, verification state and link.
+5. **Signals** — the top 50 in priority order (severity → watchlist or topic → core →
+   publication-aware recency), each with detection time, publication date and freshness,
+   severity, category, priority, headline, assessment, key facts, entities, confidence,
+   verification state and link. Undated signals are counted in the summary.
 
 An empty scan therefore still refreshes the counts and the timestamp; only the *briefing* is
 carried over, and the report says so.
@@ -453,7 +547,8 @@ sets them everywhere ([§9](#9-scheduling)).
 - **Max items** — 1–20 per message.
 - **Send test** — exercises the real transport and reports the SMTP error verbatim.
 
-Transport lives in `.env`; see [§10](#10-notifications).
+Transport lives in `.env`; see [§10](#10-notifications). Signals beyond the per-message cap are
+not dropped: they stay pending and go out on a later scan.
 
 ### 8.6 Appearance
 
@@ -462,6 +557,13 @@ Transport lives in `.env`; see [§10](#10-notifications).
   keeps both looking the same.
 - **Text size** — 80 % to 150 % scaling for the whole interface, for dense tables or large displays.
 - Window size, position, maximised state and pane divider position persist automatically.
+
+### 8.7 Data
+
+- **Back up database** — writes a timestamped `watchdog_state-backup-YYYYMMDD-HHMMSS.db` next to
+  the live database using SQLite's online backup API. Safe to run during a scan, and worth doing
+  before an upgrade: the first launch of a new version upgrades the schema, and this is the way
+  back.
 
 ---
 
@@ -528,14 +630,16 @@ Design notes:
 
 ### 10.1 What gets sent
 
-A digest of **new** signals since the last notification, filtered by your minimum severity,
+A digest of **unsent** signals, filtered by your minimum severity,
 optionally excluding declared-interest hits (watchlist rules and topics), capped by max items,
 ordered by the same priority logic as the table. Each entry carries severity, category, headline
 and link; the subject line states the count and the leading headline, and both the subject and
 the footer carry the active profile's name.
 
-Nothing is sent when nothing qualifies — no "0 new items" noise. The last notification time is
-stored, so restarts never re-send the same items.
+Nothing is sent when nothing qualifies — no "0 new items" noise. Sent item IDs are stored so
+restarts do not normally re-send them. Items beyond the per-message cap remain pending for later
+scans, even if those scans find nothing new. If delivery succeeds but recording it fails, a retry
+can send an item again.
 
 ### 10.2 E-mail
 
@@ -588,7 +692,27 @@ how confident the engine is. When offline verdicts are exported, those columns c
 heuristic's own explanation rather than an empty cell, so the document is never misleading
 about what was and was not model-generated.
 
-### 11.2 Practical patterns
+### 11.2 Dossier reports
+
+A dossier exports the same structured report you see in its preview, in three formats:
+
+| Format | Contents |
+| --- | --- |
+| `.md` | Scope, at-a-glance counts, key developments with links and dates, full timeline, open questions, actions, evidence gaps |
+| `.html` | Self-contained page with severity badges; every value escaped |
+| `.json` | The structured report object, for downstream tooling |
+
+```bash
+python3 hbnscan.py dossier report 1 --export acme-fiber.html
+```
+
+The action list exports separately, ordered by status, priority and due date:
+
+```bash
+python3 hbnscan.py action export action-list.md
+```
+
+### 11.3 Practical patterns
 
 - **Weekly pack** — export `.docx` for management, `.csv` for the tracker, both from the same
   filtered view.

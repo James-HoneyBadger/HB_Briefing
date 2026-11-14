@@ -71,7 +71,10 @@ The design choices that follow from that:
                         └───────────┬─────────────┘
                                     ▼
                         ┌─────────────────────────┐
-                        │ _run_scan               │  per item: hash → seen? → window? → dedupe
+                        │ _run_scan (orchestrator)│  budgets, cancellation, commit boundary
+                        │   _prepare_scan         │  config + warnings, once per scan
+                        │   _scan_feed            │  per item: hash → seen? → window? → dedupe
+                        │   _ScanBudget.assess    │  triage, deep read, in-scan dedupe
                         └───────────┬─────────────┘
                                     ▼
         ┌──────────────────────────────────────────────────────┐
@@ -97,45 +100,51 @@ The design choices that follow from that:
 
 | File | Lines (approx.) | Responsibility |
 | --- | --- | --- |
-| `hbnscan.py` | 3 560 | Engine: profiles, topics, feeds, scoring, AI, storage, report, exports, notifications, scheduling, daemon, CLI |
-| `hbnscan_gui.py` | 1 470 | Tkinter desktop interface; imports the engine, never reimplements it |
-| `hbnweb.py` | 990 | Browser interface: `ThreadingHTTPServer`, JSON API, embedded page |
-| `hbntui.py` | 465 | Curses terminal interface |
+| `hbnscan.py` | 4 400 | Engine: profiles, topics, feeds, scoring, AI, storage and migrations, report, exports, notifications, scheduling, daemon, CLI |
+| `hbworkspace.py` | 900 | Research workspace: dossiers, notes, actions, cited reports, source health, workspace CLI. Deterministic, offline, no network |
+| `hbnscan_gui.py` | 2 100 | Tkinter desktop interface: Today, Dossiers, Actions, Sources, Briefing |
+| `hbnweb.py` | 1 150 | Browser interface: `ThreadingHTTPServer`, JSON API, embedded page |
+| `hbntui.py` | 500 | Curses terminal interface |
 | `start.sh` | 85 | Interpreter discovery, dependency bootstrap, `.example` seeding, launch |
 | `install_autostart.sh` | 57 | XDG desktop entry + login autostart |
 | `profiles/*.json` | — | Ten complete domain bundles |
 | `docs/*.md` | — | Instructions, manual, front ends, this reference |
+| `tests/` | — | Engine, delivery, workspace, web API, TUI and GUI smoke tests |
+| `pyproject.toml`, `requirements-dev.txt` | — | Lint and coverage configuration; development-only pins |
 
 No front end contains pipeline logic. Each one reads the database, calls the same engine
-functions (`run_scan`, `export_items`, `build_briefing`, `next_scan_delay`, `apply_profile`) and
-writes the same `settings.json`, which is why behaviour cannot diverge between them.
+functions (`run_scan`, `select_signals`, `export_items`, `build_briefing`, `next_scan_delay`,
+`apply_profile`) and the same workspace functions (`dossier_report`, `list_actions`,
+`coverage_summary`), and writes the same `settings.json`, which is why behaviour cannot diverge
+between them. `hbworkspace` depends on `hbnscan`; the dependency never runs the other way.
 
 The engine has no `if __name__`-time side effects beyond `apply_profile()` and
 `load_dotenv()`, which is what lets the GUI, the web app, the TUI, the tests and the CLI share it.
 
 ### 2.1 Internal sections of `hbnscan.py`
 
-The file is a flat module organised by banner comments, in dependency order:
+The file is a flat module organised by banner comments, in dependency order. Line numbers move
+with every edit, so this map names the entry points instead; follow the banner comment to jump.
 
-```
-constants & env          1–121      paths, LLM config, budgets, limits
-profiles                 122–748    DEFAULT_PROFILE, resolution, normalisation, apply
-scheduling rule          749–872    next_scan_delay, describe_schedule, THEME_NAMES
-settings                 873–1136   schema, coercion, load/save, palettes
-database                 1137–1246  init_db, feed_state, pruning, scan lock
-watchlist                1247–1332  parse, match, prompt block
-topics                   1333–1484  parse, merge, match, groups, feeds
-feeds                    1485–1696  fetch, conditional GET, parse, aggregator decode
-AI layer                 1697–2248  payload, _call_deepseek, heuristic, categories, layers
-scan                     2249–2516  analyze_item, deep_read_item, build_briefing, run_scan
-notifications            2517–2727  config, pending, SMTP/SMS, test
-export                   2728–3106  renderers, filters, OOXML writer
-scheduling               3107–3150  run_daemon
-dismissals               3151–3191  row-state transitions
-reclassify               3192–3263  offline re-derivation
-report                   3264–3430  write_report, summary and new-since blocks
-CLI                      3399–end   check_api, _apply_cli_schedule, --check/--export/--serve/--tui/…
-```
+| Section | Entry points | What lives there |
+| --- | --- | --- |
+| constants & env | `APP_DIR`, `LLM_*`, budgets, `SCHEMA_VERSION`, `VISIBLE_SQL` | paths, limits, the definition of a visible signal |
+| profiles | `DEFAULT_PROFILE`, `Profile`, `load_profile`, `apply_profile`, `current_profile` | domain configuration as one immutable object |
+| scheduling rule | `next_scan_delay`, `describe_schedule`, `in_scan_window` | the single rule every front end reads |
+| settings | `DEFAULT_SETTINGS`, `_coerce_setting`, `load_settings`, `save_settings` | schema, validation, atomic writes |
+| database | `_connect_raw`, `_create_schema`, `migrate`, `backup_database`, `connect`, `init_db` | connections, schema, versioned migrations |
+| watchlist | `_parse_watchlist_file`, `load_watchlist`, `_watchlist_match` | declared priorities |
+| topics | `_parse_topic_file`, `load_topics`, `_topic_match`, `topic_feeds` | standing subjects |
+| feeds | `fetch_feed`, `_parse_feed`, `_parse_foreign_entry`, `resolve_aggregator_link` | conditional GET, parsing, redirect decoding |
+| AI layer | `_call_deepseek`, `_normalise_verdict`, `heuristic_verdict`, `_apply_topics`, `_apply_watchlist` | model client, verdict contract, layering |
+| storytelling | `canonical_url`, `story_keys`, `adopt_cluster`, `detach_from_cluster`, `cluster_summary` | cross-scan story identity |
+| scan | `_ScanBudget`, `_prepare_scan`, `_scan_feed`, `_record_scan_meta`, `_record_scan_run`, `_run_scan` | orchestration, budgets, commit boundary |
+| notifications | `_pending_alerts`, `send_notifications`, `send_test_notification` | per-item delivery state, SMTP/SMS |
+| export | `_export_filters`, `select_signals`, `export_rows`, `render_*`, `export_items` | one filter builder, all formats |
+| scheduling | `run_daemon` | headless loop |
+| dismissals / reclassify | `dismiss_item`, `reclassify` | auditable state transitions |
+| report | `_report_summary`, `_report_new_section`, `write_report` | `latest_report.md` |
+| CLI | `_apply_cli_schedule`, `__main__` dispatch | flags, and the `dossier`/`action`/`sources` hand-off |
 
 ---
 
@@ -210,7 +219,8 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 | `filter_severity` | enum | `all`, `high`, `medium`, `low` |
 | `filter_category` | enum | `all` plus **the active profile's** categories, resolved per call by `setting_choices()` — a frozen list would reject another profile's categories and silently reset the filter |
 | `filter_group` | enum | `all`, `watchlist`, `topic`, `core`, `context` — the last three resolved against the active profile |
-| `row_order` | enum | One of `priority`, `newest`, `oldest`, `severity`, `title`, `category` |
+| `filter_recent` | enum | `all`, `1d`, `3d`, `7d`, `30d` — publication recency; undated rows are excluded by it, not assumed fresh |
+| `row_order` | enum | One of `relevance`, `priority`, `newest`, `oldest`, `detected`, `severity`, `title`, `category` |
 | `auto_scan` | bool | `"1"/"true"/"yes"/"on"` accepted |
 | `scan_interval_minutes` | int | Clamped 5–1440 |
 | `scan_window_start`, `scan_window_end` | string | `HH:MM` or `""`; scans happen **only inside** this window (an allow-list, not quiet hours) |
@@ -684,16 +694,36 @@ re-applied to the refined verdict.
 
 ### 10.3 Ordering
 
-`row_order(name)` builds the SQL `ORDER BY` clause, injecting `_group_rank()`:
+`row_order(name)` builds the SQL `ORDER BY` clause from three pieces, each defined once:
 
 ```sql
-CASE WHEN summary LIKE '[Watchlist]%' OR summary LIKE '[Topic]%' THEN 0 ELSE 1 END,
+-- _group_rank(): declared interest first, then the profile's core categories
+CASE _layer_sql() WHEN 'watchlist' THEN 0 WHEN 'topic' THEN 1 ELSE 2 END,
 CASE WHEN category IN (<profile core categories>) THEN 0 ELSE 1 END
+
+-- RECENCY_SQL: publication time when the feed supplied one, detection time otherwise
+COALESCE(NULLIF(published, ''), seen_at)
 ```
 
-So **priority** ordering is: severity → declared intent → core category → recency. `_group_rank`
-is rebuilt on every call from the *current* profile, which is why ordering follows a profile
-switch without a restart.
+`_layer_sql()` reads the `source_layer` column, falling back to the legacy `[Watchlist]` /
+`[Topic]` prefixes only for a row the migration could not classify. Because the layer is a
+column, a syndicated copy whose text begins `[Deduped] …` keeps its priority tier.
+
+| Order | Clause | Means |
+| --- | --- | --- |
+| `relevance` | group → severity → recency | what you asked to follow, then how serious, then how recent |
+| `priority` | severity → group → recency | (default) worst first |
+| `newest` | recency desc | newest **news**, not newest ingest |
+| `oldest` | recency asc | |
+| `detected` | `seen_at` desc | newest ingest — the old meaning of `newest` |
+| `severity`, `title`, `category` | single key + recency | |
+
+`_group_rank` and `_core_category_sql` are rebuilt on every call from the *current* profile,
+which is why ordering follows a profile switch without a restart.
+
+**Freshness.** `freshness_label(published, seen_at)` returns `today`, `1d`, `5d`, `2w`, `3mo`,
+`1y+`, or `undated` when the feed supplied no usable date. Nothing estimates a missing date;
+undated rows are counted and labelled in the grid, the API, the exports and the report.
 
 ### 10.4 Cross-feed dedupe
 
@@ -754,8 +784,10 @@ shell commands or file paths.
 
 ### 11.5 Usage accounting
 
-`scan_runs` records one row per scan that made calls: `started_at`, `finished_at`, `model`,
-`ai_calls`, `prompt_tokens`, `completion_tokens`, `new_items`, `flagged`, `deep_reads`. Typical
+`scan_runs` records one row per scan, including offline scans and scans that found nothing:
+`started_at`, `finished_at`, `model` (`""` when no call was made), `ai_calls`,
+`prompt_tokens`, `completion_tokens`, `new_items`, `flagged`, `deep_reads`. It is written in the
+same transaction as the items, so it cannot report a scan whose data was rolled back. Typical
 observed figures on DeepSeek: triage 280–640 prompt tokens per item; briefing ≈3.4 k in / 1.1 k
 out; a seven-call scan ≈8.5 k in / 2.3 k out. The GUI prints the per-scan totals in the log
 footer line.
@@ -826,9 +858,9 @@ can never drift. Structure:
 3. The briefing, labelled fresh or carried over.
 4. **New since the previous scan** (`_report_new_section`, driven by `meta.prev_scan_at`); the
    heading reports the true total and says `top 15 shown` when the list is capped.
-5. The top 50 signals in priority order (severity → watchlist/topic → core → recency), each with
-   category, priority badge, dates, verification state, assessment, facts, entities and
-   confidence.
+5. The top 50 signals in priority order (severity → watchlist/topic → core → publication-aware
+   recency), each with category, priority badge, publication date and freshness, detection time,
+   verification state, assessment, facts, entities and confidence.
 
 A scan that finds nothing new still rewrites the report — counts and timestamps change, and it
 does not invent a "new" section. The offline catch-all next step is suppressed so 180 identical
@@ -855,36 +887,82 @@ seen_items(
   confidence REAL,
   deep_read INTEGER DEFAULT 0,
   dismissed INTEGER DEFAULT 0,
-  published TEXT
+  published TEXT,                  -- ISO 8601 as the feed supplied it
+  source_layer TEXT,               -- watchlist | topic | heuristic | model
+  verdict_reason TEXT,             -- short machine reason, e.g. "rule: acme fiber"
+  cluster_key TEXT,                -- story identity: u:<digest> or t:<digest> or row:<hash>
+  title_key TEXT                   -- normalised-headline identity: t:<digest>
 )
-feed_state(feed_url TEXT PRIMARY KEY, etag TEXT, last_modified TEXT, checked_at TEXT)
+feed_state(feed_url TEXT PRIMARY KEY, etag TEXT, last_modified TEXT, checked_at TEXT,
+           last_success_at TEXT, last_status INTEGER, last_error TEXT,
+           items_new INTEGER, failures INTEGER)
 meta(key TEXT PRIMARY KEY, value TEXT)
+sent_alerts(item_hash TEXT PRIMARY KEY, sent_at TEXT NOT NULL)
 briefings(id INTEGER PK AUTOINCREMENT, created_at, model, signal_count, content)
 scan_runs(id INTEGER PK AUTOINCREMENT, started_at, finished_at, model, ai_calls,
-          prompt_tokens, completion_tokens, new_items, flagged, deep_reads)
+          prompt_tokens, completion_tokens, new_items, flagged, deep_reads,
+          feeds_total, feeds_failed, cancelled, duration_ms)
+
+dossiers(id INTEGER PK AUTOINCREMENT, name, summary, kind, status, created_at, updated_at)
+dossier_items(dossier_id, item_hash, note, added_at, PK(dossier_id, item_hash))
+notes(id INTEGER PK AUTOINCREMENT, dossier_id, item_hash, body, created_at)
+actions(id INTEGER PK AUTOINCREMENT, title, detail, dossier_id, item_hash, status,
+        priority, due_date, created_at, updated_at, completed_at)
 ```
 
-**Migrations.** `SEEN_EXTRA_COLUMNS` is the extension list; `init_db` compares against
-`PRAGMA table_info(seen_items)` and issues `ALTER TABLE … ADD COLUMN` for anything missing. That
-is the whole migration story: additive, idempotent, no version table.
+Indexes: `seen_items(flagged, seen_at DESC)`, `seen_items(cluster_key)`,
+`dossier_items(item_hash)`, `notes(dossier_id)`, `actions(status, priority)`, and a unique
+index on `dossiers(name COLLATE NOCASE)`.
+
+**Migrations.** `migrate(conn)` is called by `init_db()` and by `connect()` (the front ends'
+factory) and does three things in order:
+
+1. `_create_schema(conn)` — every `CREATE TABLE IF NOT EXISTS` and index, idempotent.
+2. Additive column sync from `SEEN_EXTRA_COLUMNS` against `PRAGMA table_info(seen_items)`.
+3. Ordered data steps in `_MIGRATIONS`, each guarded by `PRAGMA user_version`, then
+   `user_version = SCHEMA_VERSION`.
+
+Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **3**:
+
+| Version | Step | What it does |
+| --- | --- | --- |
+| 1 | `_backfill_source_layer` | derives `source_layer` from the legacy `[Watchlist]`/`[Topic]` prefixes |
+| 2 | `_backfill_cluster_keys` | computes `cluster_key` and `title_key` for existing rows |
+| 3 | `_backfill_feed_health` | seeds `feed_state.last_success_at` from `checked_at`, leaving HTTP status unknown rather than inventing one |
+
+Table and column creation is separate from the versioned steps: `_create_schema` and
+`_ensure_columns` are idempotent and run on every open, and the version gates only work that
+rewrites data. Before the first change to an existing database, `backup_database()`
+writes a timestamped copy through SQLite's online backup API, so an upgrade is reversible and a
+running scan is not interrupted. `.lock`-guarded atomic writes still cover the JSON/text config.
+
+**Connections.** `_connect_raw()` is the only place a connection is opened: `row_factory`,
+`busy_timeout = 10000`, WAL. `init_db()` opens one and migrates; `connect()` opens one, migrates
+if `user_version` is behind, and is what every front end and read path uses. Front-end code must
+not call `sqlite3.connect` directly — the pre-migration schema would break its queries.
 
 **Row states.** `flagged` (is a signal) and `dismissed` (was rejected by a human or a deep read)
-are independent. Every read path filters `flagged = 1`, so dismissed rows leave the grid, report,
-exports and notifications but stay auditable; `dismiss_item(undo=True)` restores one by stripping
-the `[Dismissed] ` prefix. `dismissed_count()` reports the audit count.
+are independent. `VISIBLE_SQL = "flagged = 1 AND dismissed = 0"` is the single definition of a
+signal the reader can see; `_export_filters`, `select_signals`, the report, the web counts and
+the GUI all start from it, so dismissed rows leave every surface at once while staying auditable.
+`dismiss_item(undo=True)` restores one by stripping the `[Dismissed] ` prefix.
+`dismissed_count()` reports the audit count.
 
-**Provenance prefixes in `summary`.** `[Watchlist]`, `[Topic]`, `[Local Heuristic]`,
-`[Rejected by deep read]`, `[Deduped]`, `[Dismissed]`. They are load-bearing: filtering,
-ordering (`LIKE '[Watchlist]%'`), reclassification and the notifications' watchlist toggle all
-read them. Note SQLite treats `[` literally in `LIKE` (no character-class semantics), which is
-why these predicates work.
+**Provenance.** `source_layer` (`watchlist`, `topic`, `heuristic`, `model`) and
+`verdict_reason` are the state; `priority_of()` and `_layer_sql()` read them, and the
+notification toggle, group filters, ordering, reclassification and exports all agree because
+they share those helpers. The human-readable prefixes in `summary` (`[Watchlist]`, `[Topic]`,
+`[Local Heuristic]`, `[Rejected by deep read]`, `[Deduped]`, `[Dismissed]`) are still written
+for display and are read only by `strip_provenance()` and by `layer_of()` as a fallback for a
+row the migration could not classify. Note SQLite treats `[` literally in `LIKE` (no
+character-class semantics), which is why the legacy predicates work.
 
 **`meta` keys.**
 
 | Key | Written by | Meaning |
 | --- | --- | --- |
-| `last_scan_at`, `prev_scan_at` | `_run_scan` | Drives the GUI **NEW** marker and the report's "new since" block |
-| `last_notified_at` | `send_notifications` | Notification watermark; only advances on a successful send |
+| `last_scan_at`, `prev_scan_at` | `_record_scan_meta` (inside the scan transaction) | Drives the GUI **NEW** marker and the report's "new since" block |
+| `last_notified_at` | Older versions | Legacy notification cutoff retained to avoid re-sending older items |
 | `gnurl:<id>` | `_persist_aggregator_cache` | Resolved Google News destinations |
 
 **Retention.** `prune_old_items` deletes `flagged = 0` rows older than `RETENTION_DAYS` (90).
@@ -914,14 +992,21 @@ provenance predicates and to `_core_category_sql()`, which is built from the **a
 
 | `group` | Predicate |
 | --- | --- |
-| `watchlist` | `summary LIKE '[Watchlist]%'` |
-| `topic` | `summary LIKE '[Topic]%'` |
+| `watchlist` | `_layer_sql() = 'watchlist'` |
+| `topic` | `_layer_sql() = 'topic'` |
 | `core` | not watchlist, not topic, `_core_category_sql()` |
 | `context` | not watchlist, not topic, `NOT (_core_category_sql())` |
 
-`query` is applied as a parameterised `LIKE` over title, summary, category and link. `limit`
-is clamped to 1–10000 by the builder and by `table_limit` in the settings. No filter value is
-ever interpolated into SQL.
+`query` is applied as a parameterised `LIKE` over title, summary, category, link, action and
+facts. `recent_days` restricts to items **published** inside that many days (`julianday()`
+arithmetic, so mixed ISO forms compare correctly; `7d` and `7` are both accepted). Undated rows
+fall out of a recency filter rather than being treated as today's news, and `undated` selects
+exactly those rows. Ordering still uses publication when present and detection otherwise. `limit` is clamped to 1–10000 by the builder and by `table_limit` in the
+settings. No filter value is ever interpolated into SQL.
+
+`select_signals(conn, filters, order, limit, offset)` wraps the builder for paged reads and
+returns `(rows, total)`, where `total` is the count for the whole filter. The GUI, the web API
+and the TUI all call it, so paging and ordering cannot diverge between them.
 
 Renderers, all standard-library:
 
@@ -930,7 +1015,7 @@ Renderers, all standard-library:
 | Markdown | `render_markdown` | Same shape as `latest_report.md`; optional masthead |
 | Text | `render_text` | Plain, indented |
 | HTML | `render_html` | Self-contained, inline styles, severity badges, print-friendly, all text HTML-escaped |
-| CSV | `render_csv` | `csv` module, 14 columns |
+| CSV | `render_csv` | `csv` module, 15 columns; header and body are generated from `EXPORT_COLUMNS`, so they cannot drift |
 | JSON | `render_json` | Rows + `briefing` + metadata |
 | DOCX | `render_docx` | Hand-built OOXML zip: `[Content_Types].xml`, `_rels/.rels`, `word/document.xml` |
 
@@ -950,7 +1035,7 @@ captured at import would have kept saying "HB Briefing" under a `cybersecurity` 
 `[Local Heuristic] ` — because the **Priority** column already carries it; `[Deduped]`,
 `[Rejected by deep read]` and `[Dismissed]` are kept, since they change what the row means.
 
-`_priority_of(summary, category)` derives the badge the GUI shows, in tier order: `watchlist`
+`priority_of(source_layer, category, summary)` derives the badge the GUI shows, in tier order: `watchlist`
 (`[Watchlist]` prefix), `topic` (`[Topic]` prefix), `core` (category in `CORE_CATEGORIES`),
 otherwise `context`.
 
@@ -971,15 +1056,17 @@ otherwise `context`.
 `send_notifications(conn, settings)`:
 
 1. Returns 0 unless `notify_enabled` and transport is configured (log line explains why).
-2. Selects `flagged = 1` rows with severity in `{high}` or `{high, medium}` (per
-   `notify_min_severity`), `seen_at > meta.last_notified_at`, ordered by `row_order("priority")`,
-   `LIMIT notify_max_items`. With `notify_include_watchlist` false it excludes **both** declared
+2. Selects unsent `VISIBLE_SQL` rows with severity in `{high}` or `{high, medium}` (per
+   `notify_min_severity`), ordered by `row_order("priority")`, `LIMIT notify_max_items`. The
+   old `meta.last_notified_at`, if present, remains a cutoff for pre-upgrade items.
+   With `notify_include_watchlist` false it excludes **both** declared
    -interest tiers (`[Watchlist]%` and `[Topic]%`): excluding only the watchlist made the toggle
    silently mean "keep every topic match".
 3. Sends one message to all recipients.
-4. Advances `last_notified_at` **only on success** — a failed send retries next scan instead of
-   silently dropping the alert.
-5. Never raises: an SMTP failure is logged and the scan continues.
+4. Records each sent item in `sent_alerts` only after a successful send. Overflow remains
+   pending for later scans, including scans with no new items; SMTP failure also leaves the
+   batch pending. If delivery succeeds but recording fails, a later scan can send it again.
+5. Logs SMTP failures and continues the scan; database failures are reported by the caller.
 
 `send_test_notification()` exercises the real code path with a fixed payload, which is what the
 **Send test** button calls. Subject, footer and the test message all interpolate `APP_NAME`, so a
@@ -1041,7 +1128,7 @@ Persistently deferred items indicate a feed that re-delivers more than 25 new it
 lower the feed's scope or raise `MAX_NEW_PER_FEED` in code.
 
 **Restoring a dismissal.** There is no grid view of dismissed rows, because every read path
-filters `flagged = 1`; dismissal is reversible only at the API level. Inspect, then undo:
+filters `VISIBLE_SQL`; dismissal is reversible only at the API level. Inspect, then undo:
 
 ```python
 import sqlite3, hbnscan
@@ -1071,6 +1158,7 @@ directly, so a bug in scoring is fixed once.
 | Scanning | `start_scan_thread`, `cancel_scan`, `_run_worker`, `_scan_finished`, `_stop_progress`, `_reset_scan_controls` |
 | Table | `refresh_table`, `_active_filters`, `_on_filter_changed`, `_on_search_changed`, `_clear_search`, `_on_limit_changed`, `_sort_by_column` |
 | Detail and rows | `_on_row_select`, `_show_detail`, `_show_row_menu`, `_selected_row`, `_open_selected`, `_copy_selected`, `_dismiss_selected`, `_on_row_double_click` |
+| Workspace | `refresh_workspace`, `_build_dossiers_tab`, `_build_actions_tab`, `_build_sources_tab`, `_preview_dossier`, `_dossier_dialog`, `_action_dialog`, `_add_current_to_dossier`, `_export_dossier`, `_export_actions` |
 | Editors | `open_feeds_editor`, `open_topics_editor`, `open_settings` |
 | Output | `export_data`, `_export_done`, `open_report`, `clear_logs`, `refresh_briefing` |
 | Scheduling | `_on_auto_toggle`, `_reschedule_auto_scan`, `_schedule_auto_scan` |
@@ -1091,6 +1179,14 @@ Mechanics worth knowing:
   and topic counts, then rebuilds the UI so filter menus and ordering match the new vocabulary.
 - **Single instance** is enforced with `flock` on `.hb-briefing-gui.lock` before any widget is
   created.
+- **Five tabs, one refresh path.** Today (the signal grid plus the coverage strip), Dossiers,
+  Actions, Sources and AI Briefing. `refresh_workspace()` is the only reader for dossiers,
+  actions and source health; it is called at startup, after a scan, after every workspace
+  mutation and after `_rebuild_ui()`, so no tab can show stale counts. It runs in the Tk thread
+  and holds a connection only for the duration of the query.
+- **Dialogs validate where the engine validates.** Dossier and action dialogs call
+  `create_*`/`update_*` and surface the resulting `ValueError` in a message box, keeping the
+  dialog open — the validation rules exist once, in `hbworkspace`.
 
 ### 18.2 Web front end (`hbnweb.py`)
 
@@ -1168,7 +1264,274 @@ missing from the engine is a missing engine API, not a reason to duplicate logic
 
 ---
 
-## 19. Security posture
+## 19. Research workspace (`hbworkspace.py`)
+
+The engine answers *"is this worth reading?"*. The workspace answers the next question:
+*"what do I now know, and what am I going to do about it?"* It holds dossiers, notes, actions,
+cited reports and source health.
+
+Two properties are deliberate and worth preserving:
+
+1. **No network call.** Nothing in this chapter contacts a model or a publisher, so a dossier
+   report is reproducible: the same database renders the same report, and an offline install can
+   produce it. If synthesis is ever added, it belongs in a separate, explicitly-invoked layer
+   that writes evidence in, not in the renderers.
+2. **A separate module.** `hbworkspace` imports `hbnscan`; the reverse never happens (the CLI
+   imports the workspace lazily inside `__main__`, which keeps `import hbnscan` free of side
+   effects). That is what lets the engine stay the owner of fetching, scoring and migrations
+   while the workspace grows.
+
+### 19.1 Boundary, transactions and validation
+
+| Concern | Rule |
+| --- | --- |
+| Connections | `hbnscan.connect()` (schema ensured, `row_factory` set). Never a raw `sqlite3.connect` |
+| Writes | inside `hbnscan.transaction(conn)`, or a single `conn.commit()` at the end of one logical operation |
+| Errors | `ValueError` for anything a user can fix (blank name, duplicate name, bad date, unknown dossier). Database failures propagate as `sqlite3.Error` |
+| Front-end mapping | CLI prints `[FAIL] …` and exits `2`; the GUI shows a message box and keeps the dialog open |
+| Deleting a dossier | removes the dossier, its notes and its membership rows; sets `actions.dossier_id = NULL`; **never** deletes signals |
+| Names | unique case-insensitively at the database level, so a duplicate fails fast instead of silently creating a second dossier |
+| Lookup | `resolve_dossier(conn, ident)` accepts an id or a name, which is why every command can take either |
+
+Why deleting a dossier does not delete signals: the dossier is a *view of interest*, while
+`seen_items` is the evidence record. Losing a container must not destroy audit history, and the
+same signal commonly belongs to two dossiers.
+
+**Function map.**
+
+| Area | Functions |
+| --- | --- |
+| Dossiers | `create_dossier`, `resolve_dossier`, `list_dossiers`, `update_dossier`, `delete_dossier`, `touch_dossier` |
+| Membership | `add_item`, `remove_item`, `set_item_note`, `add_latest`, `dossier_items` |
+| Notes | `add_note`, `list_notes`, `delete_note` |
+| Actions | `create_action`, `update_action`, `complete_action`, `delete_action`, `list_actions` |
+| Reports | `dossier_report`, `render_report_markdown`, `render_report_html`, `render_report_json`, `render_report`, `export_report` |
+| Sources | `source_health`, `coverage_summary`, `describe_coverage` |
+| CLI | `main` |
+
+### 19.2 Dossiers and membership
+
+`dossiers.kind` is advisory (`subject`, `entity`, `question`) and only affects how the user
+thinks about the container. `status` is `open`, `closed` or `archived`; `archived` hides a dossier
+from the default list without deleting it. `updated_at` is touched by membership, note and report
+edits, which is what drives the list order.
+
+Membership is the pair `(dossier_id, item_hash)`. Three consequences worth knowing:
+
+- **Adding is idempotent.** `add_item` returns `False` when the pair exists, so the GUI button and
+  `--latest N` can both be pressed repeatedly without duplicates.
+- **The note belongs to the membership, not the signal.** The same article in two dossiers can
+  carry different notes, which is usually what a researcher wants.
+- **Membership is not visibility.** A dismissed signal stays in a dossier it was added to; the
+  dossier is user work, and silently dropping rows would rewrite history. The report shows it
+  with its evidence state, not as if it were still a live signal.
+
+`dossier_items` joins `seen_items` with `dossier_items` and orders by `hbnscan.row_order("newest")`,
+so publication order is shared with the grid. It decorates each row with `source` (publisher
+host) and `freshness`, so the renderers never re-derive either.
+
+`add_latest(conn, dossier_id, count, query)` is the bulk path: it selects the newest visible
+signals matching an optional search and adds each one, returning how many were new.
+
+### 19.3 Notes
+
+Notes are a separate table because they serve two different jobs:
+
+- **Open questions** — attached to the dossier, rendered under *Open questions* in the report.
+- **Item annotations** — attached to a signal (and optionally a dossier), for the "why this
+  matters" line that is not part of the verdict.
+
+A note has no status and no lifecycle: it is text plus a timestamp. Editing is delete-and-add by
+design, which keeps the table append-only in spirit and the report deterministic.
+
+### 19.4 Actions
+
+| Field | Notes |
+| --- | --- |
+| `title` | required, trimmed to 300 characters |
+| `detail` | optional free text, shown in the action list export |
+| `dossier_id` | optional; `NULL` after the dossier is deleted, so the action survives |
+| `item_hash` | optional provenance back to the signal that prompted it |
+| `status` | `open`, `in_progress`, `done`, `dropped` |
+| `priority` | `high`, `medium`, `low` |
+| `due_date` | `YYYY-MM-DD` or blank; validated, never inferred |
+| `completed_at` | set on transition to `done`, cleared on reopening |
+
+The list query encodes the ordering the GUI and the export share:
+
+```sql
+ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
+         CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+         CASE WHEN due_date IS NULL OR due_date = '' THEN 1 ELSE 0 END, due_date, id
+```
+
+i.e. unfinished first, then priority, then dated before undated, then the soonest due date. This
+is *deliberately different* from signal ordering: an action list is a work queue, not a reading
+queue. `update_action` is the only writer of `completed_at`, so `complete_action` and the GUI
+toggle cannot disagree.
+
+### 19.5 Report generation
+
+The pipeline is **data → dict → renderer**:
+
+```
+dossier_report(conn, ident) ──► python dict ──► render_report_markdown
+                                            ├─► render_report_html
+                                            └─► render_report_json
+```
+
+Building the structure first is what makes the formats consistent, the rules testable without
+string matching, and the JSON a stable API for downstream tooling.
+
+**The report dict.**
+
+| Key | Contents |
+| --- | --- |
+| `dossier` | id, name, summary, kind, status, timestamps |
+| `generated` | ISO timestamp of generation |
+| `counts` | signals, high, medium, low, undated, deep_read |
+| `span` | first and last date on the timeline |
+| `sources` | publisher host and count, most frequent first |
+| `developments` | top N (default 5) by severity, then newest |
+| `timeline` | every item, oldest first, with date, undated flag, freshness, severity, category, title, link, source, note, assessment |
+| `notes` | open questions, newest first |
+| `actions` | the same ordering as the Actions tab |
+| `gaps` | evidence limitations, computed (see below) |
+
+**Determinism.** Ordering is fully specified: developments by severity then descending
+timestamp, timeline ascending, sources by count then name. No clock-dependent value appears
+except `generated`, so two runs over an unchanged database differ only in that field.
+
+**Evidence gaps** are computed, not editorialised:
+
+- how many signals were screened from the feed only (`deep_read = 0`);
+- how many have no publication date;
+- whether every signal comes from one publisher (a single-source warning);
+- every source whose last fetch failed, with HTTP status and error text;
+- an empty dossier, or a dossier with no scope note.
+
+When none apply the report says *"No material gaps detected in the stored evidence."* rather
+than printing an empty section.
+
+**Escaping.** Markdown goes through `_md_text`/`_md_url` (brackets, angle brackets and
+parentheses); HTML goes through `html.escape` on every value, including the dossier name and
+link attributes. A hostile headline is escaped, never interpolated.
+
+**Exporting.** `export_report(conn, ident, path, fmt)` takes the format from `fmt` or the file
+extension, renders, and writes through `hbnscan.write_atomic` — the same temp-plus-replace used
+for settings and the report, so an interrupted write cannot leave a half file. An unsupported
+extension raises `ValueError`; the CLI maps that to exit `2`.
+
+**Adding a format.** Add a renderer returning a string, add its name to `render_report`, allow
+the extension in `REPORT_FORMATS` and the GUI file dialog. Keep it derived from the dict; do not
+re-query the database inside a renderer.
+
+### 19.6 Source health
+
+`record_feed_result(conn, url, ok, status=None, error="", new_items=0)` is an UPSERT on
+`feed_state` and commits immediately, because it is also called once per feed from `_scan_feed`
+where the surrounding transaction is about to commit anyway:
+
+- **success** (HTTP 200 *and* 304) sets `checked_at`, `last_success_at`, `last_status`, clears
+  `last_error` and records `items_new`. A conditional GET that returns 304 is a *success*: the
+  publisher answered and nothing changed.
+- **failure** sets `checked_at`, `last_status`, `last_error` and increments `failures`. It leaves
+  `last_success_at` alone — that retention is what makes staleness legible instead of invisible.
+
+`source_health(conn, feeds, stale_hours=None)` classifies each configured feed, first match wins:
+
+| Status | Condition |
+| --- | --- |
+| `failing` | `last_error` is non-empty |
+| `never` | no `last_success_at` recorded |
+| `stale` | `last_success_at` older than the threshold |
+| `ok` | otherwise |
+
+The threshold defaults to `max(6, 2 × interval_minutes / 60 + 1)` hours, evaluated against the
+settings at call time. The floor matters: a daily schedule would otherwise mark every source
+stale for 23 hours of the day. The output is sorted worst-first, which is why a broken feed is
+the first row in the Sources tab.
+
+`coverage_summary` assembles the Today strip: per-status source counts, visible/undated/
+new-since-previous signal counts, and the last `scan_runs` row (new, flagged, `feeds_failed`,
+`cancelled`, `duration_ms`). `describe_coverage` is the only place that turns those numbers into
+a sentence, so the GUI and any future front end say the same thing.
+
+### 19.7 Story clustering
+
+Syndication means one event can arrive as four rows. Clustering groups them without ever changing
+`flagged`, `severity` or `source_layer`: it is presentation and reporting, not classification.
+
+**Two exact keys.**
+
+```python
+canonical_url(link)   # https://host/path?query  (tracking params, www., fragment, :443 removed)
+story_keys(title, link) -> (cluster_key, title_key)
+```
+
+- `cluster_key` is `"u:" + sha256(canonical_url)[:24]` when a canonical URL exists, otherwise the
+  title key. It identifies the story.
+- `title_key` is `"t:" + sha256(normalised headline)[:24]`, where the normalised headline is
+  `_dedupe_key`: lower-cased, a trailing ` - Publisher` / ` | Publisher` removed, punctuation
+  dropped. It identifies the story independently of which URL carried it.
+
+Membership is *either* key matching. Both are exact, which is a deliberate trade: a wrong merge
+silently hides a development, while a missed merge only shows the same event twice and is
+visible to the reader.
+
+**Adoption.** After each insert, `_scan_feed` calls
+`adopt_cluster(conn, item_hash, cluster_key, title_key)`. It looks for the earliest existing row
+sharing either key and, if found, rewrites the new row's `cluster_key` to the sibling's. Every
+member therefore points at the same key regardless of which feed arrived first, and the query is
+indexed by `cluster_key`.
+
+**Undo.** `detach_from_cluster(conn, item_hash)` sets `cluster_key = "row:<hash>"`, which matches
+nothing else, so the row becomes a story of one. The GUI exposes it as *Detach from story*. Only
+that row changes; the rest of the story keeps its key.
+
+**Limits** — worth stating plainly, and covered in §24:
+
+- A syndicated copy with a different headline *and* a different URL will not merge.
+- AMP, print and paywall variants of the same URL usually differ by path, so they stay separate
+  unless the headline matches.
+- A recurring headline ("Weekly update") can merge unrelated items by title. Detach is the
+  remedy, and the title key is only used when it is exact.
+
+Fuzzy matching and embeddings were rejected on purpose: they need a threshold that cannot be
+justified from the data, and they fail silently. The migration step `2` backfills the keys for
+rows stored before clustering existed.
+
+### 19.8 Workspace CLI
+
+`hbnscan.py` dispatches `dossier`, `action` and `sources` to `hbworkspace.main(argv)` before the
+flag-based path, so these commands never start a scan:
+
+| Command | Behaviour |
+| --- | --- |
+| `dossier list [--all]` | id, item count, open actions, status, name |
+| `dossier new NAME [--summary TEXT] [--kind subject\|entity\|question]` | create |
+| `dossier show ID` | full Markdown report on stdout |
+| `dossier add ID (--hash HASH \| --latest N [--search TERM])` | membership |
+| `dossier note ID TEXT` | open question |
+| `dossier report ID [--export PATH] [--format md\|html\|json]` | render or write |
+| `dossier status ID open\|closed\|archived` | lifecycle |
+| `action list [--all]` | work queue, unfinished first |
+| `action new TITLE [--dossier ID] [--priority P] [--due YYYY-MM-DD] [--detail TEXT]` | create |
+| `action done ID` / `action reopen ID` | state transition |
+| `action export PATH` | Markdown action list |
+| `sources [--json]` | per-source status and the coverage line |
+
+Exit codes match the rest of the CLI: `0` success, `2` usage or validation error. `--json` on
+`sources` emits the `coverage_summary` object verbatim, which makes it usable in a monitoring
+script. Identifiers may be an id or a dossier name, so scripts can stay readable:
+
+```bash
+python3 hbnscan.py dossier report "Acme fiber" --export acme.md
+```
+
+---
+
+## 20. Security posture
 
 | Threat | Mitigation |
 | --- | --- |
@@ -1207,7 +1570,7 @@ attribution lives in `LICENSE` and the documentation, never in a shipped config 
 
 ---
 
-## 20. Performance, limits and cost
+## 21. Performance, limits and cost
 
 | Dimension | Value | Where |
 | --- | --- | --- |
@@ -1230,7 +1593,7 @@ interactive; the search box is the only full-table scan and it is debounced.
 
 ---
 
-## 21. Extension points
+## 22. Extension points
 
 **Add a domain.** Copy the closest file in `profiles/`, change `name`, `focus`, `secondary`,
 `briefing_interest`, `categories`, `core_categories`, `category_hints`, `strong_signals`,
@@ -1249,9 +1612,18 @@ text, so a new interest area is just a new `## Heading` block.
 writer for a binary container), add the extension to `EXPORT_FORMATS`, the dialog type to
 `EXPORT_TYPES`, and dispatch it in `export_items`.
 
+**Add a dossier report format.** Write `render_<fmt>(report)` against the dict returned by
+`dossier_report` — do not re-query the database in a renderer — then register the name in
+`render_report`, `REPORT_FORMATS` and the GUI file dialog. The dict contract is documented in
+§19.5, and the tests assert determinism and escaping, so a new format inherits both.
+
+**Add a workspace entity.** Add the table to `_create_schema`, any column sync to a
+`*_EXTRA_COLUMNS` tuple, and the backfill (if any) to `_MIGRATIONS` with a new
+`SCHEMA_VERSION`. Keep the module boundary: `hbworkspace` imports `hbnscan`, never the reverse.
+
 **Add a notification channel.** Extend `notification_config()` with the transport, build the
-message in `_notify_body`, and send from `send_notifications` after `_pending_alerts`. Advance
-`meta.last_notified_at` only on success.
+message in `_notify_body`, and send from `send_notifications` after `_pending_alerts`. Record
+the delivered item IDs only on success.
 
 **Add a feed parser.** `_parse_feed` handles Atom and RSS; a JSON Feed source would branch on
 content type and return the same item dicts (`title`, `link`, `description`, `published`), which
@@ -1270,17 +1642,23 @@ decision prints the rule that fired.
 
 ---
 
-## 22. Testing and verification
+## 23. Testing and verification
 
-There is no test suite in the repository; verification is by targeted harness. The front ends
-are verified the same way: the web app by driving every route over `urllib`, the TUI through a
+The automated regression suite lives in `tests/` and runs without a display, live feed access,
+or an LLM key. GitHub Actions runs syntax compilation and the suite on Python 3.8 and 3.13.
+Front-end integration coverage can be extended separately: the web app by driving every route
+over `urllib`, the TUI through a
 `pty.fork()` pseudo-terminal, the GUI by constructing `NewsScanApp` and inspecting widget state.
 None of these need a display for the web app or TUI. The procedures
-that exist and are worth repeating after a change:
+worth repeating after a change include:
 
 | Target | How |
 | --- | --- |
-| Imports and syntax | `python3 -m py_compile hbnscan.py hbnscan_gui.py`; `python3 -m pyflakes *.py` |
+| Automated regression suite | `python3 -m unittest discover -s tests -v` (engine, delivery, workspace, web API, TUI paging) |
+| Lint | `python3 -m ruff check .` (rules `E4,E7,E9,F`, configured in `pyproject.toml`) |
+| Coverage report | `python3 -m coverage run -m unittest discover -s tests && python3 -m coverage report -m` |
+| Desktop smoke test | `xvfb-run -a python tests/gui_smoke.py` (skips without Tk or a display) |
+| Imports and syntax | `python3 -m py_compile hbnscan.py hbnscan_gui.py hbnweb.py hbntui.py` |
 | Provider/auth | `python3 hbnscan.py --check` (one live call; prints profile, model, verdict, usage) |
 | Profile correctness | For each file in `profiles/`: set `WATCHDOG_PROFILE`, `apply_profile()`, assert `CORE_CATEGORIES ⊆ CATEGORIES`, that a domain-typical headline lands in the expected category at ≥ `medium`, and that an off-domain headline scores `none` |
 | Topic/target merge | Point `TOPICS_PATH`/`WATCHLIST_PATH` at a temp dir, assert profile-only defaults exist with no files, that a `topics.txt` line replaces a profile topic's grade, that duplicates collapse, and that a profile target matches with an empty `watchlist.txt` |
@@ -1305,15 +1683,22 @@ telecom category pairs** that ignore the active profile (report summary, group f
 
 ---
 
-## 23. Known limitations
+## 24. Known limitations
 
-- **No automated test suite or CI.** Verification is manual, as described above.
 - **Provider variance.** JSON mode, `response_format` support and token ceilings differ between
   OpenAI-compatible servers; Ollama and OpenAI paths are implemented but not exercised in
   production here.
 - **Google News resolution is best-effort.** When *both* the legacy decode and the
   `batchexecute` handshake fail, that item simply cannot be deep-read.
-- **Dedupe is per-scan.** A syndicated story re-published the next day is triaged again.
+- **Story grouping is exact, not fuzzy.** A syndicated copy with a different headline *and* a
+  different URL stays separate, and a recurring headline can merge unrelated items. Rows that
+  merge wrongly can be detached one at a time; there is no threshold to tune, which is the
+  trade that keeps merges explainable.
+- **The workspace is desktop and CLI today.** Dossiers, actions and source health are fully
+  available in the GUI and as `dossier`/`action`/`sources` commands; the web app and TUI read
+  signals (including the story key) but do not yet edit dossiers or actions.
+- **Dedupe within a scan is separate from stories.** The in-scan dedupe still reuses one verdict
+  for two rows that arrive together; cross-scan grouping is the `cluster_key` mechanism.
 - **Deep-read rejections cannot be re-derived** (`--reclassify` only touches offline rows),
   because article text is not stored.
 - **Some publishers block automated fetches entirely** (Cloudflare bot filters answer `403` to
@@ -1330,9 +1715,9 @@ telecom category pairs** that ignore the active profile (report summary, group f
 
 ---
 
-## 24. Appendix: constants, CLI, files
+## 25. Appendix: constants, CLI, files
 
-### 24.1 Constants
+### 25.1 Constants
 
 ```python
 MAX_NEW_PER_FEED      = 25          # items processed per feed per scan
@@ -1358,7 +1743,7 @@ TOPIC_GROUP_MAX       = 48
 RETRYABLE_STATUS      = (408, 429, 500, 502, 503, 504)
 ```
 
-### 24.2 CLI
+### 25.2 CLI
 
 | Command | Behaviour |
 | --- | --- |
@@ -1372,6 +1757,9 @@ RETRYABLE_STATUS      = (408, 429, 500, 502, 503, 504)
 | `--interval N` | Persist the scan interval (5–1440), then exit |
 | `--auto` / `--no-auto` | Persist scheduled scanning on/off, then exit |
 | `--window HH:MM-HH:MM` / `--window off` | Persist the scanning window, then exit (`--quiet` is the old spelling and still works) |
+| `dossier …` | Workspace dossiers: `list`, `new`, `show`, `add`, `note`, `report`, `status` (§19.8) |
+| `action …` | Workspace actions: `list`, `new`, `done`, `reopen`, `export` |
+| `sources [--json]` | Per-source fetch status and the coverage line |
 | `python3 -m hbnscan_gui` | Desktop interface |
 
 `_apply_cli_schedule(argv)` returns `None` when no schedule flag was given, `True` when it
@@ -1379,9 +1767,13 @@ applied one, and `False` on a bad value. `__main__` exits `2` on `False` and `0`
 **unless** an action flag was also given — without that guard the schedule flags fell through
 into a full scan, which cost real API calls.
 
-Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments.
+The workspace commands are dispatched *before* the flag path and use `argparse` with required
+subcommands, so `hbnscan.py dossier` with no verb prints usage and exits `2` rather than quietly
+scanning. They open the database through `hbnscan.init_db()` — schema ensured, then closed.
 
-### 24.3 Files
+Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments or a validation error.
+
+### 25.3 Files
 
 | Path | Role | Tracked |
 | --- | --- | --- |

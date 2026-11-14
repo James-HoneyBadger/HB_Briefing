@@ -14,6 +14,8 @@ regulator, a market, a competitor, a research field or a single company.
   adds article verification and a written briefing.
 - **Works on any subject**: ten profiles ship, a topic library covers over 200 subjects across 20
   interest areas, and your own files always layer on top.
+- **Turns reading into research**: collect signals into dossiers, write open questions, track
+  follow-up actions, and export a cited report — all offline and reproducible.
 
 ```bash
 ./start.sh              # checks the machine, installs what is missing, opens the desktop GUI
@@ -187,13 +189,18 @@ touches and why it skipped one.
 
 ## Delivering the result
 
-**The grid** is the working surface: severity, category, headline and assessment, with a detail
-pane for facts, entities, confidence and verification state. Full-database search (debounced),
-severity/category/priority filters, six orderings and a 50–5000 row limit all persist in
+**The grid** is the working surface: detected time, publication date, severity, category,
+headline and assessment, with a detail pane for the deciding layer, facts, entities, confidence
+and verification state. Full-database search (debounced), severity/category/priority filters, a
+publication-recency filter, eight orderings and a 50–5000 row limit all persist in
 `settings.json`.
 
+- **Published is a column of its own.** The grid shows the publisher's date (or `undated`), and
+  *Newest* sorts by publication, not by when the scan happened to see it — a backlog ingest no
+  longer looks like today's news. *Detected* keeps the ingest order.
 - **Priority** is a real column: `watchlist`, `topic`, `core` (core for the active profile) or
-  `context` — a partition, not a label.
+  `context` — a partition, not a label, stored as a database field rather than parsed back out
+  of the assessment text.
 - **Click a column header** to re-sort; it sets the same `row_order` the Order menu shows.
 - **`NEW`** marks items that arrived after the previous scan.
 - **Right-click → Not relevant** (`Delete`) sets `flagged = 0, dismissed = 1`: the row leaves the
@@ -213,7 +220,7 @@ verification state — plus the latest briefing:
 |---|---|
 | `.md` | Markdown, same shape as the report |
 | `.html` | Self-contained page: severity badges, facts, entities, briefing, print-friendly |
-| `.csv` | One row per signal, 14 columns — spreadsheet and pivot friendly |
+| `.csv` | One row per signal, 15 columns (including publication freshness) — spreadsheet and pivot friendly |
 | `.json` | Nested objects plus a top-level `briefing`, for downstream tooling |
 | `.docx` | Word document, generated as OOXML directly — no extra dependency |
 | `.txt` | Plain text, for paste or mail |
@@ -226,8 +233,9 @@ python3 hbnscan.py --export out.bin --format json  # or state it explicitly
 The GUI's **⤓ Export** writes exactly what the grid is showing: active search, filters and row
 limit included.
 
-**Alerts** fire at the end of a scan for signals above a threshold, and only for items not sent
-before. E-mail goes through any SMTP server; SMS uses the carrier's free e-mail-to-SMS gateway,
+**Alerts** fire at the end of a scan for signals above a threshold and only for items not sent
+before; anything beyond the per-message cap stays pending for the next scan rather than being
+dropped. E-mail goes through any SMTP server; SMS uses the carrier's free e-mail-to-SMS gateway,
 so no third-party messaging account is needed.
 
 **Scheduling** is a first-class feature: an interval, a scanning window that wraps midnight, and
@@ -236,6 +244,49 @@ a headless daemon for machines without a desktop.
 ```bash
 python3 hbnscan.py --daemon     # loop per settings.json; Ctrl-C stops
 ```
+
+## Research workspace
+
+Collecting is the easy half. HB Briefing also keeps the work that follows: **dossiers**,
+**notes**, **actions** and **cited reports**, in the desktop app and from the shell.
+
+| Tab | What it is for |
+| --- | --- |
+| **Today** | The signal grid, with a coverage strip: sources ok/failing/stale, signals, new since the last scan, undated |
+| **Dossiers** | A named container (subject, entity or question) for the signals you chose, a note per signal, open questions, its actions, and a live report preview |
+| **Actions** | Follow-ups with status, priority, due date and dossier; complete or reopen in one click; export as Markdown |
+| **Sources** | Every feed's last fetch result: `ok`, `failing`, `stale` or `never`, with the last success time and the error text |
+| **AI Briefing** | The stage-3 digest, unchanged |
+
+**Reports are evidence, not narrative.** A dossier report is generated from stored rows only —
+scope, at-a-glance counts, key developments with publisher and date, a full timeline, open
+questions, actions, and an explicit *Evidence gaps* section ("4 signals were screened from the
+feed only", "2 signals are undated", "source example.com failed its last fetch (HTTP 403)").
+It never calls a model, so the same dossier always produces the same report, and it exports to
+Markdown, HTML or JSON.
+
+**Stories, not duplicates.** Syndicated copies are grouped into one story when their canonical
+URLs match (tracking parameters, `www.`, fragments ignored) or their normalised headlines match.
+The detail pane shows the group and its publishers, and **Detach from story** undoes a wrong
+merge. Grouping changes presentation, never what is flagged.
+
+**Sources are visible, not assumed.** Each feed records its last attempt, last success, HTTP
+status and error. A failure keeps the previous success time, so a silently dead feed is obvious,
+and the scan history records feeds attempted, feeds failed, cancellation and duration.
+
+```bash
+python3 hbnscan.py dossier new "Acme fiber" --summary "Are they building?"
+python3 hbnscan.py dossier add "Acme fiber" --latest 10
+python3 hbnscan.py dossier note 1 "Does the permit cover the whole route?"
+python3 hbnscan.py dossier report 1 --export acme-fiber.md
+python3 hbnscan.py action new "Call the clerk" --dossier 1 --priority high --due 2026-12-01
+python3 hbnscan.py action list --all
+python3 hbnscan.py sources --json
+```
+
+Every workspace table lives in the same SQLite file, so a backup is still one file
+(**Settings → Data → Back up database**), and deleting a dossier never deletes the signals or
+actions it referenced.
 
 ## Cost, control and failure modes
 

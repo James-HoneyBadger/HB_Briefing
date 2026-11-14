@@ -24,5 +24,13 @@ hb-briefing-*.md
 # Runtime locks
 *.lock
 
+# Database backups written by Settings -> Data / migration
+watchdog_state-backup-*.db
+
+# Tooling output
+.coverage
+htmlcov/
+.coverage.*
+
 # Atomic-write temporaries
 .*.tmp

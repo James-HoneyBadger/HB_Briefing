@@ -10,8 +10,8 @@ cancel and schedule scans without leaving the terminal.
     python3 hbntui.py
 
 Keys:  ↑/↓ move · Enter detail · d dismiss · r run · x stop · a schedule on/off ·
-       i interval · f severity · c category · p priority · o order · / search ·
-       b briefing · l log · e export · R reload · q quit
+       i interval · f severity · c category · p priority · o order · [ ] page ·
+       / search · b briefing · l log · e export · R reload · q quit
 """
 import argparse
 import collections
@@ -28,12 +28,11 @@ import hbnscan
 
 SEVERITY_CYCLE = ("all", "high", "medium", "low")
 GROUP_CYCLE = ("all", "watchlist", "topic", "core", "context")
-ORDER_CYCLE = ("priority", "newest", "oldest", "severity", "title", "category")
+ORDER_CYCLE = ("relevance", "priority", "newest", "detected", "oldest", "severity",
+               "title", "category")
 INTERVAL_CYCLE = (5, 10, 15, 30, 60, 120, 240)
 PAGE = 200
-SIGNAL_COLUMNS = ("item_hash", "title", "link", "severity", "category", "summary",
-                  "action", "facts", "entities", "confidence", "deep_read", "published",
-                  "seen_at", "feed_url")
+SIGNAL_COLUMNS = hbnscan.SIGNAL_COLUMNS
 
 
 # --------------------------------------------------------------------------- state
@@ -47,6 +46,7 @@ class State:
         self.rows = []
         self.total = 0
         self.index = 0
+        self.offset = 0
         self.query = ""
         self.severity = self.settings["filter_severity"]
         self.category = self.settings["filter_category"]
@@ -69,33 +69,56 @@ class State:
         return {"severity": self.severity, "category": self.category,
                 "group": self.group, "query": self.query, "limit": PAGE}
 
+    def reset_page(self):
+        """A filter or search change starts from the first page, not mid-list."""
+        self.offset = 0
+        self.index = 0
+
     def reload(self):
-        where, params, limit = hbnscan._export_filters(self.filters())
-        order = hbnscan.row_order(self.order)
-        columns = ", ".join(SIGNAL_COLUMNS)
         try:
-            conn = sqlite3.connect(hbnscan.DB_PATH, timeout=5)
-            conn.row_factory = sqlite3.Row
+            conn = hbnscan.connect(timeout=5)
             try:
-                self.rows = [dict(row) for row in conn.execute(
-                    f"SELECT {columns} FROM seen_items WHERE {where} "
-                    f"ORDER BY {order} LIMIT ?", (*params, limit))]
-                self.total = conn.execute(
-                    f"SELECT COUNT(*) FROM seen_items WHERE {where}", params).fetchone()[0]
+                rows, self.total = hbnscan.select_signals(
+                    conn, self.filters(), order=self.order, limit=PAGE, offset=self.offset)
+                self.rows = [dict(row) for row in rows]
             finally:
                 conn.close()
         except sqlite3.Error as exc:
             self.rows, self.total = [], 0
             self.status = f"database error: {exc}"
+        if self.offset >= self.total and self.offset:
+            self.offset = max(0, ((max(1, self.total) - 1) // PAGE) * PAGE)
+            return self.reload()
         self.index = max(0, min(self.index, len(self.rows) - 1))
         self.load_detail()
+
+    def page_range(self):
+        if not self.total:
+            return "0 of 0"
+        first = self.offset + 1
+        last = self.offset + len(self.rows)
+        return f"{first}-{last} of {self.total}"
+
+    def next_page(self):
+        if self.offset + PAGE < self.total:
+            self.offset += PAGE
+            self.index = 0
+            self.reload()
+            self.status = f"page {self.page_range()}"
+
+    def prev_page(self):
+        if self.offset:
+            self.offset = max(0, self.offset - PAGE)
+            self.index = 0
+            self.reload()
+            self.status = f"page {self.page_range()}"
 
     def load_detail(self):
         self.detail = self.rows[self.index] if self.rows else None
 
     def load_briefing(self):
         try:
-            conn = sqlite3.connect(hbnscan.DB_PATH, timeout=5)
+            conn = hbnscan.connect(timeout=5)
             try:
                 content, created = hbnscan.latest_briefing(conn)
             finally:
@@ -159,19 +182,14 @@ def sev_attr(severity):
             "low": curses.color_pair(3)}.get(severity, curses.color_pair(3))
 
 
-def priority_tag(summary):
-    for prefix in ("[Watchlist]", "[Topic]"):
-        if (summary or "").startswith(prefix):
-            return prefix.strip("[]").lower()
-    return ""
+def priority_tag(row):
+    """Declared-interest tag only: 'core' and 'context' are every row, so they add noise."""
+    layer = hbnscan.layer_of(row.get("source_layer"), row.get("summary"))
+    return layer if layer in ("watchlist", "topic") else ""
 
 
 def clean(summary):
-    text = summary or ""
-    for prefix in ("[Watchlist] ", "[Topic] ", "[Local Heuristic] "):
-        if text.startswith(prefix):
-            return text[len(prefix):]
-    return text
+    return hbnscan.strip_provenance(summary)
 
 
 def addstr(screen, y, x, text, attr=0, width=None):
@@ -200,7 +218,8 @@ def draw(screen, state):
     addstr(screen, 1, 0, "─" * width, curses.A_DIM)
 
     filters = (f" sev:{state.severity}  cat:{state.category}  priority:{state.group}"
-               f"  order:{state.order}" + (f"  search:“{state.query}”" if state.query else ""))
+               f"  order:{state.order}  {state.page_range()}"
+               + (f"  search:“{state.query}”" if state.query else ""))
     addstr(screen, 2, 0, filters, curses.color_pair(2), width)
     addstr(screen, 3, 0, "─" * width, curses.A_DIM)
 
@@ -217,17 +236,17 @@ def draw(screen, state):
         y = table_top + offset
         selected = (top + offset) == state.index
         severity = (row["severity"] or "none").lower()
-        tag = priority_tag(row["summary"])
+        tag = priority_tag(row)
         title = row["title"] or "(untitled)"
-        when = (row["seen_at"] or "").replace("T", " ")[:16]
+        when = (row["published"] or "")[:10] or "undated"
         mark = "▸" if selected else " "
         attr = curses.A_REVERSE if selected else 0
         addstr(screen, y, 0, mark, attr)
         addstr(screen, y, 2, f"{severity.upper():6}", sev_attr(severity) | attr)
         addstr(screen, y, 9, f"{tag:9}", curses.color_pair(4) | attr, 9)
         addstr(screen, y, 19, f"{(row['category'] or ''):18}", curses.A_DIM | attr, 18)
-        addstr(screen, y, 38, f"{when:16}", curses.A_DIM | attr, 16)
-        addstr(screen, y, 56, title, attr, width - 57)
+        addstr(screen, y, 38, f"{when:12}", curses.A_DIM | attr, 12)
+        addstr(screen, y, 51, title, attr, width - 52)
 
     if not state.rows:
         addstr(screen, table_top + 1, 2, "No signals match these filters.", curses.A_DIM)
@@ -244,7 +263,25 @@ def draw(screen, state):
             if row["action"]:
                 lines.append(("Next step: ", row["action"], 0))
             if row["published"]:
-                lines.append(("Published: ", str(row["published"])[:10], 0))
+                lines.append(("Published: ",
+                              f"{str(row['published'])[:10]} "
+                              f"({hbnscan.freshness_label(row['published'], row['seen_at'])})",
+                              0))
+            else:
+                lines.append(("Published: ", "undated (no feed date)", 0))
+            lines.append(("Detected: ", (row["seen_at"] or "").replace("T", " "), 0))
+            if row.get("cluster_key"):
+                try:
+                    conn = hbnscan.connect(timeout=5)
+                    try:
+                        story = hbnscan.cluster_summary(conn, row["cluster_key"])
+                    finally:
+                        conn.close()
+                except sqlite3.Error:
+                    story = None
+                if story and story["count"] > 1:
+                    lines.append(("Story: ", f"{story['count']} item(s) from "
+                                             f"{len(story['sources'])} publisher(s)", 0))
             try:
                 facts = json.loads(row["facts"] or "[]")
             except ValueError:
@@ -284,7 +321,8 @@ def draw(screen, state):
             addstr(screen, table_bottom + 1 + i, 2, text, curses.A_DIM, width - 4)
 
     footer = (" ↑↓ move · Enter detail · d dismiss · r run · x stop · a schedule · i interval · "
-              "f sev · c cat · p prio · o order · / search · b briefing · l log · e export · q quit")
+              "f sev · c cat · p prio · o order · [ ] page · / search · b briefing · l log · "
+              "e export · q quit")
     addstr(screen, height - 2, 0, footer[:width - 1], curses.A_DIM)
     if state.pending == "search":
         addstr(screen, height - 1, 0, "search: " + state.confirm[:width - 9], curses.A_BOLD)
@@ -305,7 +343,7 @@ def handle_key(state, key):
         if key in (10, 13):
             state.query = state.confirm.strip()
             state.pending = ""
-            state.index = 0
+            state.reset_page()
             state.reload()
         elif key == 27:
             state.pending = ""
@@ -318,7 +356,7 @@ def handle_key(state, key):
         state.pending = ""
         if chr(key).lower() == "y" and row:
             try:
-                conn = sqlite3.connect(hbnscan.DB_PATH, timeout=5)
+                conn = hbnscan.connect(timeout=5)
                 try:
                     hbnscan.dismiss_item(conn, row["item_hash"])
                 finally:
@@ -364,7 +402,7 @@ def handle_key(state, key):
     elif key == ord("f"):
         state.severity = SEVERITY_CYCLE[(SEVERITY_CYCLE.index(state.severity) + 1)
                                         % len(SEVERITY_CYCLE)]
-        state.index = 0
+        state.reset_page()
         state.reload()
     elif key == ord("c"):
         categories = ("all",) + tuple(hbnscan.CATEGORIES)
@@ -372,15 +410,19 @@ def handle_key(state, key):
             state.category = categories[(categories.index(state.category) + 1) % len(categories)]
         except ValueError:
             state.category = "all"
-        state.index = 0
+        state.reset_page()
         state.reload()
     elif key == ord("p"):
         state.group = GROUP_CYCLE[(GROUP_CYCLE.index(state.group) + 1) % len(GROUP_CYCLE)]
-        state.index = 0
+        state.reset_page()
         state.reload()
     elif key == ord("o"):
         state.order = ORDER_CYCLE[(ORDER_CYCLE.index(state.order) + 1) % len(ORDER_CYCLE)]
         state.reload()
+    elif key == ord("]"):
+        state.next_page()
+    elif key == ord("["):
+        state.prev_page()
     elif key == ord("/"):
         state.pending = "search"
         state.confirm = state.query
@@ -398,6 +440,7 @@ def handle_key(state, key):
         state.category = state.settings["filter_category"]
         state.group = state.settings["filter_group"]
         state.order = state.settings["row_order"]
+        state.reset_page()
         state.reload()
         state.status = "reloaded settings and filters"
 
@@ -407,7 +450,7 @@ def export_current(state):
     stamp = time.strftime("%Y%m%d-%H%M")
     path = Path(hbnscan.APP_DIR) / f"hb-briefing-{stamp}.md"
     try:
-        conn = sqlite3.connect(hbnscan.DB_PATH, timeout=10)
+        conn = hbnscan.connect(timeout=10)
         try:
             saved, count = hbnscan.export_items(conn, path, filters=state.filters())
         finally:
