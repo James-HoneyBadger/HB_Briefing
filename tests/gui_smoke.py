@@ -4,6 +4,7 @@ Run headless with ``xvfb-run -a python tests/gui_smoke.py`` (the CI workflow doe
 Skips cleanly where Tk or a display is unavailable, so the rest of the suite still runs
 for contributors without a desktop.
 """
+from datetime import datetime, timedelta
 import json
 import sys
 import tempfile
@@ -22,14 +23,17 @@ import hbnscan                                              # noqa: E402
 import hbconfig                                             # noqa: E402
 import hbnscan_gui                                          # noqa: E402
 
+# Relative to today: the detail pane shows a freshness label, so a fixed date would make this
+# test start failing the day after it was written.
+PUBLISHED = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
 SIGNAL_SQL = (
     "INSERT INTO seen_items (item_hash, title, link, feed_url, flagged, summary, seen_at,"
     " category, severity, entities, action, facts, confidence, deep_read, dismissed,"
     " published, source_layer, verdict_reason) VALUES"
     " ('h1','Acme fined','https://e.test/a','https://f.test/rss',1,"
     " '[Watchlist] acme → regulatory_action/high. Penalty issued.','2026-11-13T10:00:00',"
-    " 'regulatory_action','high','{}','Do a thing','[]',0.9,1,0,'2026-11-12T09:00:00',"
-    " 'watchlist','rule: acme')"
+    " 'regulatory_action','high','{}','Do a thing','[]',0.9,1,0,?,'watchlist','rule: acme')"
 )
 
 
@@ -77,7 +81,7 @@ def main():
 
         conn = hbnscan.init_db()
         try:
-            conn.execute(SIGNAL_SQL)
+            conn.execute(SIGNAL_SQL, (f"{PUBLISHED}T09:00:00",))
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('prev_scan_at', '')")
             conn.commit()
         finally:
@@ -90,7 +94,7 @@ def main():
         values = app.tree.item(rows[0], "values")
         assert values[4] == "Acme fined", values
         assert values[5].startswith("★ "), values
-        assert values[1] == "2026-11-12", f"publication date not shown: {values}"
+        assert values[1] == PUBLISHED, f"publication date not shown: {values}"
 
         app.filter_vars["filter_recent"].set("3d")
         app._on_filter_changed("filter_recent", "3d")
@@ -106,7 +110,7 @@ def main():
         app.update()
         detail = app.detail_text.get("1.0", tk.END)
         assert "Decided by: watchlist" in detail, detail
-        assert "Published: 2026-11-12 (1d)" in detail, detail
+        assert f"Published: {PUBLISHED} (1d)" in detail, detail
 
         app.open_settings()
         app.update()
