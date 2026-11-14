@@ -4,6 +4,7 @@ Run headless with ``xvfb-run -a python tests/gui_smoke.py`` (the CI workflow doe
 Skips cleanly where Tk or a display is unavailable, so the rest of the suite still runs
 for contributors without a desktop.
 """
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -18,6 +19,7 @@ except ImportError:                                          # pragma: no cover
     sys.exit(0)
 
 import hbnscan                                              # noqa: E402
+import hbconfig                                             # noqa: E402
 import hbnscan_gui                                          # noqa: E402
 
 SIGNAL_SQL = (
@@ -49,7 +51,19 @@ def main():
         mock.patch.object(hbnscan, "load_feeds", lambda: []),
         mock.patch.object(hbnscan, "load_watchlist", lambda: []),
         mock.patch.object(hbnscan, "load_topics", lambda: []),
+        # The configuration screen writes these; point them at the temp directory so the
+        # smoke test can never touch the checkout's real configuration.
+        mock.patch.object(hbnscan, "FEEDS_PATH", tmp / "feeds.txt"),
+        mock.patch.object(hbnscan, "TOPICS_PATH", tmp / "topics.txt"),
+        mock.patch.object(hbnscan, "WATCHLIST_PATH", tmp / "watchlist.txt"),
+        mock.patch.object(hbnscan, "ENV_PATH", tmp / ".env"),
+        mock.patch.object(hbnscan, "APP_DIR", tmp),
     ]
+    (tmp / "profiles").mkdir(exist_ok=True)
+    (tmp / "feeds.txt").write_text("# test feeds\nhttps://one.test/rss\n", encoding="utf-8")
+    (tmp / "topics.txt").write_text("# test topics\n## Broadband\nbroadband | high\n",
+                                    encoding="utf-8")
+    (tmp / "watchlist.txt").write_text("# test targets\n", encoding="utf-8")
     for patch in patches:
         patch.start()
     app = None
@@ -142,6 +156,48 @@ def main():
         buttons["Save"].invoke()
         app.update()
         assert len(app.actions_tree.get_children()) == 1
+
+        # Configuration workspace: every section builds, edits write, diagnostics run.
+        app.open_configuration()
+        app.update()
+        window = app._config_window
+        assert window is not None and window.winfo_exists(), "configuration window did not open"
+        assert len(window.frames) == 7, sorted(window.frames)
+        window._show_current()
+        window._refresh_sources()
+        assert len(window.sources_tree.get_children()) == 1
+        hbconfig.add_source("https://two.test/rss")
+        window._refresh_sources()
+        assert len(window.sources_tree.get_children()) == 2
+
+        window.nav.selection_clear(0, tk.END)
+        window.nav.selection_set(1)
+        window._show_current()
+        window._refresh_topics()
+        hbconfig.add_topic("spectrum", "medium", "Telecom")
+        window._refresh_topics()
+        assert any("spectrum" in str(window.topics_tree.item(i, "values"))
+                   for i in window.topics_tree.get_children())
+
+        window.nav.selection_clear(0, tk.END)
+        window.nav.selection_set(4)
+        window._show_current()
+        window._refresh_limits()
+        window.limit_vars["max_new_per_feed"].set("40")
+        window._save_limits()
+        # load_settings is patched in this test, so assert against the file it wrote.
+        written = json.loads((tmp / "s.json").read_text(encoding="utf-8"))
+        assert written["max_new_per_feed"] == 40, written.get("max_new_per_feed")
+
+        window.nav.selection_clear(0, tk.END)
+        window.nav.selection_set(6)
+        window._show_current()
+        window.run_diagnostics()
+        assert window.diagnostics_tree.get_children(), "diagnostics produced no findings"
+        assert window.diagnostic_summary.cget("text")
+        window.destroy()
+        app._config_window = None
+        app.update()
 
         coverage = app.coverage_lbl.cget("text")
         assert "sources" in coverage and "signals" in coverage, coverage

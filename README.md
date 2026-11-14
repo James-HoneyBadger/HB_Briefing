@@ -245,6 +245,26 @@ a headless daemon for machines without a desktop.
 python3 hbnscan.py --daemon     # loop per settings.json; Ctrl-C stops
 ```
 
+## Configuration without hand-editing
+
+**⛭ Configure** is a configuration workspace over every scan input, with validation and
+diagnostics instead of a text editor:
+
+| Section | Covers |
+| --- | --- |
+| Sources | add / edit / remove / test feeds, with last status and item counts |
+| Topics | standing subjects with interest level and group; add from the shipped library; per-topic Google News queries |
+| Targets | pin names to a category and status, with the profile's own categories in the menu |
+| Criteria | the whole relevance model of a profile — categories, signals, noise rules, hints, prompts, shipped topics and targets; validate, save, save-as, activate |
+| Scan limits | deep reads, briefing, triage and deep-read budgets, briefing window, per-feed item cap, retention |
+| Notifications | SMTP transport, recipients, SMS gateway, on/off and minimum severity, with a real test send |
+| Diagnostics | one check for broken URLs, unknown categories, duplicate rules, topic limits, criteria gaps, missing transport and failing sources |
+
+**Your files stay yours.** The three text files are parsed line by line, so comments and headers
+survive every edit; an untouched file is written back byte-for-byte, and a line the editor cannot
+parse is reported rather than deleted. A rejected value leaves the stored configuration unchanged.
+The text editors remain available for bulk work — both paths write the same files.
+
 ## Research workspace
 
 Collecting is the easy half. HB Briefing also keeps the work that follows: **dossiers**,

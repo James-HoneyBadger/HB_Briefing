@@ -143,6 +143,7 @@ class NewsScanApp(tk.Tk):
         self._ui_after_id = None
         self._auto_after_id = None
         self._auto_last_started = None
+        self._config_window = None
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._setup_styles()
@@ -264,8 +265,7 @@ class NewsScanApp(tk.Tk):
                                  font=("Sans", 10, "bold"), relief="flat", padx=14, pady=6, cursor="hand2")
         self.run_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        for label, command in (("✎ Edit Feeds", self.open_feeds_editor),
-                               ("🎯 Topics", self.open_topics_editor),
+        for label, command in (("⛭ Configure", self.open_configuration),
                                ("⚙ Settings", self.open_settings),
                                ("⤓ Export", self.export_data),
                                ("📄 Open Report", self.open_report),
@@ -1113,6 +1113,9 @@ class NewsScanApp(tk.Tk):
         self.refresh_table()
         self.refresh_briefing()
         self.refresh_workspace()
+        window = self._config_window
+        if window is not None and window.winfo_exists():
+            window._show_current()
 
     def _stop_progress(self):
         self.progress.stop()
@@ -1491,6 +1494,11 @@ class NewsScanApp(tk.Tk):
         url = hbnscan.safe_link(self.row_links.get(sel[0], ""))
         if url:
             webbrowser.open(url)
+
+    def open_configuration(self):
+        """Open the full configuration workspace (sources, topics, targets, criteria, …)."""
+        from hbnconfig_gui import open_configuration
+        return open_configuration(self)
 
     def open_feeds_editor(self):
         win = tk.Toplevel(self)

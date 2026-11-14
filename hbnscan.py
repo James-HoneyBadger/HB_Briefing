@@ -348,6 +348,43 @@ DEEP_READ_BUDGET = _env_int("WATCHDOG_MAX_DEEP_READS", MAX_DEEP_READS)
 TRIAGE_BUDGET = _env_int("WATCHDOG_MAX_TRIAGE", 40)
 BRIEF_WINDOW_HOURS = _env_int("WATCHDOG_BRIEF_HOURS", 24)
 
+
+def reload_env_limits():
+    """Re-read the budget switches from .env, so a settings edit applies without a restart.
+
+    These are module constants because the scan reads them in a hot loop; the configuration
+    screen calls this after writing .env instead of asking the user to relaunch. The file is
+    read fresh here (not `os.getenv`) because the editor writes it while the process runs.
+    """
+    global DEEP_READ_ENABLED, BRIEFING_ENABLED, DEEP_READ_BUDGET, TRIAGE_BUDGET
+    global BRIEF_WINDOW_HOURS
+    env = _env_values()
+
+    def as_int(key, default):
+        try:
+            return int(str(env.get(key, "")).strip() or default)
+        except (TypeError, ValueError):
+            return default
+
+    def as_flag(key, default):
+        raw = str(env.get(key, "")).strip().lower()
+        if not raw:
+            return default
+        return raw not in ("0", "false", "no", "off")
+
+    DEEP_READ_ENABLED = as_flag("WATCHDOG_DEEP_READ", True)
+    BRIEFING_ENABLED = as_flag("WATCHDOG_BRIEFING", True)
+    DEEP_READ_BUDGET = as_int("WATCHDOG_MAX_DEEP_READS", MAX_DEEP_READS)
+    TRIAGE_BUDGET = as_int("WATCHDOG_MAX_TRIAGE", 40)
+    BRIEF_WINDOW_HOURS = as_int("WATCHDOG_BRIEF_HOURS", 24)
+    return {
+        "deep_read": DEEP_READ_ENABLED,
+        "briefing": BRIEFING_ENABLED,
+        "max_deep_reads": DEEP_READ_BUDGET,
+        "max_triage": TRIAGE_BUDGET,
+        "brief_hours": BRIEF_WINDOW_HOURS,
+    }
+
 # A deep read may only discard a screened signal when the model is reasonably
 # sure; a truncated or paywalled article must not silently clear the flag.
 REJECT_MIN_CONFIDENCE = 0.5
@@ -1003,6 +1040,8 @@ def setting_choices(key):
 # key -> (minimum, maximum) for numeric settings.
 INT_SETTINGS = {
     "table_limit": (10, 5000),
+    "max_new_per_feed": (1, 500),
+    "retention_days": (7, 3650),
     "sash": (0, 4000),
     "font_scale": (80, 150),
     "notify_max_items": (1, 20),
@@ -1188,6 +1227,9 @@ DEFAULT_SETTINGS = {
     "feed_since": "",
     "feed_until": "",
     "table_limit": 100,
+    # How many new items one feed may contribute per scan, and how long unseen rows are kept.
+    "max_new_per_feed": 25,
+    "retention_days": 90,
     "filter_severity": "all",
     "filter_category": "all",
     "filter_group": "all",
@@ -1839,6 +1881,11 @@ def _parse_watchlist_file():
     return tuple(rules), tuple(warnings)
 
 
+def read_watchlist_file():
+    """Public view of the file grammar, for the configuration editor."""
+    return _parse_watchlist_file()
+
+
 def load_watchlist():
     """Active standing targets: the profile's own targets, then watchlist.txt rules.
 
@@ -1933,6 +1980,11 @@ def _parse_topic_file():
         seen.add(label.lower())
         topics.append({"label": label, "severity": severity, "group": group})
     return tuple(topics), tuple(warnings)
+
+
+def read_topic_file():
+    """Public view of the file grammar, for the configuration editor."""
+    return _parse_topic_file()
 
 
 def load_topics():
@@ -3105,7 +3157,7 @@ def _prepare_scan(log_callback):
     return feeds, settings, since, until
 
 
-def _scan_feed(conn, url, since, until, budget, cancel, log_callback):
+def _scan_feed(conn, url, since, until, budget, cancel, log_callback, max_new=MAX_NEW_PER_FEED):
     """Collect one feed and store its new in-window items.
 
     Returns counters plus `cancelled`. Feed validators are held back when the per-feed
@@ -3135,10 +3187,10 @@ def _scan_feed(conn, url, since, until, budget, cancel, log_callback):
             stats["cancelled"] = True
             log_callback("  [CANCELLED] stopped mid-feed")
             break
-        if processed >= MAX_NEW_PER_FEED:
+        if processed >= max_new:
             capped = True
             log_callback(
-                f"     (new-item cap of {MAX_NEW_PER_FEED} reached; "
+                f"     (new-item cap of {max_new} reached; "
                 "remainder deferred to the next scan)"
             )
             break
@@ -3239,7 +3291,8 @@ def _run_scan(log_callback=print, cancel=None):
                 log_callback("  [CANCELLED] not all feeds were reached")
                 break
             feeds_attempted += 1
-            stats = _scan_feed(conn, url, since, until, budget, cancel, log_callback)
+            stats = _scan_feed(conn, url, since, until, budget, cancel, log_callback,
+                               max_new=settings["max_new_per_feed"])
             for key in totals:
                 totals[key] += stats[key]
             if stats["failed"]:
@@ -3248,7 +3301,7 @@ def _run_scan(log_callback=print, cancel=None):
                 cancelled = True
                 break
 
-        prune_old_items(conn)
+        prune_old_items(conn, days=settings["retention_days"])
         briefing_markdown = None if cancelled else build_briefing(conn, log_callback)
         _record_scan_meta(conn)
         _record_scan_run(
@@ -3318,6 +3371,11 @@ def _env_values():
         if os.getenv(key):
             values[key] = os.getenv(key)
     return {key: (value or "").strip() for key, value in values.items()}
+
+
+def read_env_values():
+    """Public view of .env as currently on disk (the configuration editor writes it)."""
+    return _env_values()
 
 
 def notification_config():

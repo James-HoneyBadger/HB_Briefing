@@ -12,9 +12,10 @@ start a scan from any of them and the others see the result on their next refres
 
 All four share the same `settings.json`, so the scan schedule, filters and theme you set in one
 appear in the others. None of them re-implements the pipeline: they call the engine. Dossiers,
-actions and source health are currently edited in the desktop app or through the workspace
-commands (`hbnscan.py dossier|action|sources`); the web app and TUI read signals, including each
-row's story group.
+actions, source health and the full configuration workspace (sources, topics, targets, criteria,
+budgets, transport) are edited in the desktop app or through the workspace commands
+(`hbnscan.py dossier|action|sources`); the web app and TUI read signals, including each row's
+story group.
 
 ---
 

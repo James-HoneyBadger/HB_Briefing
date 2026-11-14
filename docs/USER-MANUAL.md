@@ -170,9 +170,8 @@ and secrets.
 | Control | Effect |
 | --- | --- |
 | **▶ Run Scan Now** | Starts a scan in a worker thread; the UI stays responsive |
-| **✎ Edit Feeds** | Opens `feeds.txt` for editing and saves it back |
-| **🎯 Topics** | Opens `topics.txt` — the standing subjects, with group and interest level |
-| **⚙ Settings** | Feed window, LLM provider, scheduling, notifications, appearance, exports |
+| **⛭ Configure** | The configuration workspace: sources, topics, targets, the profile's criteria, scan limits, notification transport and diagnostics |
+| **⚙ Settings** | Quick settings: profile choice, feed date window, LLM provider, schedule, appearance, backup |
 | **⤓ Export** | Writes the current signals to a chosen format |
 | **📄 Open Report** | Opens `latest_report.md` in your default viewer |
 | **🗑 Clear Logs** | Clears the log pane only (no data is deleted) |
@@ -268,7 +267,35 @@ The **Today** tab carries the same numbers as a one-line strip: source totals, f
 counts, signal totals, how many arrived since the previous scan, undated signals, and when the
 last scan ran.
 
-### 3.5 The workspace from a shell
+### 3.5 The Configuration window
+
+**⛭ Configure** in the toolbar opens the screen that replaces hand-editing configuration files.
+A navigation list on the left, one section on the right; every save is validated first and
+reported in the log, and the main window refreshes immediately.
+
+| Section | What you can change |
+| --- | --- |
+| **Sources** | Add, edit, remove and test a feed URL. **Test** fetches one feed without scoring it; **Test all** reports how many answered. The table also shows each source's last status and how many items it contributed |
+| **Topics** | Add, edit and remove standing subjects with an interest level and group; **Add from library…** offers the shipped subjects you do not have yet; a checkbox turns each active topic into its own Google News query |
+| **Targets** | Pin a name (one or more phrases joined with `&`) to a category and status, with an optional note. The category menu offers only the active profile's categories |
+| **Criteria** | Edit the whole relevance model of a profile — categories, core categories, strong/weak/noise/enforcement signals, trusted hosts, category hints, the prompt framing, and the topics/targets it ships with. **Validate** explains problems, **Save** overwrites, **Save as new…** creates another profile, **Activate** switches to it now |
+| **Scan limits** | Deep reads on/off, briefing on/off, AI triage budget, deep-read budget, briefing window, new items per feed per scan, and how long dismissed rows are kept |
+| **Notifications** | SMTP host, port, security, user, password, sender, e-mail and SMS recipients, gateway domain, the on/off switch and the minimum severity. **Send test** uses the real transport |
+| **Diagnostics** | One check across everything: broken URLs, unknown categories, duplicate rules, topics over the limit, criteria gaps, notifications enabled without transport, sources that failed their last fetch |
+
+Two guarantees worth knowing:
+
+- **Your files are not reformatted.** The three text files are parsed line by line; comments,
+  headers and grouping survive every edit, and a file you never change is written back
+  byte-for-byte. Lines the editor cannot parse are shown as errors and left untouched.
+- **Nothing is saved by a hidden default.** Every edit goes through validation, and a rejected
+  value leaves the stored configuration exactly as it was.
+
+The text editors (**Edit as text** inside the Sources and Topics sections) remain available for
+bulk work; both paths write the same files, so you can switch freely. The workspace CLI can also read the result:
+`python3 hbnscan.py sources` shows what the scanner sees.
+
+### 3.6 The workspace from a shell
 
 Everything the tabs do is available without a display, which is also what makes it scriptable:
 
@@ -533,6 +560,10 @@ no key the engine runs offline and says so.
   available from the toolbar's **every** menu without opening this dialog.
 - **Scan only between / and** — scans run **only** inside these clock times; the window wraps
   midnight correctly (`22:00`–`06:00` means overnight runs only). Blank means all day.
+
+Per-scan work limits live in **⛭ Configure → Scan limits**: the AI triage and deep-read budgets,
+the briefing window, how many new items one feed may add per scan (`max_new_per_feed`, 25 by
+default) and how long dismissed rows are retained (`retention_days`, 90 by default).
 
 These three are shared with the web app, the terminal UI and the CLI; setting them anywhere
 sets them everywhere ([§9](#9-scheduling)).

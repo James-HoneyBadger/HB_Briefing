@@ -102,6 +102,8 @@ The design choices that follow from that:
 | --- | --- | --- |
 | `hbnscan.py` | 4 400 | Engine: profiles, topics, feeds, scoring, AI, storage and migrations, report, exports, notifications, scheduling, daemon, CLI |
 | `hbworkspace.py` | 900 | Research workspace: dossiers, notes, actions, cited reports, source health, workspace CLI. Deterministic, offline, no network |
+| `hbconfig.py` | 700 | Configuration workspace: lossless documents for `feeds.txt`/`topics.txt`/`watchlist.txt`, profile validation, `.env` budgets and transport, whole-configuration diagnostics |
+| `hbnconfig_gui.py` | 900 | The Configuration window: seven sections over `hbconfig`, with validation and refresh hooks |
 | `hbnscan_gui.py` | 2 100 | Tkinter desktop interface: Today, Dossiers, Actions, Sources, Briefing |
 | `hbnweb.py` | 1 150 | Browser interface: `ThreadingHTTPServer`, JSON API, embedded page |
 | `hbntui.py` | 500 | Curses terminal interface |
@@ -216,6 +218,8 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 | `profile` | string | Name in `profiles/` or a path (see §5.1); unknown values fall through to the default profile |
 | `feed_since`, `feed_until` | string | Normalised `YYYY-MM-DD`; malformed → `""` |
 | `table_limit` | int | Clamped to `INT_SETTINGS["table_limit"]` (10–5000) |
+| `max_new_per_feed` | int | 1–500; how many new items one feed may contribute per scan. Beyond it, the feed's validators are held back so the remainder re-delivers |
+| `retention_days` | int | 7–3650; `prune_old_items` deletes only `flagged = 0` rows older than this |
 | `filter_severity` | enum | `all`, `high`, `medium`, `low` |
 | `filter_category` | enum | `all` plus **the active profile's** categories, resolved per call by `setting_choices()` — a frozen list would reject another profile's categories and silently reset the filter |
 | `filter_group` | enum | `all`, `watchlist`, `topic`, `core`, `context` — the last three resolved against the active profile |
@@ -303,6 +307,66 @@ def next_scan_delay(settings, last_started=None, now=None):
 Writing the setting is deliberately separate from acting on it: `--interval`, `--auto` and
 `--window` persist to `settings.json` and exit 0, and only `--daemon` (or a running front end)
 reads the result.
+
+---
+
+### 4.4 Configuration workspace (`hbconfig`)
+
+Configuration used to be editable only in a text editor. `hbconfig` exposes it as data with
+validation, so the desktop Configuration window (and any future front end) can write it safely.
+
+**Documents are lossless.** `feeds.txt`, `topics.txt` and `watchlist.txt` parse into an ordered
+list of lines: entries, comments and blanks. Only lines the editor actually changed are
+re-rendered (`Line.dirty`); untouched lines keep their exact original text. Opening the editor
+and pressing Save on an unmodified file therefore produces byte-identical output — verified
+against the shipped files in the test suite. This matters because those files carry long
+instructional headers and grouped comments that a naive rewrite would destroy.
+
+```python
+doc = hbconfig.topics_document()      # Document: lines + entries
+doc.entries()                         # [(ordinal, data, error), ...] - entries only
+doc.append({"label": "spectrum", "severity": "high", "group": "Telecom"})
+doc.update(0, {...})                  # by entry ordinal, not line number
+doc.remove(0)
+doc.save()                            # atomic write via hbnscan.write_atomic
+```
+
+An entry that fails to parse is kept with `error` set and rendered unchanged: the editor reports
+it and never deletes a line it did not understand. Editing a topic writes the explicit three-part
+form (`label | severity | group`), which the parser accepts, so no heading juggling is needed.
+
+**Validation** raises `ValueError` with an actionable message: URL scheme/host/whitespace,
+duplicate entries, unknown target category (against the active profile), bad severity, over-long
+labels, `|` in a phrase. Every mutation goes through it, so the window cannot write a state the
+scanner would then reject or silently skip.
+
+**Profiles** are edited as one merged mapping (`profile_editor_data`) so inherited defaults are
+visible, then validated (`validate_profile`: core categories ⊆ categories, hint categories
+exist, duplicate topics, target categories and statuses, empty severity rules) and written to
+`profiles/<slug>.json` through `write_atomic`. Saving refuses to overwrite an existing file
+unless asked, and activation calls `save_settings(profile=…)` + `apply_profile()`.
+
+**`.env` budgets** (`WATCHDOG_DEEP_READ`, `WATCHDOG_BRIEFING`, `WATCHDOG_MAX_TRIAGE`,
+`WATCHDOG_MAX_DEEP_READS`, `WATCHDOG_BRIEF_HOURS`) are module constants because the scan reads
+them in a hot loop. `save_env_limits` writes `.env` and `hbnscan.reload_env_limits()` re-reads it
+**from the file** (not `os.getenv`, which is stale for a write made by the running process), so a
+change applies without a restart. Notification transport is different: `notification_config()`
+already re-reads `.env` per call, so saving SMTP settings is immediate.
+
+**Diagnostics** (`diagnose`) is the "what is misconfigured?" view. It never mutates state and
+returns `{level, area, message}` findings, sorted errors → warnings → info:
+
+| Area | Example findings |
+| --- | --- |
+| Sources | invalid scheme or host, duplicate URL, a Google News *article* link used as a feed, no sources at all, a source that failed its last fetch |
+| Topics | a malformed line, more than `TOPIC_LIMIT` topics, more active topics than `TOPIC_FEED_LIMIT` while query feeds are on |
+| Targets | unknown category, bad status, duplicate rule, no pinned targets (info) |
+| Criteria | core category missing from the list, hint for an unknown category, duplicate profile topic, bad target, empty severity rule |
+| AI / limits | no key (info), triage budget 0, deep reads off, briefing off |
+| Notifications | enabled with no SMTP transport, an SMS number with no gateway domain |
+| Scanning | very high per-feed cap, retention under 30 days |
+
+`summarise(findings)` is the one-line footer the window shows.
 
 ---
 
