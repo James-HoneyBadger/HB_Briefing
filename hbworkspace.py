@@ -572,10 +572,11 @@ def render_report_markdown(report):
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def render_report_html(report):
+def render_report_html(report, source_path=None, download_name=""):
     dossier = report["dossier"]
     counts = report["counts"]
     esc = html_module.escape
+    print_css, print_footer = hbnscan.print_footer_assets(source_path, download_name)
     badge = {"high": "#b91c1c", "medium": "#b45309", "low": "#475569", "none": "#64748b"}
     development_cards = []
     for item in report["developments"]:
@@ -631,7 +632,7 @@ def render_report_html(report):
  ul {{ margin: 6px 0; padding-left: 20px; }}
  .gap {{ background: #fff7ed; border-left: 3px solid #f59e0b; padding: 10px 14px;
          border-radius: 6px; }}
-</style></head><body>
+{print_css}</style></head><body>
 <header><h1>{esc(dossier['name'])}</h1>
 <p>{counts['signals']} signal(s) · {counts['high']} high · {counts['medium']} medium ·
 {counts['low']} low · {esc(dossier['status'])} · generated {esc(report['generated'])}</p></header>
@@ -645,19 +646,20 @@ def render_report_html(report):
 <section><h2>Actions</h2><ul>{actions}</ul></section>
 <section class="gap"><h2>Evidence gaps</h2><ul>{gaps}</ul></section>
 <p class="meta">Generated from stored signals; no model call was made for this report.</p>
-</main></body></html>"""
+</main>{print_footer}</body></html>"""
 
 
 def render_report_json(report):
     return json.dumps(report, indent=2, ensure_ascii=False) + "\n"
 
 
-def render_report(report, fmt="md"):
+def render_report(report, fmt="md", source_path=None, download_name=""):
     fmt = (fmt or "md").lower().lstrip(".")
     if fmt in ("markdown", "md"):
         return render_report_markdown(report)
     if fmt in ("html", "htm"):
-        return render_report_html(report)
+        return render_report_html(report, source_path=source_path,
+                                  download_name=download_name)
     if fmt == "json":
         return render_report_json(report)
     raise ValueError(f"unsupported report format {fmt!r}; use {', '.join(REPORT_FORMATS)}")
@@ -668,7 +670,8 @@ def export_report(conn, ident, path, fmt=None):
     target = Path(path)
     fmt = fmt or (target.suffix.lower().lstrip(".") or "md")
     report = dossier_report(conn, ident)
-    text = render_report(report, fmt)
+    # A printed dossier names the file it came from, like the signal export does.
+    text = render_report(report, fmt, source_path=target)
     hbnscan.write_atomic(target, text)
     return target, report["counts"]["signals"]
 

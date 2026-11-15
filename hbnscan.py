@@ -4161,7 +4161,56 @@ def render_json(rows, title=None, briefing=None):
                        "signals": rows}, indent=2, ensure_ascii=False)
 
 
-def render_html(rows, title=None, briefing=None):
+def print_footer_assets(source_path=None, download_name=""):
+    """(css, html) for a page footer on printed HTML: file name, full path, page numbers.
+
+    Two mechanisms, chosen so a browser cannot print the footer twice or print a wrong count:
+
+    * the file name and full path are a `position: fixed` block, which every browser repeats
+      at the bottom of each printed page;
+    * "page N of M" is a CSS page-margin box, which only Chromium 131+ and Safari 18.4+ draw.
+      Browsers without margin-box support simply omit the count instead of inventing one.
+    """
+    label = ""
+    if source_path:
+        path = Path(source_path).expanduser()
+        try:
+            full = path.resolve()
+        except OSError:
+            full = path.absolute()
+        label = f"{path.name} — {full}"
+    elif download_name:
+        label = f"{download_name} — downloaded copy (the path is the browser's)"
+    if not label:
+        return "", ""
+    css = """
+ .print-footer { display: none; }
+ @media print {
+   /* Page numbers only: Chromium 131+/Safari 18.4+. Elsewhere they are absent, not wrong. */
+   @page {
+     margin: 16mm 14mm 20mm;
+     @bottom-right {
+       content: "Page " counter(page) " of " counter(pages);
+       font: 9pt/1.4 ui-sans-serif, system-ui, sans-serif;
+       color: #475569;
+     }
+   }
+   .print-footer { display: flex; position: fixed; bottom: 0; left: 0; right: 0;
+                    justify-content: space-between; gap: 12px; padding: 4px 2px 0;
+                    font: 9pt/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+                    color: #475569; background: #fff; border-top: 1px solid #cbd5e1; }
+   .print-footer .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+   .card, .briefing { box-shadow: none; border: 1px solid #d7dee8; break-inside: avoid; }
+   body { background: #fff; }
+   main { max-width: none; padding: 0; }
+ }
+"""
+    markup = (f'<footer class="print-footer">'
+              f'<span class="path">{html.escape(label)}</span></footer>')
+    return css, markup
+
+
+def render_html(rows, title=None, briefing=None, source_path=None, download_name=""):
     title = title or APP_NAME
     counts = _export_counts(rows)
     badge = {"high": "#b91c1c", "medium": "#b45309", "low": "#475569", "none": "#64748b"}
@@ -4198,6 +4247,7 @@ def render_html(rows, title=None, briefing=None):
         briefing_html = ('<section class="briefing"><h2>Executive Briefing</h2>'
                          f'<p class="meta">{html.escape(briefing[1] or "")}</p>'
                          f'<pre>{html.escape(briefing[0])}</pre></section>')
+    print_css, print_footer = print_footer_assets(source_path, download_name)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{html.escape(title)}</title>
 <style>
@@ -4218,12 +4268,12 @@ def render_html(rows, title=None, briefing=None):
  .entities {{ color: #334155; font-size: 13px; }}
  ul {{ margin: 6px 0; padding-left: 20px; }}
  .briefing {{ background:#fff; border-radius:8px; padding:16px 18px; margin-bottom:14px; }}
- .briefing pre {{ white-space:pre-wrap; font: 14px/1.5 ui-monospace, monospace; margin:0; }}
+ .briefing pre {{ white-space:pre-wrap; font: 14px/1.5 ui-monospace, monospace; margin:0; }}{print_css}
 </style></head><body>
 <header><h1>{html.escape(title)}</h1>
 <p>{len(rows)} signal(s) · {counts['high']} high · {counts['medium']} medium ·
 {counts['low']} low · exported {datetime.now().strftime('%Y-%m-%d %H:%M')}</p></header>
-<main>{briefing_html}{"".join(cards)}</main></body></html>"""
+<main>{briefing_html}{"".join(cards)}</main>{print_footer}</body></html>"""
 
 
 def _docx_paragraph(text, bold=False, size=20, space_after=100, bullet=False):
@@ -4315,9 +4365,15 @@ def export_items(conn, path, fmt=None, filters=None, title=None, log_callback=pr
     elif fmt == "csv":
         path.write_text(render_csv(rows), encoding="utf-8")
     else:
-        renderer = {"markdown": render_markdown, "text": render_text, "html": render_html,
-                    "json": render_json}[fmt]
-        path.write_text(renderer(rows, title, briefing), encoding="utf-8")
+        if fmt == "html":
+            # The printed page names the file it came from, so a printed copy can be traced
+            # back to the export that produced it.
+            path.write_text(render_html(rows, title, briefing, source_path=path),
+                            encoding="utf-8")
+        else:
+            renderer = {"markdown": render_markdown, "text": render_text,
+                        "json": render_json}[fmt]
+            path.write_text(renderer(rows, title, briefing), encoding="utf-8")
     log_callback(f"  [EXPORT] {len(rows)} signal(s) -> {path} ({fmt})")
     return path, len(rows)
 

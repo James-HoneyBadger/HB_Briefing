@@ -357,8 +357,10 @@ def export_document(fmt):
         body = hbnscan.render_markdown(rows, title=title, briefing=briefing)
         return body.encode("utf-8"), f"hb-briefing-{stamp}.md", "text/markdown; charset=utf-8"
     if fmt == "html":
-        body = hbnscan.render_html(rows, title=title, briefing=briefing)
-        return body.encode("utf-8"), f"hb-briefing-{stamp}.html", "text/html; charset=utf-8"
+        filename = f"hb-briefing-{stamp}.html"
+        body = hbnscan.render_html(rows, title=title, briefing=briefing,
+                                   download_name=filename)
+        return body.encode("utf-8"), filename, "text/html; charset=utf-8"
     if fmt == "csv":
         body = hbnscan.render_csv(rows)
         return body.encode("utf-8"), f"hb-briefing-{stamp}.csv", "text/csv; charset=utf-8"

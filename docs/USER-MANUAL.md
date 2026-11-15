@@ -726,7 +726,29 @@ how confident the engine is. When offline verdicts are exported, those columns c
 heuristic's own explanation rather than an empty cell, so the document is never misleading
 about what was and was not model-generated.
 
-### 11.2 Dossier reports
+### 11.2 Printing: the footer names the file and the page
+
+Both HTML exports (signals and dossier reports) carry a print footer, so a printed sheet can be
+traced back to the file it came from:
+
+```
+latest_report.html — /home/you/.local/share/hb-briefing/latest_report.html      Page 3 of 12
+```
+
+- The **file name and full path** are a fixed footer block, which every browser repeats at the
+  bottom of each printed page.
+- **Page N of M** comes from a CSS page-margin box. Chromium 131+, Edge 131+ and Safari 18.4+
+  draw it; browsers without margin-box support — Firefox today — print the path only rather
+  than printing a wrong count. There is no setting to change and nothing to switch on.
+
+Print with the browser's own command (`Ctrl+P` / `⌘P`). If you want the page numbers, print
+from Chrome, Edge or Safari, and keep **Headers and footers** enabled in the print dialog if
+the browser offers that toggle: it controls the browser's *own* header/footer, not this one.
+
+A browser download (`/api/export?fmt=html`) prints with its download name instead of a path,
+because the file does not exist on the server when it is generated.
+
+### 11.3 Dossier reports
 
 A dossier exports the same structured report you see in its preview, in three formats:
 
