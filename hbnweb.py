@@ -204,6 +204,10 @@ def state_payload():
         "ai": {
             "model": hbnscan.LLM_MODEL if hbnscan.deepseek_configured() else None,
             "endpoint": hbnscan.LLM_BASE_URL if hbnscan.deepseek_configured() else None,
+            # The page states the mode it is in, rather than leaving a new user to guess
+            # whether an empty verdict means "nothing matters" or "no key configured".
+            "mode": hbnscan.grading_mode(),
+            "mode_text": hbnscan.describe_grading_mode(),
         },
         "settings": {
             "feed_since": settings["feed_since"],
@@ -705,6 +709,11 @@ PAGE = r"""<!DOCTYPE html>
   button.primary { background:var(--amber); color:var(--bg); border-color:transparent; font-weight:600; }
   main { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:0; height:calc(100vh - 56px); }
   .left { display:flex; flex-direction:column; min-width:0; }
+  .mode { display:flex; gap:10px; align-items:center; margin:10px 14px; padding:10px 12px;
+          border:1px solid var(--line); border-left:3px solid var(--amber);
+          background:var(--panel); border-radius:8px; font-size:13px; color:var(--ink); }
+  .mode code { font-size:12px; }
+  .mode button { margin-left:auto; }
   .bar { display:flex; gap:10px; align-items:center; padding:10px 14px; flex-wrap:wrap;
          border-bottom:1px solid var(--line); }
   select, input[type=search] { background:var(--bg-input); color:var(--ink); border:1px solid var(--line);
@@ -791,6 +800,14 @@ PAGE = r"""<!DOCTYPE html>
   </label>
   <span class="sub" id="scheduleLabel"></span>
   <span class="sub" id="saveState"></span>
+</div>
+<div class="mode" id="modeBanner" hidden>
+    <span><strong>Running in Offline Mode.</strong> Every headline is graded by a
+    deterministic heuristic: same rules, same result, no network calls, nothing leaving this
+    machine. Add an API key to <code>.env</code> to unlock article deep-reads and written
+    briefings &#8212; existing verdicts stay valid, and each signal records which layer graded
+    it.</span>
+  <button id="modeDismiss" type="button">Dismiss</button>
 </div>
 <main>
   <section class="left">
@@ -971,10 +988,12 @@ async function saveFilters() {
 
 async function loadState() {
   state = await api("/api/state");
+  maybeShowMode(state.ai);
   setText("profileLine", `${state.product} · profile ${state.profile.name} `
     + `(${state.profile.file}) · ${state.profile.topics} topics · `
     + `${state.profile.targets} target rules · `
-    + `${state.ai.model ? "AI " + state.ai.model : "offline heuristic"}`);
+    + `${state.ai.mode_text || (state.ai.model ? "model " + state.ai.model
+                                              : "offline heuristic")}`);
   const c = state.counts;
   setText("counts", `${c.flagged} flagged · ${c.high} high · ${c.medium} medium · ${c.low} low · `
     + `${c.core} core · ${c.watchlist} watchlist · ${c.topic} topic · ${c.feeds} feeds`);
@@ -1172,6 +1191,18 @@ $("q").addEventListener("input", () => {
   await refresh();
   schedule();
 })();
+
+// Offline mode explains itself once per browser; the flag is local, never sent anywhere.
+function maybeShowMode(ai) {
+  const banner = $("modeBanner");
+  if (!banner || !ai) return;
+  const seen = localStorage.getItem("hb-offline-notice") === "seen";
+  banner.hidden = !(ai.mode === "offline" && !seen);
+  $("modeDismiss").onclick = () => {
+    localStorage.setItem("hb-offline-notice", "seen");
+    banner.hidden = true;
+  };
+}
 
 // The service worker only registers on a secure context (localhost or HTTPS). Over a plain
 // LAN address the app still installs to the home screen; it just does not cache offline.

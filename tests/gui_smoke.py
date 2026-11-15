@@ -51,8 +51,11 @@ def main():
         mock.patch.object(hbnscan, "DB_PATH", tmp / "t.db"),
         mock.patch.object(hbnscan, "SETTINGS_PATH", tmp / "s.json"),
         mock.patch.object(hbnscan, "REPORT_PATH", tmp / "r.md"),
+        # first_run_done: the notice is covered explicitly further down, and a modal grab
+        # in the middle of the walk would block the rest of the test.
         mock.patch.object(hbnscan, "load_settings",
-                          lambda: dict(hbnscan.DEFAULT_SETTINGS, auto_scan=False)),
+                          lambda: dict(hbnscan.DEFAULT_SETTINGS, auto_scan=False,
+                                       first_run_done=True)),
         mock.patch.object(hbnscan, "load_feeds", lambda: []),
         mock.patch.object(hbnscan, "load_watchlist", lambda: []),
         mock.patch.object(hbnscan, "load_topics", lambda: []),
@@ -173,6 +176,30 @@ def main():
         assert json.loads(saved["column_widths"])["analysis"] == 520, saved.get("column_widths")
         app._reset_column_widths()
         assert int(app.tree.column("analysis", "width")) == app.COLUMN_WIDTHS["analysis"]
+
+        # First run: offline mode explains itself once, and marks itself shown.
+        app.settings["first_run_done"] = False
+        saved = {}
+        with mock.patch.object(hbnscan, "grading_mode", return_value="offline"), \
+             mock.patch.object(hbnscan, "save_settings",
+                               side_effect=lambda **kw: saved.update(kw)
+                               or dict(app.settings, **kw)):
+            app.maybe_show_first_run()
+            app.update()
+            notices = [w for w in app.winfo_children()
+                       if isinstance(w, tk.Toplevel) and w.title() == "Welcome to HB Briefing"]
+            assert notices, "the first-run notice did not appear in offline mode"
+            labels = [child.cget("text") for child in walk(notices[0])
+                      if isinstance(child, tk.Label)]
+            assert any("Offline Mode" in text for text in labels), labels
+            assert any("deep-read" in text for text in labels), labels
+            buttons = {child.cget("text"): child for child in walk(notices[0])
+                       if isinstance(child, tk.Button)}
+            assert "Continue offline" in buttons, list(buttons)
+            buttons["Continue offline"].invoke()      # the real dismissal path
+        app.update()
+        assert saved.get("first_run_done") is True, saved
+        app.settings["first_run_done"] = True
 
         # Configuration workspace: every section builds, edits write, diagnostics run.
         app.open_configuration()

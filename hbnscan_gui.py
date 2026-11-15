@@ -154,6 +154,80 @@ class NewsScanApp(tk.Tk):
         self.refresh_workspace()
         self._drain_ui_queue()
         self._schedule_auto_scan(initial=True)
+        self.after(250, self.maybe_show_first_run)
+
+    # -- first run ----------------------------------------------------------
+
+    def maybe_show_first_run(self):
+        """Say which mode is grading, once. Without a key the tool is complete, not broken."""
+        if self.settings.get("first_run_done"):
+            return
+        if hbnscan.grading_mode() != "offline":
+            # A configured key needs no explanation; do not nag about a decision already made.
+            self._mark_first_run_done()
+            return
+        window = tk.Toplevel(self)
+        window.title("Welcome to HB Briefing")
+        window.configure(bg=BG_PANEL)
+        window.resizable(False, False)
+        window.transient(self)
+
+        tk.Label(window, text="You are running in Offline Mode", bg=BG_PANEL, fg=FG_TEXT,
+                 font=("Sans", 13, "bold")).pack(anchor="w", padx=18, pady=(16, 4))
+        body = (
+            "Every headline is graded by a deterministic heuristic: same rules, same result, "
+            "no network calls, no cost, nothing leaving this machine.\n\n"
+            "Add an API key later to unlock article deep-reads and written briefings \u2014 "
+            "the verdicts you already have stay valid, and every signal records which layer "
+            "graded it.")
+        tk.Label(window, text=body, bg=BG_PANEL, fg=FG_MUTED, font=("Sans", 10),
+                 justify="left", wraplength=460).pack(anchor="w", padx=18)
+        feeds = len(hbnscan.load_feeds())
+        tk.Label(window, text=f"{feeds} feed(s) configured for the '{hbnscan.APP_NAME}' "
+                              f"profile.", bg=BG_PANEL, fg=FG_MUTED,
+                 font=("Sans", 9)).pack(anchor="w", padx=18, pady=(10, 0))
+
+        bar = tk.Frame(window, bg=BG_PANEL)
+        bar.pack(fill=tk.X, padx=18, pady=16)
+
+        def add_key():
+            self._mark_first_run_done()
+            window.destroy()
+            self.open_configuration()
+
+        def add_feeds():
+            added = hbnscan.seed_starter_feeds(log_callback=self.log)
+            window.destroy()
+            self._mark_first_run_done()
+            if added:
+                self.refresh_table()
+                self.start_scan_thread()
+            else:
+                messagebox.showinfo("Starter feeds",
+                                    "Every starter feed for this profile is already listed.",
+                                    parent=self)
+
+        def close():
+            self._mark_first_run_done()
+            window.destroy()
+
+        tk.Button(bar, text="Continue offline", command=close, bg=BG_ACCENT, fg="#ffffff",
+                  relief="flat", font=("Sans", 10, "bold")).pack(side=tk.LEFT)
+        tk.Button(bar, text="Add an API key\u2026", command=add_key, bg=BG_PANEL, fg=FG_TEXT,
+                  relief="flat", font=("Sans", 10)).pack(side=tk.LEFT, padx=8)
+        tk.Button(bar, text="Add starter feeds", command=add_feeds, bg=BG_PANEL, fg=FG_TEXT,
+                  relief="flat", font=("Sans", 10)).pack(side=tk.LEFT)
+        window.protocol("WM_DELETE_WINDOW", close)
+        window.update_idletasks()
+        window.geometry(
+            f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
+        window.grab_set()
+
+    def _mark_first_run_done(self):
+        try:
+            self.settings = hbnscan.save_settings(first_run_done=True)
+        except (OSError, ValueError):
+            self.settings["first_run_done"] = True
 
     def _apply_font_scale(self):
         """Point sizes scale with Tk's points-per-pixel ratio, so one call covers every font."""

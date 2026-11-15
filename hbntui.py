@@ -208,7 +208,7 @@ def draw(screen, state):
     screen.erase()
     height, width = screen.getmaxyx()
     head = (f" HB BRIEFING  ·  {hbnscan.APP_NAME}  ·  {state.total} flagged"
-            f"  ·  {'AI ' + hbnscan.LLM_MODEL if hbnscan.deepseek_configured() else 'offline heuristic'}")
+            f"  ·  {hbnscan.describe_grading_mode()}")
     addstr(screen, 0, 0, head, curses.A_BOLD, width)
     schedule = hbnscan.describe_schedule(state.settings)
     dot = "●" if state.scanning else "○"

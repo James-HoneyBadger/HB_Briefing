@@ -108,6 +108,19 @@ class WebApiTest(unittest.TestCase):
         self.assertTrue(any(icon.get("purpose") == "maskable" for icon in manifest["icons"]),
                         "ChromeOS crops the icon unless a maskable one is offered")
 
+    def test_the_state_says_which_mode_is_grading(self):
+        state = self.get_json("/api/state")
+        self.assertEqual(state["ai"]["mode"], hbnscan.grading_mode())
+        self.assertEqual(state["ai"]["mode_text"], hbnscan.describe_grading_mode())
+        self.assertIn(state["ai"]["mode"], ("offline", "model"))
+
+    def test_the_page_states_the_mode_and_offers_to_hide_the_notice(self):
+        status, page = self.request("/")
+        self.assertEqual(status, 200)
+        self.assertIn('id="modeBanner"', page)
+        self.assertIn("Running in Offline Mode", page)
+        self.assertIn("hb-offline-notice", page, "the dismissal must be remembered locally")
+
     def test_service_worker_is_served_with_a_javascript_type(self):
         status, body, ctype = self.request_bytes("/sw.js")
         self.assertEqual(status, 200)
