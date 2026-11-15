@@ -435,7 +435,13 @@ def build_frozen():
     if target.exists():
         shutil.rmtree(target)
     DIST.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(produced[0]), target)
+    # macOS produces two items (the .app and the console tree); keep them together.
+    if len(produced) == 1:
+        shutil.move(str(produced[0]), target)
+    else:
+        target.mkdir()
+        for item in produced:
+            shutil.move(str(item), target / item.name)
     log(f"{target.relative_to(ROOT)}")
     return target
 
@@ -551,9 +557,12 @@ def build_macos():
     if sys.platform != "darwin":
         raise SystemExit("[build] the .dmg has to be built on macOS "
                          "(or in the release workflow's macos-latest job)")
-    build_frozen()
-    bundle = BUILD / "pyinstaller" / "dist" / f"{APP_NAME}.app"
-    if not bundle.is_dir():
+    frozen = build_frozen()
+    # PyInstaller may leave the bundle beside the console tree or move it into dist/.
+    candidates = [path for path in Path(frozen).rglob("*.app")]
+    candidates += [path for path in (BUILD / "pyinstaller" / "dist").rglob("*.app")]
+    bundle = next((path for path in candidates if path.is_dir()), None)
+    if bundle is None:
         raise SystemExit("[build] the .app bundle was not produced by PyInstaller")
     if shutil.which("codesign"):
         # Ad-hoc signing: unsigned arm64 binaries are killed by Gatekeeper on first launch.
