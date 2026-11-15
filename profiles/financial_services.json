@@ -237,5 +237,12 @@
       "group": "Regulation and courts"
     }
   ],
-  "targets": []
+  "targets": [],
+  "starter_feeds": [
+    "https://www.federalreserve.gov/feeds/press_all.xml",
+    "https://www.sec.gov/news/pressreleases.rss",
+    "https://www.consumerfinance.gov/about-us/newsroom/feed/",
+    "https://www.bankingdive.com/feeds/news/",
+    "https://news.google.com/rss/search?q=CFPB%20OR%20OCC%20OR%20FDIC%20OR%20%22Federal%20Reserve%22%20enforcement%20action&hl=en-US&gl=US&ceid=US:en"
+  ]
 }

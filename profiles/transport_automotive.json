@@ -216,5 +216,11 @@
       "group": "Regulation and courts"
     }
   ],
-  "targets": []
+  "targets": [],
+  "starter_feeds": [
+    "https://www.transportation.gov/rss.xml",
+    "https://electrek.co/feed/",
+    "https://www.freightwaves.com/feed",
+    "https://news.google.com/rss/search?q=NHTSA%20OR%20%22vehicle%20recall%22%20OR%20%22auto%20safety%22&hl=en-US&gl=US&ceid=US:en"
+  ]
 }

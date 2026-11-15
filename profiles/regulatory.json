@@ -315,5 +315,12 @@
       "severity": "medium",
       "note": "example: the subject's investor or parent"
     }
+  ],
+  "starter_feeds": [
+    "https://www.ftc.gov/feeds/press-release.xml",
+    "https://www.sec.gov/news/pressreleases.rss",
+    "https://www.federalregister.gov/api/v1/documents.rss?order=newest",
+    "https://www.consumerfinance.gov/enforcement/actions/feed/",
+    "https://news.google.com/rss/search?q=FCC%20OR%20%22Federal%20Communications%20Commission%22%20order%20OR%20rulemaking&hl=en-US&gl=US&ceid=US:en"
   ]
 }

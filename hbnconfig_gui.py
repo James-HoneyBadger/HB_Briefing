@@ -227,11 +227,41 @@ class ConfigurationWindow(tk.Toplevel):
         self._btn(bar, "Test", self._source_test).pack(side=tk.LEFT, padx=3)
         self._btn(bar, "Test all", self._source_test_all).pack(side=tk.LEFT, padx=3)
         self._btn(bar, "Edit as text", self.app.open_feeds_editor).pack(side=tk.LEFT, padx=3)
+        self._btn(bar, "Add starter feeds", self._sources_add_starter).pack(side=tk.LEFT, padx=3)
         self._btn(bar, "Scan now", self.app.start_scan_thread).pack(side=tk.RIGHT, padx=3)
         self.sources_tree = self._tree(frame, (
             ("n", "#", 40, False), ("url", "URL", 430, True), ("state", "Status", 78, False),
             ("last", "Last success", 140, False), ("items", "Items", 60, False)))
         self.sources_tree.bind("<Double-1>", lambda _e: self._source_edit())
+
+    def _sources_add_starter(self):
+        """Offer the active profile's starter pack instead of a blank feed list."""
+        profile = hbnscan.current_profile()
+        wanted = hbnscan.starter_feeds(profile)
+        if not wanted:
+            messagebox.showinfo(
+                "Starter feeds",
+                f"The '{profile.name}' profile ships no starter feeds. Add URLs with Add…",
+                parent=self)
+            return
+        pending = [url for url in wanted
+                   if url not in hbnscan._feed_file_urls(hbnscan.FEEDS_PATH)]
+        if not pending:
+            messagebox.showinfo(
+                "Starter feeds",
+                f"All {len(wanted)} starter feed(s) for '{profile.name}' are already in "
+                "feeds.txt.", parent=self)
+            return
+        if not messagebox.askyesno(
+                "Starter feeds",
+                f"Add {len(pending)} feed(s) for the '{profile.name}' profile?\n\n"
+                + "\n".join(pending[:8])
+                + ("\n…" if len(pending) > 8 else ""),
+                parent=self):
+            return
+        added = hbnscan.seed_starter_feeds(log_callback=self._say)
+        self._refresh_sources()
+        self._say(f"{len(added)} starter feed(s) added; run a scan to read them.")
 
     def _refresh_sources(self):
         for iid in self.sources_tree.get_children():
@@ -647,6 +677,10 @@ class ConfigurationWindow(tk.Toplevel):
         self._btn(bar, "Save as new…", self._criteria_save_as).pack(side=tk.RIGHT, padx=3)
         self._btn(bar, "Validate", self._criteria_validate).pack(side=tk.RIGHT, padx=3)
         self._btn(bar, "Activate", self._criteria_activate).pack(side=tk.RIGHT, padx=3)
+        self.criteria_hint = tk.Label(
+            frame, text="", bg=self.p.BG_PANEL, fg=self.p.FG_MUTED, font=("Sans", 9),
+            anchor="w")
+        self.criteria_hint.pack(fill=tk.X, padx=14)
 
         body = tk.Frame(frame, bg=self.p.BG_PANEL)
         body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 8))
@@ -706,6 +740,10 @@ class ConfigurationWindow(tk.Toplevel):
             f"{entry.get('severity')}"
             + (f" | {entry.get('note')}" if entry.get("note") else "")
             for entry in data.get("targets") or []))
+        count = len(data.get("starter_feeds") or [])
+        self.criteria_hint.config(
+            text=f"This profile ships {count} starter feed(s); Configuration → Sources → "
+                 "Add starter feeds installs them into feeds.txt.")
         self._say(f"loaded criteria: {data.get('name')} "
                   f"({'built-in default' if loaded['builtin'] else loaded['path'].name})")
 

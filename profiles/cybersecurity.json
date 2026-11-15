@@ -263,5 +263,12 @@
       "severity": "high",
       "note": "named intrusion group"
     }
+  ],
+  "starter_feeds": [
+    "https://www.cisa.gov/cybersecurity-advisories/all.xml",
+    "https://krebsonsecurity.com/feed/",
+    "https://therecord.media/feed",
+    "https://www.bleepingcomputer.com/feed/",
+    "https://feeds.feedburner.com/TheHackersNews"
   ]
 }

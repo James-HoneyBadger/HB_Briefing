@@ -220,5 +220,12 @@
       "group": "Regulation and courts"
     }
   ],
-  "targets": []
+  "targets": [],
+  "starter_feeds": [
+    "https://www.theverge.com/rss/index.xml",
+    "https://techcrunch.com/feed/",
+    "https://feeds.arstechnica.com/arstechnica/index",
+    "https://www.wired.com/feed/rss",
+    "https://news.google.com/rss/search?q=media%20regulation%20OR%20%22platform%20regulation%22%20OR%20antitrust%20tech&hl=en-US&gl=US&ceid=US:en"
+  ]
 }

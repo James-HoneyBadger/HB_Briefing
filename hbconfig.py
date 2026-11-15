@@ -54,6 +54,7 @@ PROFILE_LIST_FIELDS = (
     ("enforcement_signals", "Enforcement signals"),
     ("trusted_source_hosts", "Trusted source hosts"),
     ("aggregator_hosts", "Aggregator hosts"),
+    ("starter_feeds", "Starter feeds (one URL per line)"),
 )
 
 
@@ -477,6 +478,16 @@ def validate_profile(data):
     for field_name in ("severity_high", "severity_medium", "severity_low"):
         if not str(data.get(field_name) or "").strip():
             warnings.append(f"{field_name} is empty: the model gets no grading rule")
+
+    feeds = data.get("starter_feeds")
+    if feeds is not None and not isinstance(feeds, (list, tuple)):
+        errors.append("starter_feeds must be a list of URLs")
+    else:
+        bad = [str(url) for url in (feeds or [])
+               if not str(url).strip().lower().startswith(("http://", "https://"))]
+        if bad:
+            errors.append("starter feeds must be http(s) URLs: "
+                          + ", ".join(repr(url) for url in bad[:3]))
 
     topic_labels = []
     for entry in data.get("topics") or []:

@@ -226,5 +226,11 @@
       "group": "Regulation and courts"
     }
   ],
-  "targets": []
+  "targets": [],
+  "starter_feeds": [
+    "https://www.eia.gov/rss/todayinenergy.xml",
+    "https://www.utilitydive.com/feeds/news/",
+    "https://www.energy.gov/rss/press-releases",
+    "https://news.google.com/rss/search?q=FERC%20OR%20%22Public%20Utility%20Commission%22%20utility%20rate%20case&hl=en-US&gl=US&ceid=US:en"
+  ]
 }

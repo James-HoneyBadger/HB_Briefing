@@ -215,5 +215,11 @@
       "group": "Regulation and courts"
     }
   ],
-  "targets": []
+  "targets": [],
+  "starter_feeds": [
+    "https://www.ftc.gov/feeds/press-release-consumer-protection.xml",
+    "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml",
+    "https://news.google.com/rss/search?q=CPSC%20OR%20%22product%20recall%22%20OR%20%22consumer%20product%22%20safety&hl=en-US&gl=US&ceid=US:en",
+    "https://www.statnews.com/feed/"
+  ]
 }

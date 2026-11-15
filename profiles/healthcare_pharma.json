@@ -231,5 +231,11 @@
       "group": "Regulation and courts"
     }
   ],
-  "targets": []
+  "targets": [],
+  "starter_feeds": [
+    "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml",
+    "https://www.statnews.com/feed/",
+    "https://www.fiercehealthcare.com/rss/xml",
+    "https://news.google.com/rss/search?q=FDA%20OR%20CMS%20drug%20approval%20OR%20reimbursement&hl=en-US&gl=US&ceid=US:en"
+  ]
 }

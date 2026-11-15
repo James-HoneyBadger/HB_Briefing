@@ -258,6 +258,13 @@ DEFAULT_PROFILE = {
     # No baked-in subject: targets are profile data, not core policy. A profile ships its
     # own examples (profiles/*.json) and the operator adds theirs in watchlist.txt.
     "targets": [],
+    # Seeded into an empty feeds.txt so a fresh install produces a real first scan instead
+    # of nothing. Every URL here is verified to parse and deliver items.
+    "starter_feeds": [
+        "https://feeds.bbci.co.uk/news/rss.xml",
+        "https://feeds.npr.org/1001/rss.xml",
+        "https://www.theguardian.com/world/rss",
+    ],
 }
 
 SEVERITIES = ("high", "medium", "low", "none")
@@ -604,6 +611,18 @@ def _normalize_profile_topics(entries):
     return tuple(topics[:TOPIC_LIMIT])
 
 
+def _normalize_feed_urls(values):
+    """Keep unique http(s) feed URLs, in order, and nothing else."""
+    out = []
+    for value in values or ():
+        url = str(value).strip()
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        if url not in out:
+            out.append(url)
+    return tuple(out)
+
+
 def _normalize_profile_targets(entries, categories=None):
     """Validate a profile's `targets` list into watchlist-style rules."""
     known = tuple(categories or CATEGORIES)
@@ -809,6 +828,7 @@ class Profile:
     aggregator_hosts: tuple
     topics: tuple
     targets: tuple
+    starter_feeds: tuple
     triage_system: str
     deep_system: str
     briefing_system: str
@@ -860,6 +880,7 @@ class Profile:
             aggregator_hosts=tuple(str(s) for s in raw.get("aggregator_hosts") or ()),
             topics=tuple(_normalize_profile_topics(raw.get("topics"))),
             targets=tuple(_normalize_profile_targets(raw.get("targets"), categories=categories)),
+            starter_feeds=_normalize_feed_urls(raw.get("starter_feeds")),
             triage_system=triage,
             deep_system=deep,
             briefing_system=briefing,
@@ -1327,6 +1348,8 @@ DEFAULT_SETTINGS = {
     # JSON object of Treeview column -> pixel width; empty means the front end's defaults.
     "column_widths": "",
     "font_scale": 100,
+    # Set once the first-run notice has been shown, so it does not nag on every launch.
+    "first_run_done": False,
 }
 
 
@@ -1376,6 +1399,23 @@ def _coerce_setting(key, value, default):
         parsed = _parse_date(value)
         return parsed.isoformat() if parsed else default
     return default
+
+
+def grading_mode(api_key=None):
+    """'model' when an LLM key is configured, else 'offline'.
+
+    One function, because the first-run notice, the scan banner, the web app and the TUI all
+    answer the same question and must never disagree about which mode is running.
+    """
+    key = (api_key if api_key is not None else LLM_API_KEY).strip()
+    return "offline" if key in PLACEHOLDER_API_KEYS else "model"
+
+
+def describe_grading_mode(api_key=None):
+    """A phrase for a log line or a banner, not a bare identifier."""
+    if grading_mode(api_key) == "offline":
+        return "offline heuristic (no key: add one for deep reads and briefings)"
+    return f"model {LLM_MODEL} (deep reads and briefings enabled)"
 
 
 def load_settings():
@@ -2320,20 +2360,49 @@ DATA_FILES = (("feeds.txt", "feeds.txt.example"),
               (".env", ".env.example"))
 
 
+def _write_feed_pack(path, urls, profile):
+    """A new feeds.txt made of the active profile's starter pack."""
+    name = getattr(profile, "name", "active")
+    lines = [
+        f"# {APP_NAME} - feeds for the '{name}' profile",
+        "# One RSS or Atom URL per line. Lines starting with # are ignored.",
+        "#",
+        "# These are the profile's starter feeds: a working first scan, not a recommendation.",
+        "# Delete what you do not want, add what you do, and switch profiles with",
+        "#   hbnscan.py --seed-feeds      (adds the new profile's pack, keeps what is here)",
+        "",
+    ]
+    lines.extend(urls)
+    write_atomic(path, "\n".join(lines) + "\n")
+
+
 def ensure_data_files(log_callback=None):
     """Seed the state directory from the bundled defaults on first run.
 
     Keeps the repo generic (no personal feeds in git), lets an installed copy start from a
-    read-only code directory, and never overwrites a file the user already has. Returns the
-    names of the files that were created.
+    read-only code directory, and never overwrites a file the user already has. A new
+    feeds.txt is written from the active profile's starter pack, so the very first scan has
+    something relevant to read; feeds.txt.example stays available for the curated list.
+    Returns the names of the files that were created.
     """
     created = []
+    active = current_profile()
+    pack = starter_feeds(active)
     for target, example in DATA_FILES:
         target_path, example_path = HOME_DIR / target, ASSET_DIR / example
-        if target_path.exists() or not example_path.exists():
+        if target_path.exists():
             continue
         if not target_path.parent.exists():
             target_path.parent.mkdir(parents=True, exist_ok=True)
+        if target == "feeds.txt" and pack:
+            _write_feed_pack(target_path, pack, active)
+            created.append(target)
+            if log_callback:
+                log_callback(f"[INFO] Created feeds.txt with {len(pack)} starter feed(s) "
+                             f"for the '{active.name}' profile")
+            continue
+        if not example_path.exists():
+            continue
         shutil.copyfile(example_path, target_path)
         created.append(target)
         if log_callback:
@@ -2350,13 +2419,71 @@ def ensure_data_files(log_callback=None):
     return created
 
 
+def starter_feeds(profile=None):
+    """The active profile's starter feeds: what an empty feeds.txt is seeded with."""
+    active = profile if isinstance(profile, Profile) else (profile or current_profile())
+    return tuple(getattr(active, "starter_feeds", ()) or ())
+
+
+def _feed_file_urls(path, include_comments=False):
+    """URLs in a feed file.
+
+    `include_comments=False` answers "does this file have active feeds?"; `True` answers
+    "has this URL been mentioned at all?", which is what stops a muted feed from being
+    resurrected by a profile switch.
+    """
+    if not path.exists():
+        return set()
+    seen = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        chunks = [line] if include_comments else [line.split("#", 1)[0]]
+        for chunk in chunks:
+            for token in chunk.split():
+                if token.lower().startswith(("http://", "https://")):
+                    seen.add(token)
+    return seen
+
+
+def seed_starter_feeds(path=None, profile=None, log_callback=None):
+    """Append the active profile's starter feeds to a feed file, skipping what is there.
+
+    Returns the URLs that were added. An existing line, commented or not, counts as present:
+    a user who muted a feed does not want it resurrected on the next boot.
+    """
+    path = Path(path or FEEDS_PATH)
+    active = profile or current_profile()
+    wanted = starter_feeds(active)
+    if not wanted:
+        return []
+    present = _feed_file_urls(path, include_comments=True)
+    missing = [url for url in wanted if url not in present]
+    if not missing:
+        return []
+    header = (f"\n# Starter feeds for the '{getattr(active, 'name', 'active')}' profile."
+              f"\n# Added {datetime.now().strftime('%Y-%m-%d')}; edit or delete as you like.\n")
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    body = "".join(f"{url}\n" for url in missing)
+    write_atomic(path, existing + header + body)
+    if log_callback:
+        log_callback(f"[INFO] Added {len(missing)} starter feed(s) from the "
+                     f"'{getattr(active, 'name', 'profile')}' profile.")
+    return missing
+
+
 def bootstrap_home(log_callback=None):
     """Make the state directory usable: create it, then seed whatever is missing."""
     try:
         HOME_DIR.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise SystemExit(f"[ERROR] cannot use data directory {HOME_DIR}: {exc}") from None
-    return ensure_data_files(log_callback)
+    created = ensure_data_files(log_callback)
+    # An empty or brand-new feed file gets the active profile's starter pack, so the first
+    # scan has something to read. A file the user filled in is left alone.
+    if "feeds.txt" in created or not _feed_file_urls(FEEDS_PATH):
+        seed_starter_feeds(log_callback=log_callback)
+    return created
 
 
 def load_feeds():
@@ -3497,6 +3624,9 @@ def _prepare_scan(log_callback):
                  f"- profile {APP_NAME} "
                  f"({source.name if source.exists() else 'built-in default'}), "
                  f"{len(topics)} topic(s), {len(load_watchlist())} target rule(s)")
+    # Which mode is grading right now, on the first line of every scan: the difference
+    # between a heuristic verdict and a model one is the first thing a new user needs to know.
+    log_callback(f"  grading: {describe_grading_mode()}")
     since = _parse_date(settings["feed_since"])
     until = _parse_date(settings["feed_until"])
     if since or until:
@@ -5004,6 +5134,11 @@ def cli_main(argv=None):
     # start a scan. Combine them with --daemon/--serve/--tui to act on the new value.
     if changed and not ({"--check", "--export", "--daemon", "--watch", "--reclassify",
                          "--serve", "--web", "--tui"} & set(sys.argv)):
+        sys.exit(0)
+    if "--seed-feeds" in sys.argv:
+        added = seed_starter_feeds(log_callback=print)
+        if not added:
+            print("[OK] Every starter feed for this profile is already in feeds.txt.")
         sys.exit(0)
     if "--check" in sys.argv:
         sys.exit(check_api())

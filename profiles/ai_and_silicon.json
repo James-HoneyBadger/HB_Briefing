@@ -235,5 +235,12 @@
       "group": "Build-out"
     }
   ],
-  "targets": []
+  "targets": [],
+  "starter_feeds": [
+    "https://openai.com/blog/rss.xml",
+    "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+    "https://feeds.arstechnica.com/arstechnica/technology-lab",
+    "https://www.tomshardware.com/feeds/all",
+    "https://semiengineering.com/feed/"
+  ]
 }
