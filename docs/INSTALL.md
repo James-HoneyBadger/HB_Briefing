@@ -143,6 +143,10 @@ signed, which is enough for Apple Silicon but not notarised, so the first launch
 *System Settings → Privacy & Security → Open Anyway* (or `xattr -dr com.apple.quarantine
 /Applications/HB\ Briefing.app`).
 
+The published `.dmg` is **arm64** (Apple Silicon), because that is the runner GitHub provides.
+On an Intel Mac, run from source (the section below) or build your own bundle on that machine:
+`python3 packaging/build.py macos`.
+
 The three console front ends are inside the bundle and can be scripted:
 
 ```bash
