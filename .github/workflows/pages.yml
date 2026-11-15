@@ -1,0 +1,63 @@
+name: Pages
+
+# Publishes the WebAssembly app to GitHub Pages, so "try it" is a link instead of a build.
+# The page runs the engine in the visitor's browser: no server, no account, no data leaves the
+# tab. That is also why hosting it publicly is safe - there is nothing to protect.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wasm/**"
+      - "hbwasm.py"
+      - "hbnscan.py"
+      - "hbsimilar.py"
+      - "hbversion.py"
+      - "packaging/build.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the one runtime dependency the engine imports
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Build the browser bundle
+        run: python packaging/build.py wasm
+      - name: Check the bundle before publishing it
+        run: |
+          cd dist/hb-briefing-*-wasm
+          for file in index.html runtime.json coi-serviceworker.js hbwasm.py hbnscan.py \
+                      hbsimilar.py hbversion.py icon-192.png; do
+            test -s "$file" || { echo "missing $file"; exit 1; }
+          done
+          python3 -c "import json; m=json.load(open('runtime.json')); assert m['modules'], m"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/hb-briefing-1.0.0-wasm
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

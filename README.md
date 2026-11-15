@@ -1,5 +1,14 @@
 # HB Briefing v1.0.0
 
+<p>
+  <a href="https://james-honeybadger.github.io/HB_Briefing/"><img alt="Try the Live Demo" src="https://img.shields.io/badge/%E2%96%B6%20Try%20the%20Live%20Demo-WebAssembly-252f5e?style=for-the-badge"></a>
+  <a href="https://github.com/James-HoneyBadger/HB_Briefing/releases/latest"><img alt="Download" src="https://img.shields.io/badge/Download-v1.0.0-1d4ed8?style=for-the-badge"></a>
+</p>
+
+**Nothing to install to see it work:** [open the WebAssembly demo](https://james-honeybadger.github.io/HB_Briefing/),
+drop in a feed or a headline list, and the same engine that powers the desktop app grades it in
+your browser tab. No account, no key, no server — and nothing leaves the page.
+
 **An open-source toolkit for assessing RSS and Atom feeds.** Point it at any set of feeds and it
 answers one question continuously: *which of these items actually matter, why, and what should I
 do about them?* It collects, grades, verifies against the linked article, writes a digest, and
@@ -9,13 +18,21 @@ HB Briefing is highly configurable. You choose the feeds it reads, the subjects 
 you, the names you track and how strict the assessment should be — the same engine can follow a
 regulator, a market, a competitor, a research field or a single company.
 
-- **Works with no configuration**: a fresh clone seeds its feeds, topics and examples and scans.
+- **Works with no configuration**: a first run seeds the active profile's starter feeds (5 per
+  profile, every URL verified) and scans, so the first screen is real signals, not an empty grid.
+- **Knows what mode it is in**: the first launch says whether a key is configured — offline
+  heuristic grading is complete and free, and adding a key later unlocks deep reads and
+  briefings without invalidating a single verdict.
 - **Works with no spend**: a deterministic offline heuristic grades every headline; an LLM key
   adds article verification and a written briefing.
 - **Works on any subject**: ten profiles ship, a topic library covers over 200 subjects across 20
   interest areas, and your own files always layer on top.
 - **Turns reading into research**: collect signals into dossiers, write open questions, track
   follow-up actions, and export a cited report — all offline and reproducible.
+- **Reports you can audit**: every claim carries its publisher and date, every report states its
+  own *Evidence gaps* — what was screened from a feed only, which signals are undated, which
+  source is failing, how many publishers corroborate the story. No model is called to produce a
+  dossier report, so the same evidence always renders the same document.
 
 ```bash
 ./start.sh              # checks the machine, installs what is missing, opens the desktop GUI
@@ -38,7 +55,8 @@ key in your own user directory rather than in the program files:
 | Windows 10/11 | `.exe` | run `hb-briefing-1.0.0-windows-setup.exe` (per user, no admin) |
 | macOS 10.15+ | `.dmg` | drag **HB Briefing** to *Applications* |
 | iPadOS, iPhone, ChromeOS, Android | web app | run `hb-briefing-web --host 0.0.0.0` and *Add to Home Screen* |
-| Nothing installed at all | WebAssembly | serve `dist/hb-briefing-*-wasm/` and open the page |
+| Nothing installed at all | WebAssembly | [live demo](https://james-honeybadger.github.io/HB_Briefing/), or serve `dist/hb-briefing-*-wasm/` |
+| Self-hosted / homelab | Docker | `docker compose up -d` then open `http://127.0.0.1:8765/` |
 
 The packages install four commands — `hb-briefing` (desktop), `hb-briefing-cli`,
 `hb-briefing-web`, `hb-briefing-tui` — plus a menu entry and icons. The web app registers a
@@ -54,7 +72,8 @@ the state directory with `HB_BRIEFING_HOME`, are in [Installing](./docs/INSTALL.
 | **Web app** | `python3 hbnscan.py --serve` | a browser window, a second screen, or a machine without Tk |
 | **Terminal UI** | `python3 hbnscan.py --tui` | SSH and headless servers: table, filters, detail, scan control |
 | **CLI** | `python3 hbnscan.py` | cron, scripts, one-shot scans and exports |
-| **WebAssembly** | `python3 packaging/build.py wasm` | no install at all: the engine in a browser tab, on any machine or phone |
+| **WebAssembly** | [live demo](https://james-honeybadger.github.io/HB_Briefing/) or `python3 packaging/build.py wasm` | no install at all: the engine in a browser tab, on any machine or phone |
+| **Docker** | `docker compose up -d` | a always-on host: the web app plus the daemon, one volume, one port |
 
 The first four share one database and one `settings.json`, so a scan started anywhere appears everywhere,
 and the schedule or theme you set in one is what the others show. None of them contains pipeline
@@ -98,6 +117,26 @@ Everything downstream — ranking, filtering, the briefing, exports, alerts — 
 **Declared intent always outranks inference.** A watchlist rule or a profile target pins a
 subject to a category and severity; neither the model nor a deep read can downgrade or dismiss
 it. That is what makes the tool dependable when a matter genuinely cannot be missed.
+
+## Reports you can audit
+
+Most tools that summarise news hide their limits. HB Briefing names them, in every dossier
+report, in a section you can check:
+
+```
+## Evidence gaps
+- 4 signals were screened from the feed only — the linked article was not read, so their
+  verdicts rest on headline and summary.
+- 2 signals have no publication date; the timeline places them by detection time.
+- Source example.com failed its last fetch (HTTP 403).
+- Every signal comes from one publisher; treat the picture as single-source.
+```
+
+That section is generated from the stored rows, not from a prompt: the count of unread
+articles, the undated ones, the failing feeds, the single-publisher warning. Every development
+carries its publisher, its date and a link, and a dossier report never calls a model — which is
+why two exports of unchanged evidence are byte-identical, and why **What changed** can be
+computed by diffing membership rather than re-reading prose.
 
 ## Why the assessment is worth trusting
 

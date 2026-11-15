@@ -14,7 +14,8 @@ in your own user account.
 | macOS 10.15+ | `.dmg` | drag to Applications |
 | iPadOS, ChromeOS, Android | web app | open the URL, *Add to Home Screen* |
 | Anything with Python 3.8+ | source | `./start.sh` or `pip install -r requirements.txt` |
-| Nothing at all (no install, any device) | WebAssembly | serve `dist/hb-briefing-1.0.0-wasm/` |
+| Nothing at all (no install, any device) | WebAssembly | [live demo](https://james-honeybadger.github.io/HB_Briefing/), or serve `dist/hb-briefing-1.0.0-wasm/` |
+| A server, NAS or homelab | Docker | `docker compose up -d` |
 
 Every package keeps two things apart:
 
@@ -198,11 +199,61 @@ closest thing to a native iPadOS package that the platform allows.
 
 ---
 
+## Self-hosted: Docker
+
+For the machine that is always on — a NAS, a mini PC, a VPS — where the useful interface is a
+browser on another device:
+
+```bash
+git clone https://github.com/James-HoneyBadger/HB_Briefing
+cd HB_Briefing
+docker compose up -d
+# open http://127.0.0.1:8765/
+```
+
+That is one service, one volume (`hb-data`) and one port. The first start creates the state
+directory, seeds the active profile's starter feeds and serves the web app; the container
+restarts with the host and keeps its database across upgrades (`docker compose pull`).
+
+| Task | Command |
+| --- | --- |
+| One scan now | `docker compose exec briefing scan` |
+| Keep scanning on the interval in settings | `docker compose exec briefing daemon` |
+| Any CLI flag | `docker compose exec briefing cli --export /data/digest.md` |
+| Entity lookup | `docker compose exec briefing entity "Nvidia" --json` |
+| Dossier work | `docker compose exec briefing dossier list` |
+| Terminal UI | `docker compose run --rm -it briefing tui` |
+| Shell in the container | `docker compose exec briefing shell` |
+
+Everything the tool knows lives in `/data` inside the volume: `watchdog_state.db`, `feeds.txt`,
+`watchlist.txt`, `topics.txt`, `profiles/`, `settings.json`, `.env` and `latest_report.md`. Back
+it up by copying that volume; move hosts by moving it.
+
+Configuration comes from either place, and both are read:
+
+- a `.env` beside `docker-compose.yml`, which compose passes in (`LLM_API_KEY`, `HB_WEB_TOKEN`,
+  `PORT`, `TZ`);
+- or `/data/.env` inside the volume, which is what the desktop app would write.
+
+The published port is bound to `127.0.0.1` on purpose. The web app has a token for mutating
+requests, but it is not an authentication system: put it behind your own reverse proxy with TLS
+before exposing it, and set `HB_WEB_TOKEN` to something long.
+
+The image carries the CLI, the web app and the terminal UI — but not Tkinter, because there is no
+screen in a container. Use the desktop packages for the GUI.
+
+---
+
 ## Nothing installed: the WebAssembly page
 
 A single page that runs the engine itself, compiled to WebAssembly by
 [Pyodide](https://pyodide.org). Useful for a locked-down laptop, a machine that will never get
 Python, or a tablet that already has a browser but no way to install anything.
+
+The same page is published on GitHub Pages, so there is nothing to build:
+**https://james-honeybadger.github.io/HB_Briefing/**
+
+To run it yourself:
 
 ```bash
 python3 packaging/build.py wasm

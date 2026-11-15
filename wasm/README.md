@@ -9,6 +9,14 @@ runs **the same** `heuristic_verdict()`, `story_keys()` and MinHash pass as the 
 verdict logic is reimplemented in JavaScript, so a score shown here is the score the desktop app
 would produce from the same text.
 
+## Hosted
+
+The bundle is published to GitHub Pages on every change to this folder:
+**https://james-honeybadger.github.io/HB_Briefing/**. GitHub Pages cannot send
+`Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy`, so `coi-serviceworker.js` injects
+them and the page reloads once to become cross-origin isolated. That is a best-effort upgrade —
+Pyodide runs fine without it, and the page behaves identically if registration fails.
+
 ## Run it
 
 ```bash

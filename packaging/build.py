@@ -619,6 +619,7 @@ def build_wasm():
     for name in WASM_MODULES:
         shutil.copy2(ROOT / name, out / name)
     shutil.copy2(ROOT / "wasm" / "index.html", out / "index.html")
+    shutil.copy2(ROOT / "wasm" / "coi-serviceworker.js", out / "coi-serviceworker.js")
     (out / "icon-192.png").write_bytes(hbicons.png_bytes(192))
     (out / "runtime.json").write_text(json.dumps({
         "version": VERSION,

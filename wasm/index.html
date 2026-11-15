@@ -186,6 +186,27 @@
   </footer>
 </main>
 
+<script>
+// Cross-origin isolation, for hosts that cannot send the headers (GitHub Pages cannot).
+// Best effort by design: Pyodide runs fine isolated or not, so a failure here is silent.
+(function crossOriginIsolation() {
+  if (window.crossOriginIsolated) return;
+  if (!("serviceWorker" in navigator)) return;
+  const host = location.hostname;
+  const secure = location.protocol === "https:"
+    || ["localhost", "127.0.0.1", "[::1]"].includes(host);
+  if (!secure) return;
+
+  const done = () => sessionStorage.getItem("hb-coi-reloaded") === "1";
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    // The worker now controls this document, but isolation only applies to a fresh document.
+    if (window.crossOriginIsolated || done()) return;
+    sessionStorage.setItem("hb-coi-reloaded", "1");
+    location.reload();
+  });
+  navigator.serviceWorker.register("./coi-serviceworker.js").catch(() => {});
+})();
+</script>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.29.5/full/pyodide.js"></script>
 <script>
 "use strict";

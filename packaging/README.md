@@ -48,7 +48,12 @@ packaging/
     version_info.txt        Windows EXE metadata
 wasm/
   index.html                the browser app; loads hbwasm.py + the engine via Pyodide
+  coi-serviceworker.js      adds the COOP/COEP headers GitHub Pages cannot send
   README.md                 how to serve it, and what it deliberately cannot do
+
+Dockerfile                  self-hosted image: web app + CLI, state in /data
+docker-compose.yml          one service, one volume, one loopback port
+packaging/docker/entrypoint.sh   web | daemon | scan | cli | tui | dossier | shell
 ```
 
 ## Rules that keep packages correct
@@ -71,8 +76,10 @@ wasm/
 
 `.github/workflows/release.yml` builds the deb, the AppImage, the web bundle, the RPM (inside a
 Fedora container), the Windows installer, the macOS dmg and the distro recipes on a `v*` tag,
-then publishes them with `SHA256SUMS.txt`. The `tests.yml` workflow stays the gate for the
-source itself.
+then publishes them with `SHA256SUMS.txt`. `pages.yml` publishes the WebAssembly bundle to
+GitHub Pages (the "Try the Live Demo" link in the README). `tests.yml` stays the gate for the
+source itself: it also builds the wasm bundle, the deb and the Docker image on every push, so a
+broken installer is caught before a tag.
 
 ## Trying a package without installing it
 
