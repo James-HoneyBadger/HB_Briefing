@@ -973,11 +973,15 @@ dossier_items(dossier_id, item_hash, note, added_at, PK(dossier_id, item_hash))
 notes(id INTEGER PK AUTOINCREMENT, dossier_id, item_hash, body, created_at)
 actions(id INTEGER PK AUTOINCREMENT, title, detail, dossier_id, item_hash, status,
         priority, due_date, created_at, updated_at, completed_at)
+dossier_snapshots(id INTEGER PK AUTOINCREMENT, dossier_id, created_at, path, payload)
+story_bands(item_hash, band, sig, PK(item_hash, band))
 ```
 
 Indexes: `seen_items(flagged, seen_at DESC)`, `seen_items(cluster_key)`,
-`dossier_items(item_hash)`, `notes(dossier_id)`, `actions(status, priority)`, and a unique
-index on `dossiers(name COLLATE NOCASE)`.
+`dossier_items(item_hash)`, `notes(dossier_id)`, `actions(status, priority)`,
+`story_bands(band, sig)` for the near-duplicate lookup,
+`dossier_snapshots(dossier_id, id DESC)` for the latest export, and a unique index on
+`dossiers(name COLLATE NOCASE)`.
 
 **Migrations.** `migrate(conn)` is called by `init_db()` and by `connect()` (the front ends'
 factory) and does three things in order:
@@ -987,13 +991,15 @@ factory) and does three things in order:
 3. Ordered data steps in `_MIGRATIONS`, each guarded by `PRAGMA user_version`, then
    `user_version = SCHEMA_VERSION`.
 
-Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **3**:
+Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **5**:
 
 | Version | Step | What it does |
 | --- | --- | --- |
 | 1 | `_backfill_source_layer` | derives `source_layer` from the legacy `[Watchlist]`/`[Topic]` prefixes |
 | 2 | `_backfill_cluster_keys` | computes `cluster_key` and `title_key` for existing rows |
 | 3 | `_backfill_feed_health` | seeds `feed_state.last_success_at` from `checked_at`, leaving HTTP status unknown rather than inventing one |
+| 4 | `_backfill_story_bands` | indexes every stored headline for the near-duplicate pass |
+| 5 | `_ensure_dossier_snapshots` | creates the export-history table a dossier report diffs against |
 
 Table and column creation is separate from the versioned steps: `_create_schema` and
 `_ensure_columns` are idempotent and run on every open, and the version gates only work that
@@ -1491,7 +1497,25 @@ extension raises `ValueError`; the CLI maps that to exit `2`.
 the extension in `REPORT_FORMATS` and the GUI file dialog. Keep it derived from the dict; do not
 re-query the database inside a renderer.
 
-### 19.6 Source health
+### 19.6 Change tracking between exports
+
+An export is a snapshot of the evidence at one moment; the useful question at the next export is
+"what changed". `dossier_snapshots` stores the membership it wrote (`items`, `notes`, a
+`{action_id: status}` map) and `dossier_changes()` diffs the live tables against it.
+
+| Rule | Reason |
+| --- | --- |
+| The snapshot is written **after** the file, in `export_report()` | the record must describe what was actually written, not what was about to be |
+| Written for every export, including `.json` | the reader's "last look" is whichever format they took |
+| `dossier report/show --since-last-export` prints the section on a first run too | a script should not have to care whether history exists |
+| Without a snapshot the section is omitted entirely | a report with no history is not an error state |
+| A corrupt payload degrades to "first export" | claiming every signal is new would be a guess presented as fact |
+| Removals are not reported as additions | the diff is membership-based in both directions |
+
+The section leads the report — before "At a glance" — because a returning reader wants the
+delta first and the standing picture second.
+
+### 19.7 Source health
 
 `record_feed_result(conn, url, ok, status=None, error="", new_items=0)` is an UPSERT on
 `feed_state` and commits immediately, because it is also called once per feed from `_scan_feed`
@@ -1522,7 +1546,7 @@ new-since-previous signal counts, and the last `scan_runs` row (new, flagged, `f
 `cancelled`, `duration_ms`). `describe_coverage` is the only place that turns those numbers into
 a sentence, so the GUI and any future front end say the same thing.
 
-### 19.7 Story clustering
+### 19.8 Story clustering
 
 Syndication means one event can arrive as four rows. Clustering groups them without ever changing
 `flagged`, `severity` or `source_layer`: it is presentation and reporting, not classification.
@@ -1566,7 +1590,7 @@ Fuzzy matching and embeddings were rejected on purpose: they need a threshold th
 justified from the data, and they fail silently. The migration step `2` backfills the keys for
 rows stored before clustering existed.
 
-### 19.8 Workspace CLI
+### 19.9 Workspace CLI
 
 `hbnscan.py` dispatches `entity`, `dossier`, `action` and `sources` to `hbworkspace.main(argv)`
 before the flag-based path, so these commands never start a scan:
@@ -1595,7 +1619,7 @@ script. Identifiers may be an id or a dossier name, so scripts can stay readable
 python3 hbnscan.py dossier report "Acme fiber" --export acme.md
 ```
 
-### 19.9 Entity index
+### 19.10 Entity index
 
 `entity_report(conn, query, limit=200)` reverses the entity extraction. Stage 1 stores entities
 as JSON groups (`{"companies": [...], "agencies": [...]}`) on each graded row; the index reads

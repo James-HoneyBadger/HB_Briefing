@@ -566,7 +566,117 @@ def _report_gaps(conn, items, dossier):
     return gaps
 
 
-def dossier_report(conn, ident, developments=5):
+def _snapshot_payload(conn, dossier_id):
+    """What a report contains right now, in a form the next export can diff."""
+    items = sorted(row[0] for row in conn.execute(
+        "SELECT item_hash FROM dossier_items WHERE dossier_id = ?", (dossier_id,)))
+    notes = sorted(row[0] for row in conn.execute(
+        "SELECT id FROM notes WHERE dossier_id = ?", (dossier_id,)))
+    actions = {str(row[0]): row[1] for row in conn.execute(
+        "SELECT id, status FROM actions WHERE dossier_id = ?", (dossier_id,))}
+    return {"items": items, "notes": notes, "actions": actions}
+
+
+def save_snapshot(conn, dossier_id, path=""):
+    """Record what this export contained. Returns the new snapshot id."""
+    payload = _snapshot_payload(conn, dossier_id)
+    cursor = conn.execute(
+        "INSERT INTO dossier_snapshots (dossier_id, created_at, path, payload) "
+        "VALUES (?, ?, ?, ?)",
+        (dossier_id, _now(), _clean(path, 400), json.dumps(payload)))
+    conn.commit()
+    return cursor.lastrowid
+
+
+def latest_snapshot(conn, dossier_id):
+    row = conn.execute(
+        "SELECT id, created_at, path, payload FROM dossier_snapshots "
+        "WHERE dossier_id = ? ORDER BY id DESC LIMIT 1", (dossier_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def dossier_changes(conn, dossier_id, snapshot=None):
+    """What was added, resolved or reopened since the last export of this dossier."""
+    snapshot = snapshot or latest_snapshot(conn, dossier_id)
+    empty = {"first_export": True, "since": "", "path": "", "new_signals": [],
+             "new_notes": [], "new_actions": [], "resolved_actions": [],
+             "reopened_actions": [], "counts": {"signals": 0, "notes": 0, "actions": 0,
+                                                "resolved": 0, "reopened": 0}}
+    if snapshot is None:
+        return empty
+    try:
+        previous = json.loads(snapshot["payload"] or "{}")
+    except ValueError:
+        # An unreadable snapshot says nothing about the past. Reporting every signal as new
+        # would be a guess; treating the export as the first one is not.
+        return {**empty, "since": snapshot["created_at"] or "", "path": snapshot["path"] or ""}
+    before_items = set(previous.get("items") or [])
+    before_notes = {int(value) for value in (previous.get("notes") or [])}
+    before_actions = {str(key): value for key, value in (previous.get("actions") or {}).items()}
+
+    new_signals = []
+    for item in dossier_items(conn, dossier_id):
+        if item["item_hash"] in before_items:
+            continue
+        new_signals.append({
+            "hash": item["item_hash"],
+            "title": item.get("title") or "",
+            "link": hbnscan.safe_link(item.get("link")),
+            "source": item.get("source", ""),
+            "severity": item.get("severity") or "none",
+            "category": item.get("category") or "other",
+            "date": (item.get("published") or "")[:10],
+            "undated": not (item.get("published") or "").strip(),
+        })
+    new_notes = [{"body": note["body"], "created_at": note["created_at"]}
+                 for note in list_notes(conn, dossier_id=dossier_id)
+                 if note["id"] not in before_notes]
+    actions = list_actions(conn, dossier_id=dossier_id)
+    new_actions, resolved, reopened = [], [], []
+    for action in actions:
+        key = str(action["id"])
+        if key not in before_actions:
+            new_actions.append(action)
+            continue
+        was = before_actions[key]
+        if was == action["status"]:
+            continue
+        if action["status"] in ("done", "dropped"):
+            resolved.append({**action, "previous_status": was})
+        else:
+            reopened.append({**action, "previous_status": was})
+    return {
+        "first_export": False,
+        "since": snapshot["created_at"] or "",
+        "path": snapshot["path"] or "",
+        "new_signals": new_signals,
+        "new_notes": new_notes,
+        "new_actions": new_actions,
+        "resolved_actions": resolved,
+        "reopened_actions": reopened,
+        "counts": {"signals": len(new_signals), "notes": len(new_notes),
+                   "actions": len(new_actions), "resolved": len(resolved),
+                   "reopened": len(reopened)},
+    }
+
+
+def describe_changes(changes):
+    """One line for the top of a report."""
+    if not changes or changes.get("first_export"):
+        return "First export: nothing to compare against yet."
+    counts = changes["counts"]
+    if not any(counts.values()):
+        return f"No change since the export of {changes['since'].replace('T', ' ')}."
+    parts = []
+    for key, label in (("signals", "new signal(s)"), ("notes", "new note(s)"),
+                       ("actions", "new action(s)"), ("resolved", "resolved"),
+                       ("reopened", "reopened")):
+        if counts[key]:
+            parts.append(f"{counts[key]} {label}")
+    return ", ".join(parts) + f" since the export of {changes['since'].replace('T', ' ')}"
+
+
+def dossier_report(conn, ident, developments=5, since_last_export=False):
     """Build a cited report from stored signals, notes and actions. Returns a dict."""
     dossier = resolve_dossier(conn, ident)
     if dossier is None:
@@ -574,6 +684,11 @@ def dossier_report(conn, ident, developments=5):
     items = _report_rows(conn, dossier["id"])
     notes = list_notes(conn, dossier_id=dossier["id"])
     actions = list_actions(conn, dossier_id=dossier["id"])
+    # Changes are shown whenever a previous export exists; the flag exists for scripts that
+    # want the section even on a first run, and to say so out loud.
+    changes = (dossier_changes(conn, dossier["id"])
+               if (since_last_export or latest_snapshot(conn, dossier["id"]))
+               else None)
 
     def stamp(item):
         return item.get("published") or item.get("seen_at") or ""
@@ -623,6 +738,7 @@ def dossier_report(conn, ident, developments=5):
             "created_at": dossier["created_at"], "updated_at": dossier["updated_at"],
         },
         "generated": _now(),
+        "changes": changes,
         "counts": counts,
         "span": {"first": timeline[0]["date"] if timeline else "",
                  "last": timeline[-1]["date"] if timeline else ""},
@@ -668,6 +784,40 @@ def render_report_markdown(report):
         lines.extend([f"**Status:** {dossier['status']}", ""])
     lines.extend(["## Scope", "", _md(dossier["summary"]) if dossier["summary"]
                   else "_No scope note yet. Add one so the dossier states its question._", ""])
+
+    changes = report.get("changes")
+    if changes:
+        lines.extend(["## What changed", "", _md(describe_changes(changes)), ""])
+        if changes["new_signals"]:
+            lines.append(f"**New signals ({len(changes['new_signals'])})**")
+            lines.append("")
+            for entry in changes["new_signals"]:
+                stamp = entry["date"] or "undated"
+                label = _md(entry["title"])
+                link = _md_link(entry["link"])
+                title = f"[{label}]({link})" if link else label
+                lines.append(f"- {stamp} · **{_md(entry['severity'])}** · "
+                             f"{_md(entry['category'])} · {title}")
+            lines.append("")
+        if changes["new_notes"]:
+            lines.append("**New open questions**")
+            lines.append("")
+            lines.extend(f"- {_md(note['body'])}" for note in changes["new_notes"])
+            lines.append("")
+        if changes["new_actions"]:
+            lines.append("**New actions**")
+            lines.append("")
+            lines.extend(f"- {_md(action['title'])} _({action['status']})_"
+                         for action in changes["new_actions"])
+            lines.append("")
+        for key, label in (("resolved_actions", "Resolved actions"),
+                           ("reopened_actions", "Reopened actions")):
+            if changes[key]:
+                lines.append(f"**{label}**")
+                lines.append("")
+                lines.extend(f"- {_md(action['title'])} _({action['previous_status']} → "
+                             f"{action['status']})_" for action in changes[key])
+                lines.append("")
 
     lines.extend(["## At a glance", ""])
     lines.append(f"- **{counts['signals']}** signal(s) · {counts['high']} high · "
@@ -739,6 +889,39 @@ def render_report_html(report, source_path=None, download_name=""):
     counts = report["counts"]
     esc = html_module.escape
     print_css, print_footer = hbnscan.print_footer_assets(source_path, download_name)
+    changes = report.get("changes")
+    changes_html = ""
+    if changes:
+        blocks = [f"<p>{esc(describe_changes(changes))}</p>"]
+        if changes["new_signals"]:
+            rows = "".join(
+                "<li>"
+                f"{esc(entry['date'] or 'undated')} · {esc(entry['severity'])} · "
+                f"{esc(entry['category'])} · "
+                + (f'<a href="{esc(entry["link"], quote=True)}">{esc(entry["title"])}</a>'
+                   if entry["link"] else esc(entry["title"]))
+                + "</li>"
+                for entry in changes["new_signals"])
+            blocks.append(f"<h3>New signals</h3><ul>{rows}</ul>")
+        if changes["new_notes"]:
+            blocks.append("<h3>New open questions</h3><ul>"
+                          + "".join(f"<li>{esc(note['body'])}</li>"
+                                    for note in changes["new_notes"]) + "</ul>")
+        if changes["new_actions"]:
+            blocks.append("<h3>New actions</h3><ul>"
+                          + "".join(f"<li>{esc(action['title'])}</li>"
+                                    for action in changes["new_actions"]) + "</ul>")
+        for key, label in (("resolved_actions", "Resolved actions"),
+                           ("reopened_actions", "Reopened actions")):
+            if changes[key]:
+                blocks.append(f"<h3>{label}</h3><ul>"
+                              + "".join(f"<li>{esc(action['title'])} "
+                                        f"({esc(action['previous_status'])} → "
+                                        f"{esc(action['status'])})</li>"
+                                        for action in changes[key]) + "</ul>")
+        changes_html = f'<section class="changes"><h2>What changed</h2>{"".join(blocks)}</section>'
+    else:
+        changes_html = ""
     badge = {"high": "#b91c1c", "medium": "#b45309", "low": "#475569", "none": "#64748b"}
     development_cards = []
     for item in report["developments"]:
@@ -799,6 +982,7 @@ def render_report_html(report, source_path=None, download_name=""):
 <p>{counts['signals']} signal(s) · {counts['high']} high · {counts['medium']} medium ·
 {counts['low']} low · {esc(dossier['status'])} · generated {esc(report['generated'])}</p></header>
 <main>
+{changes_html}
 <section><h2>Scope</h2><p>{esc(dossier['summary']) or '<em>No scope note yet.</em>'}</p>
 <p class="meta">Coverage {esc(report['span']['first'])} → {esc(report['span']['last'])}
 {('· ' + sources) if sources else ''}</p></section>
@@ -831,10 +1015,12 @@ def export_report(conn, ident, path, fmt=None):
     """Write a dossier report to `path`. Returns (path, signal_count)."""
     target = Path(path)
     fmt = fmt or (target.suffix.lower().lstrip(".") or "md")
-    report = dossier_report(conn, ident)
+    report = dossier_report(conn, ident, since_last_export=True)
     # A printed dossier names the file it came from, like the signal export does.
     text = render_report(report, fmt, source_path=target)
     hbnscan.write_atomic(target, text)
+    # Only after the file is on disk: the snapshot describes what was actually written.
+    save_snapshot(conn, report["dossier"]["id"], target)
     return target, report["counts"]["signals"]
 
 
@@ -1037,6 +1223,8 @@ def main(argv):
     new.add_argument("--kind", default="subject", choices=list(DOSSIER_KINDS))
     show = dossier_sub.add_parser("show", help="print a dossier report")
     show.add_argument("dossier")
+    show.add_argument("--since-last-export", action="store_true", dest="since_last_export",
+                      help="lead with what changed since the previous export")
     add = dossier_sub.add_parser("add", help="add signals to a dossier")
     add.add_argument("dossier")
     add.add_argument("--hash", dest="item_hash", help="exact signal hash")
@@ -1049,6 +1237,9 @@ def main(argv):
     report.add_argument("dossier")
     report.add_argument("--export", help="output path (.md, .html or .json)")
     report.add_argument("--format", choices=list(REPORT_FORMATS))
+    report.add_argument("--since-last-export", action="store_true",
+                        dest="since_last_export",
+                        help="lead with what changed since the previous export")
     status = dossier_sub.add_parser("status", help="set a dossier's status")
     status.add_argument("dossier")
     status.add_argument("value", choices=list(DOSSIER_STATUSES))
@@ -1138,7 +1329,10 @@ def main(argv):
                 print(f"[OK] dossier {dossier_id}: {args.name}")
                 return 0
             if args.action == "show":
-                print(render_report_markdown(dossier_report(conn, args.dossier)), end="")
+                report = dossier_report(conn, args.dossier,
+                                        since_last_export=getattr(args, "since_last_export",
+                                                                  False))
+                print(render_report_markdown(report), end="")
                 return 0
             if args.action == "add":
                 row = resolve_dossier(conn, args.dossier)
@@ -1175,9 +1369,10 @@ def main(argv):
                 if row is None:
                     print(f"[FAIL] no dossier matches {args.dossier!r}")
                     return 2
+                since = getattr(args, "since_last_export", False)
                 if not args.export:
-                    print(render_report(dossier_report(conn, row["id"]), args.format or "md"),
-                          end="")
+                    report = dossier_report(conn, row["id"], since_last_export=since)
+                    print(render_report(report, args.format or "md"), end="")
                     return 0
                 path, count = export_report(conn, row["id"], args.export, args.format)
                 print(f"[OK] {count} signal(s) written to {path}")

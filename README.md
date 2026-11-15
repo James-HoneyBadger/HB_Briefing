@@ -321,7 +321,7 @@ and the scan history records feeds attempted, feeds failed, cancellation and dur
 python3 hbnscan.py dossier new "Acme fiber" --summary "Are they building?"
 python3 hbnscan.py dossier add "Acme fiber" --latest 10
 python3 hbnscan.py dossier note 1 "Does the permit cover the whole route?"
-python3 hbnscan.py dossier report 1 --export acme-fiber.md
+python3 hbnscan.py dossier report 1 --export acme-fiber.md   # next export opens with the delta
 python3 hbnscan.py action new "Call the clerk" --dossier 1 --priority high --due 2026-12-01
 python3 hbnscan.py action list --all
 python3 hbnscan.py entity nvidia --json        # every signal, dossier and action for one name

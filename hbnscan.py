@@ -325,7 +325,7 @@ SCAN_RUN_EXTRA_COLUMNS = (
 
 # Bumped when a step is added to _MIGRATIONS; stored in PRAGMA user_version so a database
 # can be upgraded exactly once. Additive column sync alone cannot backfill or index.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SOURCE_LAYERS = ("watchlist", "topic", "heuristic", "model")
 
@@ -1782,6 +1782,7 @@ def _create_schema(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_status "
                  "ON actions (status, priority)")
+    _ensure_dossier_snapshots(conn)
     # MinHash band keys: a shared band makes two rows candidates for an exact Jaccard check.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS story_bands (
@@ -1851,6 +1852,21 @@ def _backfill_cluster_keys(conn):
             conn.execute(
                 "UPDATE seen_items SET cluster_key = ? WHERE title_key = ? AND cluster_key != ?",
                 (first[0], title_key, first[0]))
+
+
+def _ensure_dossier_snapshots(conn):
+    """What each dossier export contained, so the next one can say what changed."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dossier_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dossier_id INTEGER NOT NULL,
+            created_at TEXT,
+            path TEXT DEFAULT '',
+            payload TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dossier_snapshots "
+                 "ON dossier_snapshots (dossier_id, id DESC)")
 
 
 def index_story_bands(conn, item_hash_value, title, excerpt=""):
@@ -1935,6 +1951,7 @@ _MIGRATIONS = (
     (2, "story clustering keys", _backfill_cluster_keys),
     (3, "feed health backfill", _backfill_feed_health),
     (4, "story band index", _backfill_story_bands),
+    (5, "dossier export snapshots", _ensure_dossier_snapshots),
 )
 
 

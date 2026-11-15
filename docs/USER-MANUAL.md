@@ -235,8 +235,27 @@ evidence gaps. Nothing appears there that is not in the database.
 | **Close / reopen** | Sets the dossier's status without deleting anything |
 | **Delete** | Removes the dossier, its notes and its membership list — the signals and actions stay |
 
-A report is **deterministic and offline**: it never calls a model, so the same dossier always
-renders the same report, and every development carries its publisher and date. Sections that
+**What changed since last time.** Every export records what it contained, so the next report
+opens with the delta instead of making you diff two files by hand:
+
+```
+## What changed
+
+2 new signal(s), 1 new note(s), 1 resolved since the export of 2026-11-14 09:12
+
+**New signals (2)**
+- 2026-11-14 · **high** · litigation · [Acme appeals the permit](https://...)
+```
+
+The section appears automatically once a dossier has been exported before, in every format
+(`.md`, `.html`, `.json`) and from every front end — the GUI's **Export report** button writes
+the same snapshot the CLI does. Actions that were completed or dropped show as *resolved*; ones
+moved back to open show as *reopened*. `--since-last-export` forces the section on a first
+export, where it says so plainly rather than inventing a delta.
+
+A report is **deterministic and offline**: it never calls a model, so the same dossier and the
+same export history always render the same report, and every development carries its publisher
+and date. Sections that
 would be speculative are replaced by *Evidence gaps* — for example "4 signals were screened
 from the feed only", "2 signals have no publication date", "source example.com failed its last
 fetch (HTTP 403)".
@@ -306,6 +325,7 @@ python3 hbnscan.py dossier add "Acme fiber build-out" --latest 10 --search permi
 python3 hbnscan.py dossier note 1 "Does the permit cover the whole route?"
 python3 hbnscan.py dossier report 1                       # Markdown on stdout
 python3 hbnscan.py dossier report 1 --export report.md
+python3 hbnscan.py dossier show 1 --since-last-export     # lead with what changed
 python3 hbnscan.py action new "Call the clerk" --dossier 1 --priority high --due 2026-12-01
 python3 hbnscan.py action list --all
 python3 hbnscan.py action done 1
