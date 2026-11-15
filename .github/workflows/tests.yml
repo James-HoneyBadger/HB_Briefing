@@ -51,3 +51,41 @@ jobs:
           else
             echo "xvfb-run is unavailable; skipping the desktop smoke test"
           fi
+
+  # The image is how the self-hosted audience runs this, so it is built on every push: that
+  # keeps the Dockerfile honest without publishing anything.
+  container:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t hb-briefing:test .
+      - name: Start it and ask it for state
+        run: |
+          docker run -d --name hb-smoke -p 8765:8765 hb-briefing:test
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/state -o /tmp/state.json; then break; fi
+            sleep 2
+          done
+          test -s /tmp/state.json
+          grep -q '"product": "HB Briefing' /tmp/state.json
+          grep -q '"mode": "offline"' /tmp/state.json
+      - name: Seeding and state survive a restart
+        run: |
+          docker exec hb-smoke python3 /app/hbnscan.py --seed-feeds
+          docker exec hb-smoke test -s /data/feeds.txt
+          docker restart hb-smoke >/dev/null
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/state > /dev/null; then break; fi
+            sleep 2
+          done
+          docker exec hb-smoke test -s /data/watchdog_state.db
+      - name: Entrypoint modes
+        run: |
+          docker run --rm hb-briefing:test help | grep -q "HB Briefing container"
+          docker run --rm hb-briefing:test nonsense || test $? -eq 2
+          docker run --rm hb-briefing:test shell -c true
+      - name: Logs on failure
+        if: failure()
+        run: docker logs hb-smoke || true

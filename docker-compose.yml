@@ -1,0 +1,42 @@
+# HB Briefing, self-hosted: one service, one volume, one port.
+#
+#   docker compose up -d
+#   docker compose logs -f          # watch a scan
+#   docker compose exec briefing scan        # one scan on demand
+#   docker compose exec briefing cli --export /data/digest.md
+#
+# Put your settings in .env beside this file (compose reads it for the ${...} values) or mount
+# your own .env into the volume at /data/.env.
+services:
+  briefing:
+    build: .
+    image: hb-briefing:1.0.0
+    container_name: hb-briefing
+    restart: unless-stopped
+    ports:
+      # Bound to loopback by default: the web app has a token, but it is not an auth system.
+      # Change to "8765:8765" only on a trusted network, behind a reverse proxy.
+      - "127.0.0.1:${HB_PORT:-8765}:${PORT:-8765}"
+    environment:
+      TZ: ${TZ:-UTC}
+      PORT: ${PORT:-8765}
+      # 0600 in the container, but a token in the URL is still a token: keep it to loopback.
+      HB_WEB_TOKEN: ${HB_WEB_TOKEN:-}
+      # The LLM key can live here instead of in the volume's .env; both are read.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1/chat/completions}
+    volumes:
+      # Everything the tool knows lives here: watchdog_state.db, feeds.txt, watchlist.txt,
+      # topics.txt, profiles/, settings.json, .env, latest_report.md.
+      - hb-data:/data
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  hb-data:

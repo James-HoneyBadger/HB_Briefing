@@ -1,0 +1,21 @@
+# Never send local state or build output into the build context: a 50 MB database and a real
+# .env would both end up in a layer.
+.git
+.venv
+__pycache__
+*.py[cod]
+dist
+build
+tests
+packaging/icons
+*.db
+*.db-wal
+*.db-shm
+.env
+feeds.txt
+watchlist.txt
+topics.txt
+profiles/my-*.json
+latest_report.md
+*.lock
+docs/INSTRUCTIONS.md
