@@ -1568,8 +1568,8 @@ rows stored before clustering existed.
 
 ### 19.8 Workspace CLI
 
-`hbnscan.py` dispatches `dossier`, `action` and `sources` to `hbworkspace.main(argv)` before the
-flag-based path, so these commands never start a scan:
+`hbnscan.py` dispatches `entity`, `dossier`, `action` and `sources` to `hbworkspace.main(argv)`
+before the flag-based path, so these commands never start a scan:
 
 | Command | Behaviour |
 | --- | --- |
@@ -1584,6 +1584,7 @@ flag-based path, so these commands never start a scan:
 | `action new TITLE [--dossier ID] [--priority P] [--due YYYY-MM-DD] [--detail TEXT]` | create |
 | `action done ID` / `action reopen ID` | state transition |
 | `action export PATH` | Markdown action list |
+| `entity QUERY [--json] [--limit N]` | every signal, dossier, action and note for one name |
 | `sources [--json]` | per-source status and the coverage line |
 
 Exit codes match the rest of the CLI: `0` success, `2` usage or validation error. `--json` on
@@ -1593,6 +1594,25 @@ script. Identifiers may be an id or a dossier name, so scripts can stay readable
 ```bash
 python3 hbnscan.py dossier report "Acme fiber" --export acme.md
 ```
+
+### 19.9 Entity index
+
+`entity_report(conn, query, limit=200)` reverses the entity extraction. Stage 1 stores entities
+as JSON groups (`{"companies": [...], "agencies": [...]}`) on each graded row; the index reads
+them back, so no second table and no migration is involved.
+
+| Decision | Reason |
+| --- | --- |
+| `COALESCE(entities,'') LIKE ?` in SQL, exact substring test in Python | SQLite `LIKE` is a cheap prefilter, not a matcher: it cannot see inside JSON reliably, and a `%` in the query would otherwise turn into a wildcard match |
+| Unflagged rows included, flagged first | "What do we know about Nvidia" is not the same question as "what did the scan page me about today"; 107 mentions with 0 flagged is a real, useful answer |
+| Dismissed rows excluded | dismissing is an explicit decision; the index must not resurrect it |
+| Spellings grouped by `casefold().rstrip(" .,;:")` | `NVIDIA`/`Nvidia`/`Nvidia Corp.` are one company, but `Corp` is deliberately not folded into `Corporation` — punctuation and case are safe, word forms are not |
+| Dossiers matched by linked signal **or** by name/scope text | a dossier about Acme matters before a single signal is attached |
+| Actions and notes matched by linked hash **or** by their own text | an action titled "read the Acme order" is about Acme even if its signal was pruned |
+
+The same column is in the search predicate of `_export_filters`, so a query typed into any front
+end matches entity text as well as headlines and assessments — the CLI and the search box cannot
+disagree about whether a name is in the database.
 
 ---
 

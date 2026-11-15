@@ -324,8 +324,15 @@ python3 hbnscan.py dossier note 1 "Does the permit cover the whole route?"
 python3 hbnscan.py dossier report 1 --export acme-fiber.md
 python3 hbnscan.py action new "Call the clerk" --dossier 1 --priority high --due 2026-12-01
 python3 hbnscan.py action list --all
+python3 hbnscan.py entity nvidia --json        # every signal, dossier and action for one name
 python3 hbnscan.py sources --json
 ```
+
+**One name, everything about it.** Stage 1 extracts the companies and agencies from every
+headline, and `entity` turns that index around: `entity nvidia` returns all 107 stored mentions
+(from nine publishers), the dossiers that carry them and the actions attached, whether or not
+they were flagged — "0 flagged, 99 mentions" is itself an answer. The search box in the GUI and
+the web app searches the same column.
 
 Every workspace table lives in the same SQLite file, so a backup is still one file
 (**Settings → Data → Back up database**), and deleting a dossier never deletes the signals or

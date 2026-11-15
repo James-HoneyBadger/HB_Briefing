@@ -3951,9 +3951,11 @@ def _export_filters(filters):
     query = (filters.get("query") or "").strip()
     if query:
         like = f"%{query}%"
+        # Entity names are JSON in their own column, so a search for "Acme" must look there
+        # too or the GUI's box and the CLI's entity report would disagree.
         clauses.append("(title LIKE ? OR summary LIKE ? OR category LIKE ? OR link LIKE ? "
-                       "OR action LIKE ? OR facts LIKE ?)")
-        params.extend([like] * 6)
+                       "OR action LIKE ? OR facts LIKE ? OR entities LIKE ?)")
+        params.extend([like] * 7)
     since = filters.get("since") or ""
     if since:
         clauses.append("seen_at >= ?")

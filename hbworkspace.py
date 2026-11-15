@@ -368,6 +368,168 @@ def render_action_markdown(rows, title="Action list"):
     return "\n".join(lines) + "\n"
 
 
+# --------------------------------------------------------------------------- entities
+
+
+ENTITY_MIN_QUERY = 2
+ENTITY_LIMIT = 200
+
+
+def entity_values(raw):
+    """Every entity string stored on one row, flattened out of its JSON groups."""
+    try:
+        data = json.loads(raw or "{}")
+    except ValueError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    values = []
+    for group in data.values():
+        if isinstance(group, (list, tuple)):
+            for value in group:
+                text = _clean(value, 120)
+                if text:
+                    values.append(text)
+        elif isinstance(group, str) and group.strip():
+            values.append(_clean(group, 120))
+    return values
+
+
+def entity_report(conn, query, limit=ENTITY_LIMIT):
+    """Everything stored about one company, regulator or person.
+
+    Matches entity values case-insensitively by substring, so "acme" finds "Acme Corp" and
+    "Acme Fiber LLC". The SQL `LIKE` is only a cheap prefilter; the exact test happens on the
+    parsed JSON, which is why a value is never counted twice.
+
+    Graded-but-unflagged rows are included and marked, because "what do we know about Nvidia"
+    is a different question from "what did the scan page me about today". Rows the reader
+    dismissed are left out: that was an explicit "no".
+    """
+    needle = " ".join(str(query or "").split()).casefold()
+    if len(needle) < ENTITY_MIN_QUERY:
+        raise ValueError("give at least two characters to search for")
+    limit = max(1, min(2000, int(limit)))
+    columns = ", ".join(hbnscan.SIGNAL_COLUMNS)
+    rows = conn.execute(
+        f"SELECT {columns}, flagged, dismissed FROM seen_items "
+        "WHERE dismissed = 0 AND COALESCE(entities, '') LIKE ? "
+        f"ORDER BY flagged DESC, {hbnscan.row_order('newest')}",
+        (f"%{query.strip()}%",),
+    ).fetchall()
+
+    signals = []
+    # One company, several spellings: "Nvidia", "NVIDIA" and "Nvidia Corp." are counted
+    # together under the spelling seen most often.
+    spellings = {}
+    for row in rows:
+        hits = [value for value in entity_values(row["entities"])
+                if needle in value.casefold()]
+        if not hits:
+            continue
+        for hit in hits:
+            # Case and a trailing full stop are not a different company.
+            key = hit.casefold().rstrip(" .,;:")
+            counts = spellings.setdefault(key, {})
+            counts[hit] = counts.get(hit, 0) + 1
+        item = dict(row)
+        item["source"] = _source(item.get("feed_url"))
+        item["link"] = hbnscan.safe_link(item.get("link"))
+        item["freshness"] = hbnscan.freshness_label(item.get("published"),
+                                                    item.get("seen_at"))
+        item["matched_entities"] = hits
+        item["entities"] = ", ".join(hits)
+        item["flagged"] = int(item.get("flagged") or 0)
+        item["assessment"] = hbnscan.strip_provenance(item.get("summary"))
+        signals.append(item)
+        if len(signals) >= limit:
+            break
+
+    hashes = [item["item_hash"] for item in signals]
+    hash_set = set(hashes)
+    like = f"%{query.strip()}%"
+    dossiers = []
+    if hashes:
+        marks = ",".join("?" for _ in hashes)
+        dossiers = [dict(row) for row in conn.execute(
+            "SELECT d.id, d.name, d.status, d.updated_at, "
+            "COUNT(i.item_hash) AS matched "
+            "FROM dossiers d JOIN dossier_items i ON i.dossier_id = d.id "
+            f"WHERE i.item_hash IN ({marks}) "
+            "GROUP BY d.id ORDER BY matched DESC, d.name", hashes)]
+    # A dossier whose scope note names the entity matters even before a signal is linked.
+    for row in conn.execute(
+            "SELECT id, name, status, updated_at, 0 AS matched FROM dossiers "
+            "WHERE name LIKE ? OR summary LIKE ? ORDER BY id", (like, like)):
+        if not any(entry["id"] == row["id"] for entry in dossiers):
+            dossiers.append(dict(row))
+
+    actions = [row for row in list_actions(conn, include_done=True)
+               if row.get("item_hash") in hash_set
+               or needle in f"{row['title']} {row.get('detail') or ''}".casefold()]
+    notes = [row for row in list_notes(conn)
+             if row.get("item_hash") in hash_set or needle in (row["body"] or "").casefold()]
+
+    sources = {}
+    severities = {}
+    categories = {}
+    for item in signals:
+        sources[item["source"]] = sources.get(item["source"], 0) + 1
+        severities[item.get("severity") or "none"] = severities.get(
+            item.get("severity") or "none", 0) + 1
+        categories[item.get("category") or "other"] = categories.get(
+            item.get("category") or "other", 0) + 1
+    matched = {max(counts, key=lambda name: (counts[name], name)): sum(counts.values())
+               for counts in spellings.values()}
+    dates = sorted((item.get("published") or "")[:10]
+                   for item in signals if item.get("published"))
+
+    def ranked(counts):
+        return [{"name": name, "count": count}
+                for name, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))]
+
+    return {
+        "query": str(query).strip(),
+        "generated": _now(),
+        "matched": ranked(matched),
+        "signals": signals,
+        "dossiers": dossiers,
+        "actions": actions,
+        "notes": notes,
+        "sources": ranked(sources),
+        "counts": {
+            "signals": len(signals),
+            "dossiers": len(dossiers),
+            "open_actions": sum(1 for row in actions
+                                if row["status"] in ("open", "in_progress")),
+            "actions": len(actions),
+            "notes": len(notes),
+            "flagged": sum(1 for item in signals if item["flagged"]),
+            "undated": sum(1 for item in signals if not (item.get("published") or "").strip()),
+            "by_severity": severities,
+            "by_category": categories,
+        },
+        "span": {"first": dates[0] if dates else "", "last": dates[-1] if dates else ""},
+    }
+
+
+def describe_entity(report):
+    """One line for the CLI header."""
+    counts = report["counts"]
+    parts = [f"{counts['signals']} signal(s)",
+             f"{counts['flagged']} flagged"]
+    if report["matched"]:
+        parts.append("as " + ", ".join(f"{entry['name']} ({entry['count']})"
+                                       for entry in report["matched"][:4]))
+    if counts["dossiers"]:
+        parts.append(f"{counts['dossiers']} dossier(s)")
+    if counts["open_actions"]:
+        parts.append(f"{counts['open_actions']} open action(s)")
+    if report["span"]["first"]:
+        parts.append(f"{report['span']['first']} → {report['span']['last']}")
+    return "  ·  ".join(parts)
+
+
 # --------------------------------------------------------------------------- reports
 
 
@@ -816,8 +978,47 @@ def _print_sources(summary):
     print(describe_coverage(summary))
 
 
+def _print_entity(report):
+    if not report["signals"] and not report["dossiers"]:
+        print(f"No stored signal or dossier mentions {report['query']!r}.")
+        print("Entities come from the Stage 1 verdict, and dismissed rows are excluded; "
+              "try a shorter fragment of the name, or run --reclassify to re-grade rows "
+              "stored before entity extraction existed.")
+        return
+    print(f"{report['query']}")
+    print(f"  {describe_entity(report)}")
+    if report["sources"]:
+        print("  sources: " + ", ".join(f"{entry['name']} ({entry['count']})"
+                                        for entry in report["sources"][:6]))
+    if report["counts"]["undated"]:
+        print(f"  {report['counts']['undated']} signal(s) carry no publication date")
+    print()
+    if report["signals"]:
+        print(f"{'DATE':<10}  {'FLAG':<4}  {'SEV':<6}  {'CATEGORY':<19}  {'SOURCE':<24}  "
+              "HEADLINE")
+        for item in report["signals"]:
+            date = (item.get("published") or "")[:10] or "undated"
+            flag = "*" if item.get("flagged") else ""
+            print(f"{date:<10}  {flag:<4}  {(item.get('severity') or 'none'):<6}  "
+                  f"{(item.get('category') or 'other'):<19}  "
+                  f"{(item.get('source') or '')[:24]:<24}  {(item.get('title') or '')[:60]}")
+    if report["dossiers"]:
+        print()
+        print("Dossiers")
+        _print_dossier_rows(report["dossiers"])
+    if report["actions"]:
+        print()
+        print("Actions")
+        _print_actions(report["actions"])
+    if report["notes"]:
+        print()
+        print("Notes")
+        for note in report["notes"]:
+            print(f"  {note['created_at'][:10]}  {(note['body'] or '')[:90]}")
+
+
 def main(argv):
-    """`hbnscan.py dossier|action|sources ...` - the same workspace from a shell."""
+    """`hbnscan.py dossier|action|entity|sources ...` - the same workspace from a shell."""
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -869,6 +1070,13 @@ def main(argv):
     action_export = action_sub.add_parser("export", help="write the action list")
     action_export.add_argument("path")
 
+    entity = sub.add_parser("entity",
+                            help="everything stored about one company, regulator or person")
+    entity.add_argument("query", help="part of an entity name, case-insensitive")
+    entity.add_argument("--json", action="store_true", help="machine-readable output")
+    entity.add_argument("--limit", type=int, default=ENTITY_LIMIT,
+                        help=f"maximum signals to list (default {ENTITY_LIMIT})")
+
     sources = sub.add_parser("sources", help="source health and coverage")
     sources.add_argument("--json", action="store_true", help="machine-readable output")
 
@@ -881,6 +1089,14 @@ def main(argv):
                 print(json.dumps(summary, indent=2, ensure_ascii=False))
             else:
                 _print_sources(summary)
+            return 0
+
+        if args.command == "entity":
+            report = entity_report(conn, args.query, args.limit)
+            if args.json:
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+            else:
+                _print_entity(report)
             return 0
 
         if args.command == "action":

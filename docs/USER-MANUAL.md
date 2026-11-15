@@ -311,10 +311,45 @@ python3 hbnscan.py action list --all
 python3 hbnscan.py action done 1
 python3 hbnscan.py action export action-list.md
 python3 hbnscan.py sources                                # or --json
+python3 hbnscan.py entity "Acme"                          # or --json, --limit N
 ```
 
-Exit code is `0` on success and `2` for a usage or validation error (`--json` on `sources` is
-the machine-readable form).
+Exit code is `0` on success and `2` for a usage or validation error (`--json` on `sources` and
+`entity` is the machine-readable form).
+
+### 3.7 Everything you know about one name
+
+The Stage 1 verdict extracts the companies, agencies and amounts from every headline, and those
+names are stored with the signal. `entity` turns that index around: give it part of a name and
+it returns every signal that mentions it, plus the dossiers, actions and notes that touch those
+signals.
+
+```
+$ python3 hbnscan.py entity nvidia
+nvidia
+  107 signal(s)  ·  0 flagged  ·  as Nvidia (99), Nvidia Corp. (8)  ·  2026-11-09 → 2026-11-14
+  sources: feeds.bloomberg.com (49), www.theguardian.com (19), feeds.bbci.co.uk (12)
+
+DATE        FLAG  SEV     CATEGORY             SOURCE                    HEADLINE
+2026-11-14        none    other                feeds.bloomberg.com       Bessent, Lutnick Clash Over Nvidia China Curbs
+...
+```
+
+How it matches and what it counts:
+
+- **Substring, case-insensitive.** `nvidia` finds `Nvidia`, `NVIDIA` and `Nvidia Corp.`, and
+  those spellings are grouped into one entry under the most common form. `Acme` finds
+  `Acme Fiber LLC`.
+- **Unflagged signals are included.** 107 Nvidia mentions with none flagged is a real answer —
+  it means the engine saw the company without deciding it was today's news. Flagged rows sort
+  first and carry a `*`.
+- **Dismissed rows are excluded.** Dismissing a row was an explicit "not this", so it does not
+  come back through a side door.
+- **Every severity is searchable, but only signals that were graded have entities.** Rows stored
+  before entity extraction existed have none; `--reclassify` re-grades them offline.
+
+The same index is behind the **search box**: type a company name in the GUI or the web app and
+rows whose headline never mentions it still appear, because the entity column is searched too.
 
 ---
 
