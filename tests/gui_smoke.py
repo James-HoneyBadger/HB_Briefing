@@ -24,7 +24,8 @@ import hbconfig                                             # noqa: E402
 import hbnscan_gui                                          # noqa: E402
 
 # Relative to today: the detail pane shows a freshness label, so a fixed date would make this
-# test start failing the day after it was written.
+# test start failing the day after it was written. The label itself is derived, not assumed -
+# "24 hours ago" is "today" in the morning and "1d" in the evening, and neither is wrong.
 PUBLISHED = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 SIGNAL_SQL = (
@@ -110,7 +111,9 @@ def main():
         app.update()
         detail = app.detail_text.get("1.0", tk.END)
         assert "Decided by: watchlist" in detail, detail
-        assert f"Published: {PUBLISHED} (1d)" in detail, detail
+        # The label itself flips "today"/"1d" with the hour, and is covered by the engine
+        # tests; here it matters that the date is shown and a label accompanies it.
+        assert f"Published: {PUBLISHED} (" in detail, detail
 
         app.open_settings()
         app.update()
