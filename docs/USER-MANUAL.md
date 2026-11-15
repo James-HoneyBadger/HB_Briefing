@@ -747,10 +747,48 @@ characters per segment, and can silently drop sender addresses they distrust. Tr
 heads-up and the e-mail as the record. If texts stop arriving, verify the address by mailing the
 gateway manually once.
 
-### 10.4 Failure behaviour
+### 10.4 Push: Gotify, ntfy, Slack, Discord, Matrix
+
+A single URL in `NOTIFY_WEBHOOK_URL` gets the same digest pushed to a self-hosted notifier or a
+chat channel, using only the standard library — no new dependency, and nothing about your
+signals passes through a server you did not choose:
+
+| Service | `NOTIFY_WEBHOOK_URL` | Notes |
+| --- | --- | --- |
+| **ntfy** | `https://ntfy.sh/your-topic` | the text is the body; the title and priority ride in headers |
+| **Gotify** | `https://gotify.example.com/message?token=APP_TOKEN` | title, message and priority 5 |
+| **Slack** | `https://hooks.slack.com/services/…` | one `text` field, subject in bold |
+| **Discord** | `https://discord.com/api/webhooks/…` | truncated to Discord's 2000-character limit |
+| **Matrix** | `https://server/_matrix/client/r0/rooms/!room:server/send/m.room.message/TXN` | a `PUT` with an `m.text` payload |
+| **anything else** | any URL that takes `{"title": …, "text": …}` | the generic shape |
+
+`NOTIFY_WEBHOOK_FORMAT` defaults to `auto`, which infers the service from the host and path, so
+the URL is usually the only thing you set. Override it (`generic`, `gotify`, `ntfy`, `slack`,
+`discord`, `matrix`) for a self-hosted instance whose hostname gives nothing away, or for a
+reverse proxy in front of one. `NOTIFY_WEBHOOK_TOKEN` adds an `Authorization: Bearer` header for
+ntfy, Matrix and the generic shape; Gotify, Slack and Discord carry their secret in the URL, so
+they ignore it.
+
+A Matrix room id is opaque, which is why the whole send URL is pasted rather than assembled from
+parts. A token in the URL is a secret in a file: `.env` is written with `0600` permissions, and
+the Configuration window never echoes a stored token back into the form.
+
+**Configuration window → Notifications** has the URL, the format menu and the token, and **Send
+test** exercises every configured channel and prints one line per channel.
+
+### 10.5 Failure behaviour
 
 Notification failures are logged and swallowed — a scan's value is the data it collected, and
 losing that because SMTP was down would be a worse bug than a missed alert.
+
+With more than one channel configured, a signal is marked as sent when **any** channel delivered
+it, and stays queued when none did — the next scan tries again. A failed e-mail does not stop
+the push, and a failed push does not stop the e-mail; each logs its own line:
+
+```
+  [!] E-mail notification failed: SMTPAuthenticationError: 535 ...
+  [NOTIFY] Sent 3 signal(s) via generic webhook.
+```
 
 ---
 

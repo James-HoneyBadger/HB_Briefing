@@ -3700,7 +3700,13 @@ def _run_scan(log_callback=print, cancel=None):
 SMTP_ENV_KEYS = (
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM",
     "SMTP_SECURITY", "NOTIFY_EMAIL_TO", "NOTIFY_SMS_TO", "SMS_GATEWAY_DOMAIN",
+    "NOTIFY_WEBHOOK_URL", "NOTIFY_WEBHOOK_FORMAT", "NOTIFY_WEBHOOK_TOKEN",
 )
+
+# Push endpoints, dispatched by shape rather than by a library: all five take a JSON or form
+# POST, and a self-hosted Gotify or ntfy should not need a new dependency to reach.
+WEBHOOK_FORMATS = ("auto", "generic", "gotify", "ntfy", "slack", "discord", "matrix")
+WEBHOOK_TIMEOUT = 15
 
 # Free carrier e-mail-to-SMS gateways: <number>@<gateway> receives a text.
 SMS_GATEWAYS = {
@@ -3774,17 +3780,135 @@ def notifications_configured(config=None):
 
 def describe_notifications(config=None):
     config = config or notification_config()
-    if not notifications_configured(config):
+    hook = webhook_config()
+    if not notifications_configured(config) and not hook["configured"]:
         if config.get("unresolved_sms"):
             return ("not configured - set SMTP_HOST, NOTIFY_EMAIL_TO and "
                     "SMS_GATEWAY_DOMAIN (a bare number needs a gateway)")
-        return "not configured - set SMTP_HOST and NOTIFY_EMAIL_TO in .env"
+        return "not configured - set SMTP_HOST and NOTIFY_EMAIL_TO, or NOTIFY_WEBHOOK_URL"
+    if not notifications_configured(config):
+        return f"webhook only - {describe_webhook(hook)}"
     text = (f"{config['host']}:{config['port']} ({config['security']}) - "
             f"{len(config['emails'])} email, {len(config['sms'])} SMS")
+    if hook["configured"]:
+        text += f" + {hook['format']} webhook"
     if config.get("unresolved_sms"):
         text += (f" - {len(config['unresolved_sms'])} number(s) skipped: "
                  "set SMS_GATEWAY_DOMAIN")
     return text
+
+
+def _guess_webhook_format(url):
+    """Infer the endpoint shape from its host, so one URL field is enough for most setups."""
+    lowered = (url or "").lower()
+    if "discord" in lowered:
+        return "discord"
+    if "slack" in lowered:
+        return "slack"
+    if "/_matrix/" in lowered:
+        return "matrix"
+    if "ntfy" in lowered:
+        return "ntfy"
+    if "gotify" in lowered:
+        return "gotify"
+    return "generic"
+
+
+def webhook_config():
+    """Resolve the push endpoint: URL, format and optional bearer token."""
+    env = _env_values()
+    url = env.get("NOTIFY_WEBHOOK_URL", "").strip()
+    fmt = (env.get("NOTIFY_WEBHOOK_FORMAT", "") or "auto").strip().lower()
+    if fmt not in WEBHOOK_FORMATS:
+        fmt = "auto"
+    if fmt == "auto":
+        fmt = _guess_webhook_format(url)
+    return {"url": url, "format": fmt, "token": env.get("NOTIFY_WEBHOOK_TOKEN", "").strip(),
+            "configured": bool(url)}
+
+
+def describe_webhook(config=None):
+    config = config or webhook_config()
+    if not config["configured"]:
+        return "not configured - set NOTIFY_WEBHOOK_URL in .env"
+    host = urlparse(config["url"]).hostname or config["url"]
+    return f"{config['format']} webhook at {host}"
+
+
+def _webhook_request(config, subject, body):
+    """The (method, url, data, headers) one push endpoint needs. Pure data, so it is testable."""
+    fmt = config["format"]
+    token = config.get("token") or ""
+    if fmt == "slack":
+        payload = {"text": f"*{subject}*\n{body}"}
+        return "POST", config["url"], json.dumps(payload).encode("utf-8"), _json_headers()
+    if fmt == "discord":
+        # Discord rejects more than 2000 characters in one message.
+        text = f"**{subject}**\n{body}"[:1900]
+        return ("POST", config["url"], json.dumps({"content": text}).encode("utf-8"),
+                _json_headers())
+    if fmt == "gotify":
+        payload = {"title": subject, "message": body, "priority": 5}
+        return "POST", config["url"], json.dumps(payload).encode("utf-8"), _json_headers()
+    if fmt == "ntfy":
+        headers = {"Title": subject, "Priority": "default", "Tags": "briefing",
+                   "Content-Type": "text/plain; charset=utf-8"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return "POST", config["url"], body.encode("utf-8"), headers
+    if fmt == "matrix":
+        # The caller supplies the full send URL (homeserver, room id, txn id), because room
+        # ids are opaque and a half-composed URL would be a guessing game.
+        payload = {"msgtype": "m.text", "body": f"{subject}\n\n{body}"}
+        headers = _json_headers()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return "PUT", config["url"], json.dumps(payload).encode("utf-8"), headers
+    headers = _json_headers()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    payload = {"title": subject, "text": body, "source": APP_NAME}
+    return "POST", config["url"], json.dumps(payload).encode("utf-8"), headers
+
+
+def _json_headers():
+    return {"Content-Type": "application/json; charset=utf-8",
+            "User-Agent": USER_AGENT}
+
+
+def send_webhook(subject, body, config=None):
+    """Push one message. Returns (delivered, detail); never raises."""
+    config = config or webhook_config()
+    if not config["configured"]:
+        return False, "no webhook URL configured"
+    try:
+        method, url, data, headers = _webhook_request(config, subject, body)
+    except (ValueError, TypeError) as exc:
+        return False, f"could not build the request: {exc}"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=WEBHOOK_TIMEOUT) as response:
+            response.read(2048)          # drain, so the connection is not left half-open
+            if not 200 <= response.status < 300:
+                return False, f"HTTP {response.status}"
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read(200).decode("utf-8", "replace").strip()
+        except Exception:                    # noqa: BLE001 - the error path must not raise
+            detail = ""
+        suffix = f": {detail}" if detail else ""
+        hint = ""
+        if exc.code in (401, 403):
+            hint = " (check NOTIFY_WEBHOOK_TOKEN or the token in the URL)"
+        elif exc.code == 404:
+            hint = " (check the URL path and topic/room id)"
+        return False, f"HTTP {exc.code}{hint}{suffix}"
+    except urllib.error.URLError as exc:
+        return False, f"could not reach {urlparse(url).hostname}: {exc.reason}"
+    except Exception as exc:                 # noqa: BLE001 - a push must never break a scan
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, f"{config['format']} webhook"
 
 
 def _notify_subject(items):
@@ -3868,17 +3992,32 @@ def send_notifications(conn, settings=None, log_callback=print):
     if not settings["notify_enabled"]:
         return 0
     config = notification_config()
-    if not notifications_configured(config):
-        log_callback("  [!] Notifications are on but SMTP is not configured; see .env")
+    hook = webhook_config()
+    if not notifications_configured(config) and not hook["configured"]:
+        log_callback("  [!] Notifications are on but no channel is configured; "
+                     "set SMTP_HOST + NOTIFY_EMAIL_TO, or NOTIFY_WEBHOOK_URL, in .env")
         return 0
 
     items = _pending_alerts(conn, settings)
     if not items:
         return 0
-    try:
-        _smtp_send(config, _notify_subject(items), _notify_body(items))
-    except Exception as exc:
-        log_callback(f"  [!] Notification failed: {type(exc).__name__}: {exc}")
+    subject, body = _notify_subject(items), _notify_body(items)
+    delivered = []
+    if notifications_configured(config):
+        try:
+            _smtp_send(config, subject, body)
+            delivered.append(f"{len(config['recipients'])} recipient(s)")
+        except Exception as exc:             # noqa: BLE001 - one channel must not stop another
+            log_callback(f"  [!] E-mail notification failed: {type(exc).__name__}: {exc}")
+    if hook["configured"]:
+        ok, detail = send_webhook(subject, body, hook)
+        if ok:
+            delivered.append(detail)
+        else:
+            log_callback(f"  [!] Webhook notification failed: {detail}")
+    if not delivered:
+        # Nothing arrived, so nothing is marked sent: the next scan tries again.
+        log_callback("  [!] No channel delivered; these signals stay queued.")
         return 0
 
     sent_at = datetime.now().isoformat(timespec="seconds")
@@ -3887,16 +4026,18 @@ def send_notifications(conn, settings=None, log_callback=print):
         [(item["item_hash"], sent_at) for item in items],
     )
     conn.commit()
-    log_callback(f"  [NOTIFY] Sent {len(items)} signal(s) to {len(config['recipients'])} recipient(s).")
+    log_callback(f"  [NOTIFY] Sent {len(items)} signal(s) via " + " + ".join(delivered) + ".")
     return len(items)
 
 
 def send_test_notification(log_callback=print):
-    """Send one fixed message so the operator can prove the wiring."""
+    """Send one fixed message to every configured channel, so the operator can prove it."""
     config = notification_config()
-    if not notifications_configured(config):
+    hook = webhook_config()
+    if not notifications_configured(config) and not hook["configured"]:
         log_callback("[FAIL] Notifications are not configured.")
-        log_callback("       Set SMTP_HOST, SMTP_FROM and NOTIFY_EMAIL_TO in .env.")
+        log_callback("       Set SMTP_HOST, SMTP_FROM and NOTIFY_EMAIL_TO in .env, "
+                     "or NOTIFY_WEBHOOK_URL.")
         return 1
     sample = [{
         "title": f"Test message from {APP_NAME}",
@@ -3905,6 +4046,11 @@ def send_test_notification(log_callback=print):
         "category": "regulatory_action",
         "published": "",
     }]
+    if hook["configured"]:
+        ok, detail = send_webhook(f"[{APP_NAME}] Test notification", _notify_body(sample), hook)
+        log_callback(("[OK] " if ok else "[FAIL] ") + "webhook: " + detail)
+        if not notifications_configured(config):
+            return 0 if ok else 1
     try:
         _smtp_send(config, f"[{APP_NAME}] Test notification", _notify_body(sample))
     except Exception as exc:

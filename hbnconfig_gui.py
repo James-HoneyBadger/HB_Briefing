@@ -869,7 +869,9 @@ class ConfigurationWindow(tk.Toplevel):
                            ("smtp_user", "Username"), ("smtp_from", "From address"),
                            ("email_to", "E-mail recipients (comma separated)"),
                            ("sms_to", "SMS numbers (comma separated)"),
-                           ("sms_gateway", "SMS gateway domain")):
+                           ("sms_gateway", "SMS gateway domain"),
+                           ("webhook_url", "Webhook URL (Gotify, ntfy, Slack, Discord, Matrix)"),
+                           ("webhook_token", "Webhook token (blank = keep)")):
             variable = tk.StringVar()
             self.notify_vars[key] = variable
             self._entry_row(frame, label, variable, width=34)
@@ -890,6 +892,15 @@ class ConfigurationWindow(tk.Toplevel):
         self._option(row, self.notify_severity, ["high", "medium"]).pack(side=tk.LEFT)
         self.notify_password = tk.StringVar()
         self._entry_row(frame, "SMTP password (blank = keep)", self.notify_password, width=34)
+        row = tk.Frame(frame, bg=self.p.BG_PANEL)
+        row.pack(fill=tk.X, padx=12, pady=4)
+        tk.Label(row, text="Webhook format", bg=self.p.BG_PANEL, fg=self.p.FG_MUTED, width=24,
+                 anchor="w", font=("Sans", 9)).pack(side=tk.LEFT)
+        self.notify_webhook_format = tk.StringVar(value="auto")
+        self._option(row, self.notify_webhook_format,
+                     list(hbnscan.WEBHOOK_FORMATS)).pack(side=tk.LEFT, padx=(0, 16))
+        tk.Label(row, text="auto infers it from the URL", bg=self.p.BG_PANEL,
+                 fg=self.p.FG_MUTED, font=("Sans", 9)).pack(side=tk.LEFT)
         bar = tk.Frame(frame, bg=self.p.BG_PANEL)
         bar.pack(fill=tk.X, padx=12, pady=8)
         self._btn(bar, "Save notifications", self._save_notify, accent=True).pack(side=tk.LEFT)
@@ -900,6 +911,11 @@ class ConfigurationWindow(tk.Toplevel):
         for key, variable in self.notify_vars.items():
             variable.set(values.get(key, ""))
         self.notify_security.set(values.get("smtp_security", "starttls"))
+        self.notify_webhook_format.set(values.get("webhook_format", "auto") or "auto")
+        # The stored secrets are never echoed back into the form.
+        for key in ("smtp_password", "webhook_token"):
+            values[key] = ""
+        self.notify_vars["webhook_token"].set("")
         self.notify_password.set("")
         settings = hbnscan.load_settings()
         self.notify_enabled.set(bool(settings["notify_enabled"]))
@@ -916,7 +932,10 @@ class ConfigurationWindow(tk.Toplevel):
                 smtp_from=self.notify_vars["smtp_from"].get(),
                 email_to=self.notify_vars["email_to"].get(),
                 sms_to=self.notify_vars["sms_to"].get(),
-                sms_gateway=self.notify_vars["sms_gateway"].get())
+                sms_gateway=self.notify_vars["sms_gateway"].get(),
+                webhook_url=self.notify_vars["webhook_url"].get(),
+                webhook_format=self.notify_webhook_format.get(),
+                webhook_token=self.notify_vars["webhook_token"].get())
             hbnscan.save_settings(notify_enabled=self.notify_enabled.get(),
                                   notify_min_severity=self.notify_severity.get())
         except ValueError as exc:

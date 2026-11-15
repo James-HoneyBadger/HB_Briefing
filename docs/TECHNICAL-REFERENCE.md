@@ -273,6 +273,7 @@ screen shows is what the file holds.
 | `WATCHDOG_BRIEF_HOURS` | `24` | Look-back window for briefing inputs |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURITY` | — | Mail transport (`starttls`/`ssl`/`none`) |
 | `NOTIFY_EMAIL_TO`, `NOTIFY_SMS_TO`, `SMS_GATEWAY_DOMAIN` | — | Comma-separated recipients; bare numbers use the carrier gateway |
+| `NOTIFY_WEBHOOK_URL`, `NOTIFY_WEBHOOK_FORMAT`, `NOTIFY_WEBHOOK_TOKEN` | — | Push endpoint; format `auto` infers the service from the URL |
 
 `_env_flag` treats `0/false/no/off` as false and anything else as true, so `WATCHDOG_BRIEFING=0`
 is the documented off switch.
@@ -1142,6 +1143,37 @@ otherwise `context`.
 `send_test_notification()` exercises the real code path with a fixed payload, which is what the
 **Send test** button calls. Subject, footer and the test message all interpolate `APP_NAME`, so a
 profile-aware install does not mail everything as "HB Briefing".
+
+### 16.1 Push transport
+
+A second channel, resolved by `webhook_config()` from `NOTIFY_WEBHOOK_URL`,
+`NOTIFY_WEBHOOK_FORMAT` and `NOTIFY_WEBHOOK_TOKEN`. `_webhook_request(config, subject, body)` is
+a pure function returning `(method, url, data, headers)`, so every payload shape is testable
+without a network:
+
+| Format | Method | Body | Auth |
+| --- | --- | --- | --- |
+| `generic` | POST | `{"title", "text", "source"}` | `Authorization: Bearer` when a token is set |
+| `gotify` | POST | `{"title", "message", "priority": 5}` | token lives in the URL the caller pastes |
+| `ntfy` | POST | plain-text body | `Title`/`Priority`/`Tags` headers, `Bearer` when set |
+| `slack` | POST | `{"text": "**subject**\nbody"}` | the webhook URL is the secret |
+| `discord` | POST | `{"content": …}` truncated to 1900 characters | the webhook URL is the secret |
+| `matrix` | **PUT** | `{"msgtype": "m.text", "body": …}` | `Bearer` when set, or `?access_token=` in the URL |
+
+`auto` resolves the format from the host and path (`discord`, `slack`, `ntfy`, `gotify`,
+`/_matrix/`), falling back to `generic`. Matrix gets a `PUT` because that is what the client-server
+API requires, and the caller supplies the complete send URL: room ids are opaque, so composing one
+from parts would be guesswork.
+
+Delivery rules, which is where a notification system usually goes wrong:
+
+- `send_notifications` tries every configured channel and collects what succeeded.
+- `sent_alerts` is written **only if at least one channel delivered**; a total failure leaves the
+  batch queued for the next scan, exactly as an SMTP failure always did.
+- One channel failing never aborts the other, and neither ever aborts the scan.
+- `send_webhook` returns `(False, detail)` instead of raising, with hints for the two failures
+  a user actually hits: `401/403` mentions `NOTIFY_WEBHOOK_TOKEN`, `404` mentions the topic or
+  room id.
 
 ---
 

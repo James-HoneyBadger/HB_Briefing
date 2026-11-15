@@ -609,18 +609,34 @@ def notification_editor():
         "email_to": env.get("NOTIFY_EMAIL_TO", ""),
         "sms_to": env.get("NOTIFY_SMS_TO", ""),
         "sms_gateway": env.get("SMS_GATEWAY_DOMAIN", ""),
+        "webhook_url": env.get("NOTIFY_WEBHOOK_URL", ""),
+        "webhook_format": (env.get("NOTIFY_WEBHOOK_FORMAT", "")
+                           or "auto").strip().lower(),
+        "webhook_token": env.get("NOTIFY_WEBHOOK_TOKEN", ""),
     }
 
 
 def save_notifications(smtp_host="", smtp_port="", smtp_security="starttls",
                        smtp_user="", smtp_password=None, smtp_from="",
-                       email_to="", sms_to="", sms_gateway=""):
-    """Persist SMTP/SMS transport. `smtp_password=None` keeps the stored password."""
+                       email_to="", sms_to="", sms_gateway="",
+                       webhook_url="", webhook_format="auto", webhook_token=None):
+    """Persist SMTP/SMS and push transport.
+
+    `smtp_password=None` keeps the stored password; `webhook_token=None` keeps the stored token,
+    so a form with the secret field left blank cannot wipe a working setup.
+    """
     if smtp_port not in ("", None):
         if not str(smtp_port).isdigit() or not 1 <= int(smtp_port) <= 65535:
             raise ValueError("the SMTP port must be a number between 1 and 65535")
     if smtp_security not in SMTP_SECURITY:
         raise ValueError("security must be starttls, ssl or none")
+    webhook_format = (webhook_format or "auto").strip().lower()
+    if webhook_format not in hbnscan.WEBHOOK_FORMATS:
+        raise ValueError("webhook format must be one of "
+                         + ", ".join(hbnscan.WEBHOOK_FORMATS))
+    webhook_url = (webhook_url or "").strip()
+    if webhook_url and not webhook_url.lower().startswith(("http://", "https://")):
+        raise ValueError("the webhook URL must start with http:// or https://")
     values = {
         "SMTP_HOST": (smtp_host or "").strip(),
         "SMTP_PORT": str(smtp_port or "").strip(),
@@ -630,9 +646,13 @@ def save_notifications(smtp_host="", smtp_port="", smtp_security="starttls",
         "NOTIFY_EMAIL_TO": (email_to or "").strip(),
         "NOTIFY_SMS_TO": (sms_to or "").strip(),
         "SMS_GATEWAY_DOMAIN": (sms_gateway or "").strip(),
+        "NOTIFY_WEBHOOK_URL": webhook_url,
+        "NOTIFY_WEBHOOK_FORMAT": webhook_format,
     }
     if smtp_password is not None and smtp_password != "":
         values["SMTP_PASSWORD"] = smtp_password
+    if webhook_token is not None and webhook_token != "":
+        values["NOTIFY_WEBHOOK_TOKEN"] = webhook_token.strip()
     hbnscan.update_env_file(**values)
     return notification_editor()
 

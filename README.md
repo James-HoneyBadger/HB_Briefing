@@ -258,8 +258,11 @@ limit included.
 
 **Alerts** fire at the end of a scan for signals above a threshold and only for items not sent
 before; anything beyond the per-message cap stays pending for the next scan rather than being
-dropped. E-mail goes through any SMTP server; SMS uses the carrier's free e-mail-to-SMS gateway,
-so no third-party messaging account is needed.
+dropped. E-mail goes through any SMTP server and SMS uses the carrier's free e-mail-to-SMS
+gateway, so no messaging account is needed; **one URL** additionally pushes the digest to
+self-hosted **Gotify** or **ntfy**, or to **Slack**, **Discord** or **Matrix**, with the format
+inferred from the URL and only the standard library involved. A signal counts as sent when any
+channel delivered it — a total failure leaves it queued for the next scan.
 
 **Scheduling** is a first-class feature: an interval, a scanning window that wraps midnight, and
 a headless daemon for machines without a desktop.
@@ -280,7 +283,7 @@ diagnostics instead of a text editor:
 | Targets | pin names to a category and status, with the profile's own categories in the menu |
 | Criteria | the whole relevance model of a profile — categories, signals, noise rules, hints, prompts, shipped topics and targets; validate, save, save-as, activate |
 | Scan limits | deep reads, briefing, triage and deep-read budgets, briefing window, per-feed item cap, retention |
-| Notifications | SMTP transport, recipients, SMS gateway, on/off and minimum severity, with a real test send |
+| Notifications | SMTP transport, recipients, SMS gateway, push webhook URL/format/token, on/off and minimum severity, with a real test send |
 | Diagnostics | one check for broken URLs, unknown categories, duplicate rules, topic limits, criteria gaps, missing transport and failing sources |
 
 **Your files stay yours.** The three text files are parsed line by line, so comments and headers
