@@ -247,30 +247,37 @@ def write_homebrew_formula(tarball):
 # --------------------------------------------------------------------- .deb
 
 
-def _tar_of_dir(directory):
+def _tar_of_dir(directory, exclude=()):
+    """A gzipped tar of `directory`, with `exclude`d top-level names left out."""
+    excluded = set(exclude)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.GNU_FORMAT) as archive:
         for path in sorted(Path(directory).rglob("*")):
-            archive.add(str(path), arcname=str(path.relative_to(directory)),
-                        filter=_tar_filter, recursive=False)
+            relative = path.relative_to(directory)
+            if relative.parts and relative.parts[0] in excluded:
+                continue
+            archive.add(str(path), arcname=str(relative), filter=_tar_filter, recursive=False)
         archive.add(str(directory), arcname=".", filter=_tar_filter, recursive=False)
     return buffer.getvalue()
 
 
 def _ar_archive(members):
-    """Write a .deb without dpkg-deb, so a package can be built on any host."""
+    """A .deb is an `ar` archive of three members; writing it needs no external tool."""
     out = bytearray(b"!<arch>\n")
     for name, payload in members:
-        header = (f"{name:<16}{int(time.time()):<12}{0:<6}{0:<6}{'100644':<8}"
+        header = (f"{name + '/':<16}{int(time.time()):<12}{0:<6}{0:<6}{'100644':<8}"
                   f"{len(payload):<10}`\n").encode("ascii")
         out += header + payload
         if len(payload) % 2:
-            out += b"\n"
+            out += b"\n"          # ar members are 2-byte aligned
     return bytes(out)
 
 
-def build_deb():
-    require("dpkg-deb", "install dpkg (Debian/Ubuntu) or build the AppImage instead")
+def build_deb(pure=False):
+    """Assemble the .deb, through dpkg-deb when it is available and directly when it is not."""
+    dpkg_deb = None if pure else shutil.which("dpkg-deb")
+    if not dpkg_deb:
+        log("dpkg-deb unavailable or not wanted: writing the archive directly")
     ensure_icons()
     work = BUILD / "deb"
     clean(work)
@@ -332,10 +339,17 @@ def build_deb():
         "fi\n"
         "exit 0\n", encoding="utf-8")
     (control_dir / "postinst").chmod(0o755)
-    (work / "debian-binary").write_text("2.0\n", encoding="utf-8")
-
     target = dist_path(f"{SLUG}_{VERSION}_all.deb")
-    run(["dpkg-deb", "--root-owner-group", "--build", data, target])
+    if dpkg_deb:
+        run([dpkg_deb, "--root-owner-group", "--build", data, target])
+    else:
+        # The same three members dpkg-deb writes. DEBIAN belongs to control.tar.gz only, so
+        # it is excluded from data.tar.gz.
+        target.write_bytes(_ar_archive([
+            ("debian-binary", b"2.0\n"),
+            ("control.tar.gz", _tar_of_dir(control_dir)),
+            ("data.tar.gz", _tar_of_dir(data, exclude=("DEBIAN",))),
+        ]))
     log(f"{target.relative_to(ROOT)} ({target.stat().st_size // 1024} KiB)")
     return target
 
@@ -656,6 +670,8 @@ def main(argv=None):
         description="Build installable HB Briefing packages.")
     parser.add_argument("target", nargs="?", default="all", choices=sorted(targets()) + ["all"])
     parser.add_argument("--list", action="store_true", help="list the targets and exit")
+    parser.add_argument("--pure", action="store_true",
+                        help="write the .deb without dpkg-deb (works on any host)")
     args = parser.parse_args(argv)
     if args.list:
         for name in sorted(targets()):
@@ -666,6 +682,9 @@ def main(argv=None):
     log(f"{APP_NAME} {VERSION} on {platform_tag()}")
     if args.target == "all":
         return build_all()
+    if args.target == "deb":
+        build_deb(pure=args.pure)
+        return 0
     targets()[args.target]()
     return 0
 

@@ -16,7 +16,7 @@ running and your own `feeds.txt` and database are never touched.
 | --- | --- | --- |
 | `icons` | `packaging/icons/*` from `hbicons.py` | Python only |
 | `source` | `dist/hb-briefing-<v>.tar.gz`, `dist/hb-briefing.rb` | Python only |
-| `deb` | `dist/hb-briefing_<v>_all.deb` | `dpkg-deb` |
+| `deb` | `dist/hb-briefing_<v>_all.deb` | Python only (`dpkg-deb` used when present) |
 | `rpm` | `dist/hb-briefing-<v>-1.*.noarch.rpm` | `rpmbuild` |
 | `arch` | `dist/PKGBUILD` with a real checksum | Python only |
 | `frozen` | `dist/hb-briefing-<v>-<os>-<arch>/` (self-contained) | PyInstaller |
@@ -77,6 +77,7 @@ source itself.
 ## Trying a package without installing it
 
 ```bash
+python3 packaging/build.py deb --pure               # no dpkg-deb needed, e.g. on macOS
 sudo dpkg -i dist/hb-briefing_1.0.0_all.deb        # or: sudo apt install ./dist/...
 dpkg-deb -x dist/hb-briefing_1.0.0_all.deb /tmp/root   # inspect only
 HB_BRIEFING_HOME=/tmp/home /tmp/root/usr/lib/hb-briefing/hbnscan.py --reclassify --dry-run
@@ -85,3 +86,7 @@ HB_BRIEFING_HOME=/tmp/home /tmp/root/usr/lib/hb-briefing/hbnscan.py --reclassify
 The last command is the fastest end-to-end check: it proves the payload runs, that first-run
 seeding works, and that the database is created in the state directory rather than next to the
 code.
+
+`deb --pure` writes the archive directly instead of shelling out to `dpkg-deb`, so a `.deb` can
+be produced on a machine that has no Debian tooling. It is the same three-member `ar` archive,
+gzipped rather than xz-compressed: a little larger, identical once installed.
