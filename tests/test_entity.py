@@ -119,6 +119,20 @@ class EntityReportTest(unittest.TestCase):
             self.add(f"h{index}", f"Acme item {index}", {"companies": ["Acme"]})
         self.assertEqual(len(self.report("acme", limit=2)["signals"]), 2)
 
+    def test_co_mentions_count_distinct_stories_and_keep_evidence(self):
+        self.add("h1", "First", {"companies": ["Acme", "Beta", "Beta"], "regulators": ["FTC"]})
+        self.add("h2", "Second", {"companies": ["Acme", "BETA"]})
+        self.add("h3", "Third", {"companies": ["Acme", "Beta"]})
+        self.conn.execute("UPDATE seen_items SET cluster_key = 'shared' WHERE item_hash IN ('h1', 'h2')")
+        self.conn.commit()
+        report = self.report("acme")
+        beta = next(entry for entry in report["associations"] if entry["name"].lower() == "beta")
+        self.assertEqual(beta["signals"], 3)
+        self.assertEqual(beta["stories"], 2)
+        self.assertEqual(len(beta["examples"]), 3)
+        self.assertFalse(report["association_scope"]["truncated"])
+        self.assertTrue(self.report("acme", limit=1)["association_scope"]["truncated"])
+
     def test_malformed_entity_json_is_ignored(self):
         self.conn.execute(SIGNAL_SQL, (
             "h1", "Broken entities", "https://e.test/b", "https://f.test/rss", 1, "", 

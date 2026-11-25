@@ -398,6 +398,35 @@ def entity_values(raw):
     return values
 
 
+def _entity_associations(signals, needle):
+    """Count co-mentions, never infer ownership, affiliation or causation."""
+    index = {}
+    for item in signals:
+        story = item.get("cluster_key") or "row:" + item["item_hash"]
+        for name in item.get("co_mentions", []):
+            key = name.casefold().rstrip(" .,;:")
+            if not key or needle in key:
+                continue
+            entry = index.setdefault(key, {"names": {}, "stories": set(), "signals": set(),
+                                           "examples": []})
+            if item["item_hash"] in entry["signals"]:
+                continue
+            entry["signals"].add(item["item_hash"])
+            entry["stories"].add(story)
+            entry["names"][name] = entry["names"].get(name, 0) + 1
+            if len(entry["examples"]) < 3:
+                entry["examples"].append({"title": item.get("title") or "",
+                                          "link": item.get("link") or "",
+                                          "hash": item["item_hash"]})
+    associations = [
+        {"name": max(entry["names"], key=lambda name: (entry["names"][name], name)),
+         "stories": len(entry["stories"]), "signals": len(entry["signals"]),
+         "examples": entry["examples"]}
+        for entry in index.values()]
+    return sorted(associations, key=lambda entry: (-entry["stories"], -entry["signals"],
+                                                  entry["name"].casefold()))[:30]
+
+
 def entity_report(conn, query, limit=ENTITY_LIMIT):
     """Everything stored about one company, regulator or person.
 
@@ -422,6 +451,7 @@ def entity_report(conn, query, limit=ENTITY_LIMIT):
     ).fetchall()
 
     signals = []
+    truncated = False
     # One company, several spellings: "Nvidia", "NVIDIA" and "Nvidia Corp." are counted
     # together under the spelling seen most often.
     spellings = {}
@@ -430,7 +460,10 @@ def entity_report(conn, query, limit=ENTITY_LIMIT):
                 if needle in value.casefold()]
         if not hits:
             continue
-        for hit in hits:
+        if len(signals) >= limit:
+            truncated = True
+            break
+        for hit in dict.fromkeys(hits):
             # Case and a trailing full stop are not a different company.
             key = hit.casefold().rstrip(" .,;:")
             counts = spellings.setdefault(key, {})
@@ -441,12 +474,12 @@ def entity_report(conn, query, limit=ENTITY_LIMIT):
         item["freshness"] = hbnscan.freshness_label(item.get("published"),
                                                     item.get("seen_at"))
         item["matched_entities"] = hits
+        item["co_mentions"] = sorted(set(entity_values(row["entities"])) - set(hits),
+                                     key=lambda name: (name.casefold(), name))
         item["entities"] = ", ".join(hits)
         item["flagged"] = int(item.get("flagged") or 0)
         item["assessment"] = hbnscan.strip_provenance(item.get("summary"))
         signals.append(item)
-        if len(signals) >= limit:
-            break
 
     hashes = [item["item_hash"] for item in signals]
     hash_set = set(hashes)
@@ -496,6 +529,11 @@ def entity_report(conn, query, limit=ENTITY_LIMIT):
         "generated": _now(),
         "matched": ranked(matched),
         "signals": signals,
+        "associations": _entity_associations(signals, needle),
+        "association_scope": {"truncated": truncated, "signal_limit": limit,
+                              "max_associations": 30,
+                              "caveat": "Co-mentions in stored signals do not establish "
+                                        "a factual relationship or independent corroboration."},
         "dossiers": dossiers,
         "actions": actions,
         "notes": notes,
@@ -1275,6 +1313,13 @@ def _print_entity(report):
                                         for entry in report["sources"][:6]))
     if report["counts"]["undated"]:
         print(f"  {report['counts']['undated']} signal(s) carry no publication date")
+    if report.get("association_scope", {}).get("truncated"):
+        print("  Results limited; association counts describe only the returned signals.")
+    if report.get("associations"):
+        print("  Co-mentioned entities (not established relationships):")
+        for entry in report["associations"][:10]:
+            print(f"    {entry['name']}: {entry['stories']} story group(s), "
+                  f"{entry['signals']} signal(s)")
     print()
     if report["signals"]:
         print(f"{'DATE':<10}  {'FLAG':<4}  {'SEV':<6}  {'CATEGORY':<19}  {'SOURCE':<24}  "
