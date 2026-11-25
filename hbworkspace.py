@@ -48,7 +48,10 @@ def _as_int(value):
 
 
 def _host(url):
-    return (urlparse(url or "").hostname or "").lower()
+    try:
+        return (urlparse(url or "").hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def _source(feed_url):
@@ -537,28 +540,82 @@ def _report_rows(conn, dossier_id):
     return dossier_items(conn, dossier_id)
 
 
-def _report_gaps(conn, items, dossier):
+def _publication_stamp(item):
+    return hbnscan._parse_timestamp(item.get("published"))
+
+
+def _report_stamp(item):
+    return _publication_stamp(item) or hbnscan._parse_timestamp(item.get("seen_at"))
+
+
+def _story_evidence(items):
+    """Describe observed coverage, not independent confirmation of claims."""
+    groups = {}
+    for item in items:
+        key = item.get("cluster_key") or "row:" + item["item_hash"]
+        groups.setdefault(key, []).append(item)
+    stories = []
+    for key, members in sorted(groups.items()):
+        article_hosts, feed_hosts = set(), set()
+        unresolved = 0
+        for member in members:
+            feed = _host(member.get("feed_url"))
+            if feed:
+                feed_hosts.add(feed)
+            try:
+                link = hbnscan.safe_link(member.get("link"))
+                host = _host(link)
+                if not host or hbnscan.is_aggregator_host(link):
+                    unresolved += 1
+                    continue
+                article_hosts.add(host[4:] if host.startswith("www.") else host)
+            except ValueError:
+                unresolved += 1
+        representative = min(members, key=lambda item: item["item_hash"])
+        stories.append({
+            "cluster_key": key, "title": representative.get("title") or "",
+            "signals": len(members), "article_hosts": sorted(article_hosts),
+            "feed_hosts": sorted(feed_hosts), "unresolved_links": unresolved,
+            "article_reads": sum(bool(item.get("deep_read")) for item in members),
+        })
+    return {
+        "stories": stories, "story_count": len(stories),
+        "multi_item_stories": sum(story["signals"] > 1 for story in stories),
+        "multi_host_stories": sum(len(story["article_hosts"]) > 1 for story in stories),
+        "unresolved_links": sum(story["unresolved_links"] for story in stories),
+        "caveat": "Story groups and distinct article hosts measure observed coverage, "
+                  "not independent corroboration or factual verification.",
+    }
+
+
+def _report_gaps(conn, items, dossier, evidence):
     gaps = []
     screened = sum(1 for item in items if not item.get("deep_read"))
     if screened:
         gaps.append(f"{screened} signal(s) were screened from the feed only — the linked "
                     "article was not read, so their verdicts rest on headline and summary.")
-    undated = sum(1 for item in items if not (item.get("published") or "").strip())
+    undated = sum(1 for item in items if _publication_stamp(item) is None)
     if undated:
-        gaps.append(f"{undated} signal(s) have no publication date; the timeline places them "
-                    "by detection time and labels them undated.")
+        gaps.append(f"{undated} signal(s) have no publication date or no usable date; "
+                    "the timeline falls back to detection time and labels them undated.")
     hosts = {_host(item.get("feed_url")) for item in items if _host(item.get("feed_url"))}
     if len(hosts) == 1 and len(items) > 1:
-        gaps.append(f"Every signal comes from {next(iter(hosts))}; treat the picture as "
-                    "single-source until a second publisher corroborates it.")
+        gaps.append(f"Every signal was delivered by {next(iter(hosts))}; "
+                    "a delivery host is not necessarily the original publisher.")
+    if evidence["multi_item_stories"]:
+        gaps.append(f"{evidence['multi_item_stories']} story group(s) contain multiple signals; "
+                    "syndicated or duplicated coverage is not independent corroboration.")
+    if evidence["unresolved_links"]:
+        gaps.append(f"{evidence['unresolved_links']} signal(s) have unresolved or missing article "
+                    "links; their publisher hosts cannot be established from stored links.")
     failing = conn.execute(
         "SELECT feed_url, last_status, last_error FROM feed_state "
         "WHERE last_error IS NOT NULL AND last_error != ''").fetchall()
     for feed_url, status, error in failing:
         gaps.append(f"Source {_source(feed_url)} failed its last fetch"
                     + (f" (HTTP {status})" if status else "") + f": {error}")
-    if not gaps:
-        gaps.append("No material gaps detected in the stored evidence.")
+    if not gaps and items:
+        gaps.append("No automatic evidence-gap flags; independent confirmation is not established.")
     if not items:
         gaps.append("The dossier has no signals yet, so there is nothing to corroborate.")
     if not dossier["summary"]:
@@ -610,9 +667,17 @@ def dossier_changes(conn, dossier_id, snapshot=None):
         # An unreadable snapshot says nothing about the past. Reporting every signal as new
         # would be a guess; treating the export as the first one is not.
         return {**empty, "since": snapshot["created_at"] or "", "path": snapshot["path"] or ""}
-    before_items = set(previous.get("items") or [])
-    before_notes = {int(value) for value in (previous.get("notes") or [])}
-    before_actions = {str(key): value for key, value in (previous.get("actions") or {}).items()}
+    if (not isinstance(previous, dict)
+            or not isinstance(previous.get("items"), list)
+            or not isinstance(previous.get("notes"), list)
+            or not isinstance(previous.get("actions"), dict)
+            or not all(isinstance(value, str) for value in previous["items"])
+            or not all(isinstance(value, int) for value in previous["notes"])
+            or not all(isinstance(value, str) for value in previous["actions"].values())):
+        return {**empty, "since": snapshot["created_at"] or "", "path": snapshot["path"] or ""}
+    before_items = set(previous["items"])
+    before_notes = set(previous["notes"])
+    before_actions = previous["actions"]
 
     new_signals = []
     for item in dossier_items(conn, dossier_id):
@@ -690,24 +755,28 @@ def dossier_report(conn, ident, developments=5, since_last_export=False):
                if (since_last_export or latest_snapshot(conn, dossier["id"]))
                else None)
 
-    def stamp(item):
-        return item.get("published") or item.get("seen_at") or ""
-
-    ordered = sorted(items, key=stamp)
-    def ranked_key(item):
-        severity = {"high": 0, "medium": 1, "low": 2}.get(
-            (item.get("severity") or "none").lower(), 3)
-        parsed = hbnscan._parse_timestamp(stamp(item)) or datetime.min
-        return (severity, -parsed.timestamp())
-
-    ranked = sorted(items, key=ranked_key)
+    ordered = sorted(items, key=lambda item: (_report_stamp(item) is None,
+                                              _report_stamp(item) or datetime.max,
+                                              item["item_hash"]))
+    # Avoid datetime.min.timestamp(), which can fail on Windows.
+    ranked = sorted(items, key=lambda item: item["item_hash"])
+    ranked.sort(key=lambda item: _report_stamp(item) or datetime.min, reverse=True)
+    ranked.sort(key=lambda item: {"high": 0, "medium": 1, "low": 2}.get(
+        (item.get("severity") or "none").lower(), 3))
+    evidence = _story_evidence(items)
+    distinct_ranked, seen_clusters = [], set()
+    for item in ranked:
+        key = item.get("cluster_key") or "row:" + item["item_hash"]
+        if key not in seen_clusters:
+            distinct_ranked.append(item)
+            seen_clusters.add(key)
     counts = {"signals": len(items), "high": 0, "medium": 0, "low": 0,
               "undated": 0, "deep_read": 0}
     for item in items:
         severity = (item.get("severity") or "none").lower()
         if severity in counts:
             counts[severity] += 1
-        if not (item.get("published") or "").strip():
+        if _publication_stamp(item) is None:
             counts["undated"] += 1
         if item.get("deep_read"):
             counts["deep_read"] += 1
@@ -719,8 +788,8 @@ def dossier_report(conn, ident, developments=5, since_last_export=False):
     timeline = []
     for item in ordered:
         timeline.append({
-            "date": (item.get("published") or "")[:10] or (item.get("seen_at") or "")[:10],
-            "undated": not (item.get("published") or "").strip(),
+            "date": _report_stamp(item).date().isoformat() if _report_stamp(item) else "",
+            "undated": _publication_stamp(item) is None,
             "freshness": item.get("freshness", ""),
             "severity": item.get("severity") or "none",
             "category": item.get("category") or "other",
@@ -740,8 +809,9 @@ def dossier_report(conn, ident, developments=5, since_last_export=False):
         "generated": _now(),
         "changes": changes,
         "counts": counts,
-        "span": {"first": timeline[0]["date"] if timeline else "",
-                 "last": timeline[-1]["date"] if timeline else ""},
+        "span": {"first": next((entry["date"] for entry in timeline if entry["date"]), ""),
+                 "last": next((entry["date"] for entry in reversed(timeline) if entry["date"]), "")},
+        "story_evidence": evidence,
         "sources": [{"host": host, "count": count}
                     for host, count in sorted(sources.items(), key=lambda kv: (-kv[1], kv[0]))],
         "developments": [
@@ -749,17 +819,18 @@ def dossier_report(conn, ident, developments=5, since_last_export=False):
              "title": item.get("title") or "",
              "link": hbnscan.safe_link(item.get("link")),
              "source": item.get("source", ""),
-             "published": (item.get("published") or "")[:10],
-             "undated": not (item.get("published") or "").strip(),
+             "published": (_publication_stamp(item).date().isoformat()
+                           if _publication_stamp(item) else ""),
+             "undated": _publication_stamp(item) is None,
              "freshness": item.get("freshness", ""),
              "assessment": hbnscan.strip_provenance(item.get("summary")),
              "action": item.get("action") or ""}
-            for item in ranked[:max(1, int(developments))]
+            for item in distinct_ranked[:max(1, int(developments))]
         ],
         "timeline": timeline,
         "notes": [{"body": note["body"], "created_at": note["created_at"]} for note in notes],
         "actions": actions,
-        "gaps": _report_gaps(conn, items, dossier),
+        "gaps": _report_gaps(conn, items, dossier, evidence),
     }
 
 
@@ -777,7 +848,7 @@ def render_report_markdown(report):
     lines = [
         f"# Dossier: {_md(dossier['name'])}",
         f"_Generated {report['generated'].replace('T', ' ')} · {counts['signals']} signal(s) · "
-        f"{len(report['sources'])} publisher(s)_",
+        f"{len(report['sources'])} delivery source(s)_",
         "",
     ]
     if dossier["status"] != "open":
@@ -822,15 +893,28 @@ def render_report_markdown(report):
     lines.extend(["## At a glance", ""])
     lines.append(f"- **{counts['signals']}** signal(s) · {counts['high']} high · "
                  f"{counts['medium']} medium · {counts['low']} low")
-    lines.append(f"- **{counts['deep_read']}** verified against the linked article · "
+    lines.append(f"- **{counts['deep_read']}** linked articles read · "
                  f"**{counts['undated']}** undated")
     if report["span"]["first"]:
         lines.append(f"- Coverage: {report['span']['first']} → {report['span']['last']}")
     if report["sources"]:
-        lines.append("- Publishers: " + ", ".join(
+        lines.append("- Delivery sources: " + ", ".join(
             f"{_md(entry['host'])} ({entry['count']})" for entry in report["sources"]))
     lines.append("")
 
+    evidence = report.get("story_evidence")
+    if evidence:
+        lines.extend(["## Story coverage", "",
+                      f"- {evidence['story_count']} story group(s); "
+                      f"{evidence['multi_item_stories']} with multiple signals; "
+                      f"{evidence['multi_host_stories']} with multiple article hosts.",
+                      _md(evidence["caveat"]), ""])
+        for story in evidence["stories"]:
+            if story["signals"] > 1:
+                hosts = ", ".join(story["article_hosts"]) or "unknown"
+                lines.append(f"- {_md(story['title'])}: {story['signals']} signals; "
+                             f"article hosts: {_md(hosts)}")
+        lines.append("")
     lines.extend(["## Key developments", ""])
     if not report["developments"]:
         lines.append("_No signals collected yet._")
@@ -957,6 +1041,18 @@ def render_report_html(report, source_path=None, download_name=""):
         for action in report["actions"]) or "<li><em>No actions recorded.</em></li>"
     gaps = "".join(f"<li>{esc(gap)}</li>" for gap in report["gaps"])
     sources = ", ".join(f"{esc(entry['host'])} ({entry['count']})" for entry in report["sources"])
+    evidence = report.get("story_evidence")
+    coverage_html = ""
+    if evidence:
+        rows = "".join(
+            f"<li>{esc(story['title'])}: {story['signals']} signals; article hosts: "
+            f"{esc(', '.join(story['article_hosts']) or 'unknown')}</li>"
+            for story in evidence["stories"] if story["signals"] > 1)
+        coverage_html = (
+            f"<section><h2>Story coverage</h2><p>{evidence['story_count']} story group(s); "
+            f"{evidence['multi_item_stories']} with multiple signals; "
+            f"{evidence['multi_host_stories']} with multiple article hosts.</p>"
+            f"<p>{esc(evidence['caveat'])}</p><ul>{rows}</ul></section>")
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{esc(dossier['name'])} — dossier</title>
 <style>
@@ -986,6 +1082,7 @@ def render_report_html(report, source_path=None, download_name=""):
 <section><h2>Scope</h2><p>{esc(dossier['summary']) or '<em>No scope note yet.</em>'}</p>
 <p class="meta">Coverage {esc(report['span']['first'])} → {esc(report['span']['last'])}
 {('· ' + sources) if sources else ''}</p></section>
+{coverage_html}
 <section><h2>Key developments</h2>{''.join(development_cards) or '<p><em>No signals yet.</em></p>'}</section>
 <section><h2>Timeline</h2><ul>{timeline or '<li><em>Nothing yet.</em></li>'}</ul></section>
 <section><h2>Open questions</h2><ul>{notes}</ul></section>
