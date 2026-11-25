@@ -30,7 +30,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+ASSETS = ROOT / "assets"
+sys.path.insert(0, str(SRC))
 
 import hbicons  # noqa: E402
 from hbversion import APP_NAME, VERSION  # noqa: E402
@@ -116,13 +118,13 @@ def stage_runtime(destination, with_docs=True):
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
     for name in RUNTIME_MODULES:
-        shutil.copy2(ROOT / name, destination / name)
+        shutil.copy2(SRC / name, destination / name)
     for name in RUNTIME_ASSETS:
-        source = ROOT / name
+        source = (ASSETS if name.endswith(".example") else ROOT) / name
         if source.is_file():
             shutil.copy2(source, destination / name)
-    if (ROOT / "profiles").is_dir():
-        shutil.copytree(ROOT / "profiles", destination / "profiles", dirs_exist_ok=True)
+    if (ASSETS / "profiles").is_dir():
+        shutil.copytree(ASSETS / "profiles", destination / "profiles", dirs_exist_ok=True)
     if with_docs:
         docs = destination / "docs"
         docs.mkdir(exist_ok=True)
@@ -422,7 +424,7 @@ def build_frozen():
     out = work / "dist"
     # Keep any PYTHONPATH the caller set (that is where PyInstaller itself may live).
     pythonpath = os.pathsep.join(
-        part for part in (str(ROOT), os.environ.get("PYTHONPATH", "")) if part)
+        part for part in (str(SRC), os.environ.get("PYTHONPATH", "")) if part)
     run(pyinstaller_command() + [
         PACKAGING / "pyinstaller" / f"{SLUG}.spec",
         "--noconfirm", "--clean", "--log-level", "WARN",
@@ -617,7 +619,7 @@ def build_wasm():
     out = DIST / f"{SLUG}-{VERSION}-wasm"
     clean(out)
     for name in WASM_MODULES:
-        shutil.copy2(ROOT / name, out / name)
+        shutil.copy2(SRC / name, out / name)
     shutil.copy2(ROOT / "wasm" / "index.html", out / "index.html")
     shutil.copy2(ROOT / "wasm" / "coi-serviceworker.js", out / "coi-serviceworker.js")
     (out / "icon-192.png").write_bytes(hbicons.png_bytes(192))
@@ -687,7 +689,7 @@ def main(argv=None):
         for name in sorted(targets()):
             print(name)
         return 0
-    if not (ROOT / "hbnscan.py").is_file():
+    if not (SRC / "hbnscan.py").is_file():
         raise SystemExit("[build] run this from a checkout of the repository")
     log(f"{APP_NAME} {VERSION} on {platform_tag()}")
     if args.target == "all":

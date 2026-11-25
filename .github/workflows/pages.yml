@@ -8,10 +8,10 @@ on:
     branches: [main]
     paths:
       - "wasm/**"
-      - "hbwasm.py"
-      - "hbnscan.py"
-      - "hbsimilar.py"
-      - "hbversion.py"
+      - "src/hbwasm.py"
+      - "src/hbnscan.py"
+      - "src/hbsimilar.py"
+      - "src/hbversion.py"
       - "packaging/build.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:

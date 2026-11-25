@@ -25,11 +25,11 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY hbversion.py hbnscan.py hbworkspace.py hbconfig.py hbnconfig_gui.py hbnscan_gui.py \
-     hbntui.py hbnweb.py hbsimilar.py hbicons.py hbwasm.py ./
-COPY profiles ./profiles
+COPY src/*.py ./
+COPY assets/profiles ./profiles
 COPY docs ./docs
-COPY feeds.txt.example watchlist.txt.example topics.txt.example .env.example LICENSE README.md ./
+COPY assets/feeds.txt.example assets/watchlist.txt.example assets/topics.txt.example assets/.env.example ./
+COPY LICENSE README.md ./
 COPY packaging/docker/entrypoint.sh /usr/local/bin/hb-briefing
 
 RUN chmod 0755 /usr/local/bin/hb-briefing \

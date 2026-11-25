@@ -298,7 +298,7 @@ Prefer to do it by hand:
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # optional: add LLM_API_KEY for the AI stages
+cp assets/.env.example .env          # optional: add LLM_API_KEY for the AI stages
 python3 hbnscan_gui.py        # or hbnscan.py / --serve / --tui
 ```
 
@@ -340,3 +340,6 @@ is intact.
 - Upgrades run schema migrations automatically and take a timestamped backup first
   (`watchdog_state-backup-*.db` beside the database).
 - Uninstalling removes program files only. Delete the state directory to remove your data.
+
+
+For a flat release archive rather than a Git checkout, use `.env.example` directly instead of `assets/.env.example`. The root-level CLI and desktop entry points remain compatible.

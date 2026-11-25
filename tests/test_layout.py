@@ -105,7 +105,7 @@ class InstalledLayoutTest(unittest.TestCase):
 
     def test_a_source_checkout_keeps_state_beside_the_code(self):
         with mock.patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(hbnscan.default_home(), hbnscan.APP_DIR)
+            self.assertEqual(hbnscan.default_home(), hbnscan.SOURCE_ROOT)
 
 
 if __name__ == "__main__":

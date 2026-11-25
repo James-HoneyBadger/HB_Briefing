@@ -23,7 +23,7 @@ story group.
 
 ```bash
 python3 hbnscan.py --serve                       # http://127.0.0.1:8765/
-python3 hbnweb.py --port 9000 --token my-secret  # or run it directly
+python3 src/hbnweb.py --port 9000 --token my-secret  # or run it directly
 ```
 
 Flags: `--host` (default `127.0.0.1`), `--port` (8765), `--token` (default: generated per run),
@@ -110,7 +110,7 @@ settings it never touched.
 
 ```bash
 python3 hbnscan.py --tui
-python3 hbntui.py --db /path/to/watchdog_state.db
+python3 src/hbntui.py --db /path/to/watchdog_state.db
 ```
 
 A full-screen curses interface: signal table with severity colours, filters, search, a detail
@@ -213,3 +213,6 @@ menu in the schedule bar. Terminal: colours follow the terminal's own palette.
 | Browser opens the wrong port | `--port` was taken; read the URL printed in the terminal |
 | TUI looks garbled | Terminal too small or `TERM` unset; resize, or run with `TERM=xterm-256color` |
 | TUI exits immediately | `curses` is missing (`python3 -c "import curses"`), or another process holds the scan lock |
+
+
+The `src/` prefix applies to Git checkouts; in a flat release archive, omit it. `python3 hbnscan.py --serve` and `--tui` continue to work in both layouts.

@@ -27,8 +27,8 @@ class EntrypointTest(unittest.TestCase):
         self.app.mkdir()
         self.data.mkdir()
         for name in MODULES:
-            shutil.copy2(ROOT / name, self.app / name)
-        shutil.copytree(ROOT / "profiles", self.app / "profiles")
+            shutil.copy2(ROOT / "src" / name, self.app / name)
+        shutil.copytree(ROOT / "assets" / "profiles", self.app / "profiles")
         (self.app / "feeds.txt.example").write_text("", encoding="utf-8")
         self.env = {"HB_APP_DIR": str(self.app), "HB_BRIEFING_HOME": str(self.data),
                     "PATH": "/usr/local/bin:/usr/bin:/bin", "PYTHONPATH": str(self.app),

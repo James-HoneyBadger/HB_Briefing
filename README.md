@@ -434,7 +434,7 @@ installs `requirements.txt` into it, and seeds `.env`, `feeds.txt`, `watchlist.t
 
 Manual equivalent:
 
-1. `cp .env.example .env` and, optionally, add an LLM key. Without one the tool runs offline.
+1. `cp assets/.env.example .env` (in a flat release archive, use `cp .env.example .env`) and, optionally, add an LLM key. Without one the tool runs offline.
 2. `pip install -r requirements.txt` (Tkinter ships with most Python builds; if not:
    Debian/Ubuntu `sudo apt install python3-tk`, Arch `sudo pacman -S tk`,
    Fedora `sudo dnf install python3-tkinter`).
@@ -453,3 +453,17 @@ Manual equivalent:
 | [Web App and Terminal UI](./docs/WEB-APP.md) | The browser and terminal front ends, the HTTP API, scheduling and themes from each |
 
 HB Briefing is MIT licensed and uses only the Python standard library plus `python-dotenv`.
+
+
+## Repository layout
+
+| Directory | Contents |
+| --- | --- |
+| `src/` | Python engine, desktop, web, terminal and browser implementations |
+| `assets/` | Bundled configuration examples and domain profiles |
+| `docs/` | User, installation and technical documentation |
+| `tests/` | Automated regression and integration tests |
+| `packaging/` | Distribution recipes, icons and build tooling |
+| `wasm/` | Browser application shell |
+
+The root-level `hbnscan.py` and `hbnscan_gui.py` are compatibility entry points; `start.sh` and existing CLI commands still work. Existing checkout-local data stays at the repository root; the runtime `profiles/` directory is ignored by Git. Packaged installations retain their existing flat runtime layout. In a Git checkout, run tests with `PYTHONPATH=src python3 -m unittest discover -s tests -v`.

@@ -14,15 +14,17 @@ SPEC_DIR = Path(SPECPATH).resolve()
 ROOT = SPEC_DIR.parents[1]
 ICON_DIR = ROOT / "packaging" / "icons"
 
-sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+ASSETS = ROOT / "assets"
+sys.path.insert(0, str(SRC))
 from hbversion import APP_NAME, VERSION  # noqa: E402
 
 DATAS = [
-    (str(ROOT / "feeds.txt.example"), "."),
-    (str(ROOT / "watchlist.txt.example"), "."),
-    (str(ROOT / "topics.txt.example"), "."),
-    (str(ROOT / ".env.example"), "."),
-    (str(ROOT / "profiles"), "profiles"),
+    (str(ASSETS / "feeds.txt.example"), "."),
+    (str(ASSETS / "watchlist.txt.example"), "."),
+    (str(ASSETS / "topics.txt.example"), "."),
+    (str(ASSETS / ".env.example"), "."),
+    (str(ASSETS / "profiles"), "profiles"),
     (str(ROOT / "docs"), "docs"),
     (str(ROOT / "LICENSE"), "."),
 ]
@@ -31,7 +33,7 @@ HIDDEN = ["hbworkspace", "hbnweb", "hbntui", "hbconfig", "hbnconfig_gui", "hbsim
           "hbicons", "hbversion"]
 
 common = {
-    "pathex": [str(ROOT)],
+    "pathex": [str(SRC)],
     "datas": DATAS,
     "hiddenimports": HIDDEN,
     "excludes": ["pytest", "IPython", "matplotlib", "numpy", "PIL", "pandas"],

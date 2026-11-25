@@ -104,7 +104,7 @@ your package manager, creates `.venv` and checks that it is actually usable (a b
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 python3 -m pip install -r requirements.txt
-cp .env.example .env            # optional; edit for AI and mail
+cp assets/.env.example .env            # optional; edit for AI and mail
 python3 hbnscan.py             # first scan
 python3 -m hbnscan_gui         # desktop UI
 ```
@@ -1305,3 +1305,6 @@ and the locks are per-directory, so instances do not interfere.
 | **Signal** | A flagged item |
 | **Triage** | Stage-1 screening that produces a structured verdict |
 | **Verdict** | The structured judgement: flag, category, severity, confidence, facts, entities |
+
+
+For a flat release archive rather than a Git checkout, use `.env.example` directly instead of `assets/.env.example`. The root-level CLI and desktop entry points remain compatible.

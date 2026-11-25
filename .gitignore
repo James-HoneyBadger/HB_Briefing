@@ -8,6 +8,7 @@ watchdog_state.db-shm
 latest_report.md
 /settings.json
 /profile.json
+/profiles/
 feeds.txt
 watchlist.txt
 topics.txt

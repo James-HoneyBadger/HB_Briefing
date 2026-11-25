@@ -6,4 +6,4 @@ Key developments select one representative per existing story group, ranked by s
 
 No new dependencies, database migrations, model calls or outbound network requests are introduced. Article hosts are not validated ownership identities.
 
-Verification: python -m unittest discover -s tests -v.
+Verification: PYTHONPATH=src python -m unittest discover -s tests -v.

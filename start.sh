@@ -10,6 +10,8 @@ cd "$PROJECT_DIR"
 
 VENV_DIR="$PROJECT_DIR/.venv"
 REQUIREMENTS="$PROJECT_DIR/requirements.txt"
+ASSETS_DIR="$PROJECT_DIR"
+[ ! -d "$PROJECT_DIR/assets" ] || ASSETS_DIR="$PROJECT_DIR/assets"
 
 info() { printf '[INFO] %s\n' "$*"; }
 die()  { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
@@ -75,8 +77,8 @@ for pair in ".env:.env.example" "feeds.txt:feeds.txt.example" \
             "watchlist.txt:watchlist.txt.example" "topics.txt:topics.txt.example"; do
     target="${pair%%:*}"
     example="${pair##*:}"
-    if [ ! -f "$PROJECT_DIR/$target" ] && [ -f "$PROJECT_DIR/$example" ]; then
-        cp "$PROJECT_DIR/$example" "$PROJECT_DIR/$target"
+    if [ ! -f "$PROJECT_DIR/$target" ] && [ -f "$ASSETS_DIR/$example" ]; then
+        cp "$ASSETS_DIR/$example" "$PROJECT_DIR/$target"
         info "Created $target from $example"
     fi
 done

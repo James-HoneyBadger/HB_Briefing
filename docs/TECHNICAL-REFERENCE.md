@@ -1795,11 +1795,11 @@ worth repeating after a change include:
 
 | Target | How |
 | --- | --- |
-| Automated regression suite | `python3 -m unittest discover -s tests -v` (engine, delivery, workspace, web API, TUI paging) |
+| Automated regression suite | `PYTHONPATH=src python3 -m unittest discover -s tests -v` (engine, delivery, workspace, web API, TUI paging) |
 | Lint | `python3 -m ruff check .` (rules `E4,E7,E9,F`, configured in `pyproject.toml`) |
-| Coverage report | `python3 -m coverage run -m unittest discover -s tests && python3 -m coverage report -m` |
+| Coverage report | `PYTHONPATH=src python3 -m coverage run -m unittest discover -s tests && python3 -m coverage report -m` |
 | Desktop smoke test | `xvfb-run -a python tests/gui_smoke.py` (skips without Tk or a display) |
-| Imports and syntax | `python3 -m py_compile hbnscan.py hbnscan_gui.py hbnweb.py hbntui.py` |
+| Imports and syntax | `python3 -m py_compile src/*.py hbnscan.py hbnscan_gui.py` |
 | Provider/auth | `python3 hbnscan.py --check` (one live call; prints profile, model, verdict, usage) |
 | Profile correctness | For each file in `profiles/`: set `WATCHDOG_PROFILE`, `apply_profile()`, assert `CORE_CATEGORIES ⊆ CATEGORIES`, that a domain-typical headline lands in the expected category at ≥ `medium`, and that an off-domain headline scores `none` |
 | Topic/target merge | Point `TOPICS_PATH`/`WATCHLIST_PATH` at a temp dir, assert profile-only defaults exist with no files, that a `topics.txt` line replaces a profile topic's grade, that duplicates collapse, and that a profile target matches with an empty `watchlist.txt` |
@@ -1811,7 +1811,7 @@ worth repeating after a change include:
 | GUI filters follow the profile | Walk the main window for the `OptionMenu` whose entries include `other`, switch profile, call `_rebuild_ui()`, assert the entries are now the new profile's categories |
 | GUI settings ordering | Monkeypatch `set_api_key`/`set_llm_config`, change profile **and** theme **and** type a key in one Save, assert all three were applied (the appearance branch returns early) |
 | Feed parser shapes | `_parse_feed` on RSS 2.0, namespaced Atom, Atom without the namespace, RDF with a default namespace, an empty channel, and a DTD document; assert 1 item each except the last two |
-| Profile path resolution | `chdir` elsewhere, set `WATCHDOG_PROFILE=profiles/<name>.json`, assert it resolves under `APP_DIR` |
+| Profile path resolution | `chdir` elsewhere, set `WATCHDOG_PROFILE=profiles/<name>.json`, assert it resolves from the bundled `ASSET_DIR` |
 | Config durability | Write a settings/env file through `write_atomic()` and assert no `.*.tmp` remains and the content matches |
 
 Regression hazards seen in practice, worth re-checking whenever the matching area changes:
@@ -1931,3 +1931,8 @@ Exit codes: `0` success, `1` AI/connection failure, `2` bad arguments or a valid
 | `latest_report.md` | most recent report | **no** |
 | `scan.lock`, `.hb-briefing-gui.lock` | mutual exclusion | **no** (`*.lock`) |
 | `docs/` | these documents, including `WEB-APP.md` for the browser and terminal front ends | yes |
+
+
+### Git checkout layout
+
+Implementations are in `src/`, bundled templates and profiles in `assets/`, and the root CLI and desktop Python files are compatibility entry points. `SOURCE_ROOT` preserves existing checkout-local state. Distribution builds stage a flat runtime payload, as before.

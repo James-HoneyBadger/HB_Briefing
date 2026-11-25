@@ -130,7 +130,7 @@ class ShippedProfilesTest(unittest.TestCase):
     """Guards the packs that ship in profiles/: one bad URL is a broken first impression."""
 
     def test_every_shipped_profile_has_a_usable_pack(self):
-        folder = Path(__file__).resolve().parents[1] / "profiles"
+        folder = Path(__file__).resolve().parents[1] / "assets" / "profiles"
         checked = 0
         for path in sorted(folder.glob("*.json")):
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -145,7 +145,7 @@ class ShippedProfilesTest(unittest.TestCase):
         self.assertEqual(checked, 10, "expected ten shipped profiles with starter packs")
 
     def test_the_packs_are_not_all_the_same(self):
-        folder = Path(__file__).resolve().parents[1] / "profiles"
+        folder = Path(__file__).resolve().parents[1] / "assets" / "profiles"
         packs = {}
         for path in sorted(folder.glob("*.json")):
             data = json.loads(path.read_text(encoding="utf-8"))

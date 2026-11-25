@@ -58,7 +58,7 @@ packaging/docker/entrypoint.sh   web | daemon | scan | cli | tui | dossier | she
 
 ## Rules that keep packages correct
 
-1. **One version.** `hbversion.py` is the single source; `build.py` reads it and the RPM spec
+1. **One version.** `src/hbversion.py` is the single source; `build.py` reads it and the RPM spec
    must agree. Bump it, then retag.
 2. **Code, assets and state are three different directories.** The frozen builds and the distro
    packages set `HB_BRIEFING_HOME` (or rely on the default per-user directory); bundled examples

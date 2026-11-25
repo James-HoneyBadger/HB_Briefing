@@ -38,7 +38,7 @@ class VersionTest(unittest.TestCase):
 
 class PayloadTest(unittest.TestCase):
     def test_every_runtime_module_is_declared_for_packaging(self):
-        modules = {path.name for path in ROOT.glob("hb*.py")}
+        modules = {path.name for path in (ROOT / "src").glob("hb*.py")}
         self.assertTrue(modules, "no runtime modules found")
         declared = set(build.RUNTIME_MODULES) | set(build.BROWSER_ONLY)
         missing = modules - declared
@@ -50,11 +50,11 @@ class PayloadTest(unittest.TestCase):
         self.assertIn("hbwasm.py", build.WASM_MODULES)
         for name in ("hbnscan.py", "hbsimilar.py", "hbversion.py"):
             self.assertIn(name, build.WASM_MODULES)
-        self.assertTrue((ROOT / build.WASM_MODULES[0]).is_file())
+        self.assertTrue((ROOT / "src" / build.WASM_MODULES[0]).is_file())
 
     def test_declared_modules_exist(self):
         for name in build.RUNTIME_MODULES:
-            self.assertTrue((ROOT / name).is_file(), f"{name} is declared but missing")
+            self.assertTrue((ROOT / "src" / name).is_file(), f"{name} is declared but missing")
 
     def test_the_source_tarball_carries_what_the_distro_recipes_read(self):
         self.assertIn("feeds.txt.example", build.RUNTIME_ASSETS)

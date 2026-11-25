@@ -15,7 +15,8 @@ packaging/icons
 feeds.txt
 watchlist.txt
 topics.txt
-profiles/my-*.json
+profiles/
+assets/profiles/my-*.json
 latest_report.md
 *.lock
 docs/INSTRUCTIONS.md
