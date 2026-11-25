@@ -3543,6 +3543,7 @@ def record_feed_result(conn, url, ok, status=None, error="", new_items=0):
 
 def run_scan(log_callback=print, cancel=None):
     """Run one scan, guarded against a concurrent scan in another process."""
+    log_callback(f"  grading: {describe_grading_mode()}")
     ensure_data_files(log_callback)
     lock = acquire_lock(HOME_DIR / "scan.lock")
     if lock is None:
@@ -3624,9 +3625,6 @@ def _prepare_scan(log_callback):
                  f"- profile {APP_NAME} "
                  f"({source.name if source.exists() else 'built-in default'}), "
                  f"{len(topics)} topic(s), {len(load_watchlist())} target rule(s)")
-    # Which mode is grading right now, on the first line of every scan: the difference
-    # between a heuristic verdict and a model one is the first thing a new user needs to know.
-    log_callback(f"  grading: {describe_grading_mode()}")
     since = _parse_date(settings["feed_since"])
     until = _parse_date(settings["feed_until"])
     if since or until:

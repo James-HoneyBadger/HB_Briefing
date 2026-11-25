@@ -6,6 +6,7 @@ image itself is built in CI; this covers the part that is easy to get wrong.
 """
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,7 +31,8 @@ class EntrypointTest(unittest.TestCase):
         shutil.copytree(ROOT / "profiles", self.app / "profiles")
         (self.app / "feeds.txt.example").write_text("", encoding="utf-8")
         self.env = {"HB_APP_DIR": str(self.app), "HB_BRIEFING_HOME": str(self.data),
-                    "PATH": "/usr/local/bin:/usr/bin:/bin", "PYTHONPATH": str(self.app)}
+                    "PATH": "/usr/local/bin:/usr/bin:/bin", "PYTHONPATH": str(self.app),
+                    "HB_PYTHON": sys.executable}
 
     def run_entrypoint(self, *args, timeout=120):
         return subprocess.run([str(ENTRYPOINT), *args], capture_output=True, text=True,
