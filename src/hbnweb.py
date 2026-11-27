@@ -109,8 +109,12 @@ def _decodable(value, fallback):
         return fallback
 
 
-def _signal_payload(row):
-    """One row, JSON-safe, with provenance and freshness separated from the raw text."""
+def _signal_payload(row, cluster=None):
+    """One row, JSON-safe, with provenance and freshness separated from the raw text.
+
+    `cluster` is the story context `_signal_payload` needs to say whether a development is
+    new and how many delivery hosts carried it; without it the explanation says so.
+    """
     return {
         "hash": row["item_hash"],
         "title": row["title"] or "",
@@ -132,6 +136,9 @@ def _signal_payload(row):
         "detected": row["seen_at"] or "",
         "source": urlparse(row["feed_url"] or "").hostname or "",
         "cluster": row["cluster_key"] or "",
+        # The axes behind the priority, so the single label can be opened up instead of
+        # taken on faith.
+        "explain": hbnscan.explain_assessment(row, cluster),
     }
 
 
@@ -152,7 +159,10 @@ def list_signals(filters):
         rows, total = hbnscan.select_signals(
             conn, filters, order=filters.get("order"),
             limit=filters.get("limit"), offset=filters.get("offset") or 0)
-    return [_signal_payload(row) for row in rows], total
+        # One query for the whole page, rather than two per row.
+        coverage = hbnscan.cluster_coverage_map(
+            conn, [row["cluster_key"] if "cluster_key" in row.keys() else "" for row in rows])
+    return [_signal_payload(row, coverage.get(row["cluster_key"] or "")) for row in rows], total
 
 
 def cached_resolution(url):
@@ -172,7 +182,10 @@ def one_signal(item_hash):
             f"SELECT {columns} FROM seen_items WHERE item_hash = ?", (item_hash,)).fetchone()
     if not row:
         return None
-    payload = _signal_payload(row)
+    cluster_key = row["cluster_key"] or ""
+    with closing(_connect()) as conn:
+        coverage = hbnscan.cluster_coverage(conn, cluster_key)
+    payload = _signal_payload(row, coverage)
     payload["display_link"] = cached_resolution(payload["link"]) or payload["link"]
     try:
         with closing(_connect()) as conn:
@@ -921,6 +934,10 @@ __THEME_CSS__
   .detail dl { display:grid; grid-template-columns:90px 1fr; gap:4px 10px; margin:10px 0; }
   .detail dt { color:var(--muted); font-size:12px; }
   .detail dd { margin:0; }
+  .explain { margin-top:12px; padding:10px 12px; border:1px solid var(--line);
+             background:var(--bg-input); font-size:12px; }
+  .explain ul { margin:6px 0; padding-left:18px; }
+  .explain p { margin:6px 0 0; color:var(--muted); }
   .detail ul { margin:6px 0 0 18px; padding:0; }
   .tabs { display:flex; gap:6px; padding:10px 14px 0; }
   .tabs button { padding:5px 10px; font-size:12px; }
@@ -1263,6 +1280,24 @@ async function select(hash) {
     const ul = document.createElement("ul");
     for (const [kind, values] of ents) ul.append(esc("li", kind + ": " + values.join(", ")));
     pane.append(esc("div", "Entities"), ul);
+  }
+  if (sig.explain) {
+    // The axes behind the single priority label, each with the reason it was assigned.
+    // Colour never carries the meaning: the value is written out, and the reason is text.
+    const box = document.createElement("div");
+    box.className = "explain";
+    box.append(esc("div", "Why this priority: " + sig.explain.priority +
+                          " (" + sig.explain.precedence + ")"));
+    const axes = document.createElement("ul");
+    for (const entry of sig.explain.because) {
+      const value = entry.value === null || entry.value === undefined ? "" : " [" + entry.value + "]";
+      axes.append(esc("li", entry.axis + ": " + entry.detail + value));
+    }
+    box.append(axes);
+    if (sig.explain.notes && sig.explain.notes.length) {
+      box.append(esc("p", sig.explain.notes.join(" ")));
+    }
+    pane.append(box);
   }
   const links = document.createElement("p");
   const target = sig.display_link || sig.link;

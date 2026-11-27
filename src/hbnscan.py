@@ -337,6 +337,12 @@ SEEN_EXTRA_COLUMNS = (
     ("excerpt", "TEXT"),
 )
 
+# The breakdown behind a judgement, added in schema 7 so history explains itself.
+ASSESSMENT_HISTORY_EXTRA_COLUMNS = (
+    ("dimensions", "TEXT DEFAULT ''"),
+    ("rationale", "TEXT DEFAULT ''"),
+)
+
 FEED_STATE_EXTRA_COLUMNS = (
     ("last_success_at", "TEXT"),
     ("last_status", "INTEGER"),
@@ -354,7 +360,7 @@ SCAN_RUN_EXTRA_COLUMNS = (
 
 # Bumped when a step is added to _MIGRATIONS; stored in PRAGMA user_version so a database
 # can be upgraded exactly once. Additive column sync alone cannot backfill or index.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SOURCE_LAYERS = ("watchlist", "topic", "heuristic", "model")
 
@@ -1349,6 +1355,232 @@ def _priority_of(summary, category):
     return priority_of("", category, summary)
 
 
+# --------------------------------------------------------------------------- explanation
+#
+# A single severity label is convenient and unaccountable. These helpers keep the axes
+# separate so the reason behind a priority can be read back off the stored record:
+#
+#   relevance   how much this matches what the user asked to follow (declared intent first)
+#   urgency     how soon it matters, from publication age; undated is unknown, not recent
+#   impact      the severity tier the rubric assigned
+#   evidence    how much of the source we actually have (headline .. article with facts)
+#   novelty     first occurrence, or another outlet reporting a story already stored
+#   coverage    stored occurrences and distinct delivery hosts for the story
+#   confidence  model-reported confidence, explicitly NOT a probability of truth
+#
+# The numbers are heuristic 0..1 ranks used for ordering and display. They are not calibrated
+# probabilities, and no consumer should treat them as one. Every value carries a reason.
+
+RELEVANCE_BY_LAYER = {
+    "watchlist": (1.0, "a watchlist rule matched: declared intent"),
+    "topic": (0.8, "a standing topic matched: declared intent"),
+    "model": (0.5, "the model judged it relevant; inferred, not declared"),
+    "heuristic": (0.3, "offline keyword scoring; inferred, not declared"),
+}
+
+URGENCY_BANDS = (
+    (1, 0.9, "published today"),
+    (2, 0.75, "published yesterday"),
+    (4, 0.6, "published in the last few days"),
+    (8, 0.45, "published this week"),
+    (31, 0.25, "published this month"),
+    (366, 0.1, "published this year"),
+    (None, 0.05, "more than a year old"),
+)
+
+IMPACT_BY_SEVERITY = {
+    "high": (1.0, "the rubric calls this high impact"),
+    "medium": (0.6, "the rubric calls this medium impact"),
+    "low": (0.3, "the rubric calls this low impact"),
+    "none": (0.0, "no impact was assessed"),
+}
+
+
+def _reason_entry(axis, kind, detail, value):
+    return {"axis": axis, "kind": kind, "detail": detail, "value": value}
+
+
+def _matched_from_reason(reason):
+    """What decided the verdict, read back from the stored reason rather than re-derived.
+
+    Re-running today's watchlist against an old row would explain the row with rules that did
+    not exist when it was graded. The stored reason is the honest source.
+    """
+    text = (reason or "").strip()
+    if text.startswith("rule: "):
+        return "watchlist_rule", text[len("rule: "):]
+    if text.startswith("topic: "):
+        return "topic", text[len("topic: "):]
+    if text.startswith("core: "):
+        words = [word.strip() for word in text[len("core: "):].split(",") if word.strip()]
+        return "keywords", words
+    return ("reason", text) if text else ("", "")
+
+
+def _urgency_of(row):
+    published = row["published"] if "published" in row.keys() else ""
+    if not (published or "").strip():
+        return 0.4, "no publication date; recency is unknown, not recent"
+    days = published_age_days(published)
+    if days is None:
+        return 0.4, "publication date could not be parsed; recency is unknown"
+    for bound, score, detail in URGENCY_BANDS:
+        if bound is None or days < bound:
+            return score, detail
+    return 0.05, "more than a year old"
+
+
+def _evidence_of(row):
+    deep_read = bool(row["deep_read"]) if "deep_read" in row.keys() else False
+    facts = row["facts"] if "facts" in row.keys() else "[]"
+    try:
+        fact_count = len(json.loads(facts or "[]"))
+    except (TypeError, ValueError):
+        fact_count = 0
+    has_link = bool((row["link"] or "").strip()) if "link" in row.keys() else False
+    if deep_read and fact_count:
+        return 1.0, f"article read; {fact_count} quoted fact(s)"
+    if deep_read:
+        return 0.7, "article read, but no quoted facts were extracted"
+    if not has_link:
+        return 0.1, "no usable link; the verdict rests on the feed entry alone"
+    summary = row["excerpt"] if "excerpt" in row.keys() else ""
+    if (summary or "").strip():
+        return 0.4, "feed summary only; the article was not read"
+    return 0.2, "headline only; the article was not read"
+
+
+def _novelty_of(row, cluster):
+    summary = (row["summary"] or "") if "summary" in row.keys() else ""
+    if "[Deduped]" in summary:
+        return 0.1, "same story already assessed in this scan"
+    if not cluster or not cluster.get("first_seen_at"):
+        return 1.0, "story history not consulted"
+    first = cluster["first_seen_at"]
+    seen = (row["seen_at"] or "") if "seen_at" in row.keys() else ""
+    if seen and first and seen > first:
+        return 0.4, "another outlet reporting a story already stored"
+    return 1.0, "first stored occurrence of this story"
+
+
+def explain_assessment(row, cluster=None):
+    """The axes behind one assessment, with a reason for each and the priority they justify.
+
+    `cluster` is optional story context — `{"occurrences": n, "sources": n, "first_seen_at":
+    iso}` — supplied by a caller that has the connection. Without it, novelty assumes first
+    occurrence and coverage reports one, both of which are stated in the reasons rather than
+    silently implied.
+    """
+    layer = layer_of(row["source_layer"] if "source_layer" in row.keys() else "",
+                     row["summary"] if "summary" in row.keys() else "")
+    category = (row["category"] or "") if "category" in row.keys() else ""
+    severity = ((row["severity"] or "none") if "severity" in row.keys() else "none").lower()
+    priority = priority_of(layer, category, "")
+
+    because = []
+    relevance, relevance_why = RELEVANCE_BY_LAYER.get(layer, (0.0, "no relevance was assessed"))
+    kind, detail = _matched_from_reason(
+        row["verdict_reason"] if "verdict_reason" in row.keys() else "")
+    if kind:
+        because.append(_reason_entry("relevance", kind, detail, relevance))
+    because.append(_reason_entry("relevance", "layer", relevance_why, relevance))
+
+    urgency, urgency_why = _urgency_of(row)
+    because.append(_reason_entry("urgency", "publication_age", urgency_why, urgency))
+
+    impact, impact_why = IMPACT_BY_SEVERITY.get(severity, (0.0, f"unknown severity {severity!r}"))
+    because.append(_reason_entry("impact", "severity", impact_why, impact))
+
+    evidence, evidence_why = _evidence_of(row)
+    because.append(_reason_entry("evidence", "retrieval", evidence_why, evidence))
+
+    novelty, novelty_why = _novelty_of(row, cluster)
+    because.append(_reason_entry("novelty", "story", novelty_why, novelty))
+
+    sources = int((cluster or {}).get("sources") or 1)
+    occurrences = int((cluster or {}).get("occurrences") or 1)
+    because.append(_reason_entry(
+        "coverage", "delivery_hosts",
+        f"{occurrences} stored occurrence(s) from {sources} delivery host(s); "
+        "a delivery host is not a verified independent publisher",
+        sources))
+
+    confidence = row["confidence"] if "confidence" in row.keys() else None
+    confidence_value = None if confidence is None else round(float(confidence), 3)
+    because.append(_reason_entry(
+        "confidence", "model",
+        "model-reported confidence, not a probability of truth"
+        if confidence_value is not None else "no model confidence was recorded",
+        confidence_value))
+
+    return {
+        "priority": priority,
+        "layer": layer,
+        "precedence": ("declared intent" if layer in ("watchlist", "topic")
+                       else "inferred"),
+        "dimensions": {
+            "relevance": relevance,
+            "urgency": urgency,
+            "impact": impact,
+            "evidence": evidence,
+            "novelty": novelty,
+            "coverage": sources,
+            "confidence": confidence_value,
+        },
+        "because": because,
+        "notes": [
+            "0-1 values rank evidence for ordering and display; they are not probabilities",
+            "coverage counts delivery hosts, not verified independent publishers",
+        ],
+    }
+
+
+def cluster_coverage(conn, cluster_key):
+    """Stored occurrences, distinct delivery hosts and the first sighting for one story."""
+    if not cluster_key:
+        return {"occurrences": 1, "sources": 1, "first_seen_at": ""}
+    rows = conn.execute(
+        "SELECT feed_url, seen_at FROM seen_items WHERE cluster_key = ?",
+        (cluster_key,)).fetchall()
+    if not rows:
+        return {"occurrences": 1, "sources": 1, "first_seen_at": ""}
+    hosts = {(urlparse(row[0] or "").hostname or "").lower() for row in rows}
+    hosts.discard("")
+    stamps = [row[1] for row in rows if row[1]]
+    return {
+        "occurrences": len(rows),
+        "sources": max(1, len(hosts)),
+        "first_seen_at": min(stamps) if stamps else "",
+    }
+
+
+def cluster_coverage_map(conn, cluster_keys):
+    """`cluster_coverage` for many stories at once, so a page of signals costs one query."""
+    keys = sorted({key for key in cluster_keys if key})
+    if not keys:
+        return {}
+    placeholders = ",".join("?" * len(keys))
+    rows = conn.execute(
+        f"SELECT cluster_key, feed_url, seen_at FROM seen_items "
+        f"WHERE cluster_key IN ({placeholders})", keys).fetchall()
+    grouped = {}
+    for cluster_key, feed_url, seen_at in rows:
+        entry = grouped.setdefault(cluster_key, {"occurrences": 0, "hosts": set(),
+                                                "stamps": []})
+        entry["occurrences"] += 1
+        host = (urlparse(feed_url or "").hostname or "").lower()
+        if host:
+            entry["hosts"].add(host)
+        if seen_at:
+            entry["stamps"].append(seen_at)
+    return {
+        key: {"occurrences": entry["occurrences"],
+              "sources": max(1, len(entry["hosts"])),
+              "first_seen_at": min(entry["stamps"]) if entry["stamps"] else ""}
+        for key, entry in grouped.items()
+    }
+
+
 def _parse_timestamp(value):
     """Best-effort datetime for an ISO or RFC-822 stamp, normalised to local naive time."""
     raw = (value or "").strip()
@@ -1940,7 +2172,9 @@ def _create_schema(conn):
             confidence REAL,
             analysis TEXT DEFAULT '',
             reason TEXT DEFAULT '',
-            supersedes TEXT DEFAULT ''
+            supersedes TEXT DEFAULT '',
+            dimensions TEXT DEFAULT '',
+            rationale TEXT DEFAULT ''
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_assessment_signal "
@@ -2133,6 +2367,7 @@ def migrate(conn):
     _ensure_columns(conn, "seen_items", SEEN_EXTRA_COLUMNS)
     _ensure_columns(conn, "feed_state", FEED_STATE_EXTRA_COLUMNS)
     _ensure_columns(conn, "scan_runs", SCAN_RUN_EXTRA_COLUMNS)
+    _ensure_columns(conn, "assessment_history", ASSESSMENT_HISTORY_EXTRA_COLUMNS)
     # Indexes on added columns must come after the columns themselves exist.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_seen_cluster ON seen_items (cluster_key)")
     for step, label, apply_step in _MIGRATIONS:
@@ -2251,7 +2486,7 @@ def profile_identity():
 
 def record_assessment(conn, item_hash_value, *, link="", profile="", method="", layer="",
                       category="", severity="", flagged=0, confidence=0.0, analysis="",
-                      reason="", supersedes=None, evidence=()):
+                      reason="", supersedes=None, evidence=(), explanation=None):
     """Append one assessment to a signal's history and return it.
 
     Append-only by design: the previous judgement stays readable, and `supersedes` points at
@@ -2264,18 +2499,30 @@ def record_assessment(conn, item_hash_value, *, link="", profile="", method="", 
             "ORDER BY recorded_at DESC, rowid DESC LIMIT 1",
             (item_hash_value,)).fetchone()
         supersedes = row[0] if row else ""
+    if explanation is None:
+        stored = conn.execute("SELECT * FROM seen_items WHERE item_hash = ?",
+                              (item_hash_value,)).fetchone()
+        if stored is not None:
+            cluster_key = stored["cluster_key"] if "cluster_key" in stored.keys() else ""
+            explanation = explain_assessment(stored, cluster_coverage(conn, cluster_key))
+    explanation = explanation or {}
     record = hbrecords.assessment_for(
         item_hash_value, link, profile=profile or profile_identity(),
         method=method or layer or "heuristic", layer=layer, category=category,
         severity=severity, flagged=flagged, confidence=confidence, analysis=analysis,
-        reason=reason, supersedes=supersedes, evidence=evidence)
+        reason=reason, supersedes=supersedes, evidence=evidence,
+        dimensions=explanation.get("dimensions") or {},
+        rationale=explanation.get("because") or ())
     conn.execute(
         "INSERT OR REPLACE INTO assessment_history "
         "(id, item_hash, recorded_at, profile, method, layer, category, severity, flagged, "
-        "confidence, analysis, reason, supersedes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "confidence, analysis, reason, supersedes, dimensions, rationale) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (record.id, item_hash_value, record.recorded_at, record.profile, record.method,
          record.layer, record.category, record.severity, int(bool(record.flagged)),
-         record.confidence, record.analysis, record.reason, record.supersedes))
+         record.confidence, record.analysis, record.reason, record.supersedes,
+         json.dumps(record.dimensions, sort_keys=True) if record.dimensions else "",
+         json.dumps(list(record.rationale)) if record.rationale else ""))
     return record
 
 
@@ -2283,10 +2530,20 @@ def assessment_history(conn, item_hash_value, limit=50):
     """One signal's assessments, newest first; empty when none were recorded."""
     rows = conn.execute(
         "SELECT id, recorded_at, profile, method, layer, category, severity, flagged, "
-        "confidence, analysis, reason, supersedes FROM assessment_history "
-        "WHERE item_hash = ? ORDER BY recorded_at DESC, rowid DESC LIMIT ?",
+        "confidence, analysis, reason, supersedes, dimensions, rationale "
+        "FROM assessment_history WHERE item_hash = ? "
+        "ORDER BY recorded_at DESC, rowid DESC LIMIT ?",
         (item_hash_value, limit)).fetchall()
-    return [dict(row) for row in rows]
+    history = []
+    for row in rows:
+        entry = dict(row)
+        for column in ("dimensions", "rationale"):
+            try:
+                entry[column] = json.loads(entry.get(column) or "null")
+            except (TypeError, ValueError):
+                entry[column] = None
+        history.append(entry)
+    return history
 
 
 def signal_record(row):

@@ -150,6 +150,7 @@ with every edit, so this map names the entry points instead; follow the banner c
 | notifications | `_pending_alerts`, `send_notifications`, `send_test_notification` | per-item delivery state, SMTP/SMS |
 | export | `_export_filters`, `select_signals`, `export_rows`, `render_*`, `export_items` | one filter builder, all formats |
 | scheduling | `run_daemon` | headless loop |
+| explanation | `explain_assessment`, `cluster_coverage`, `cluster_coverage_map` | the axes behind a priority, with a reason for each |
 | dismissals / reclassify | `dismiss_item`, `reclassify` | auditable state transitions |
 | report | `_report_summary`, `_report_new_section`, `write_report` | `latest_report.md` |
 | CLI | `_apply_cli_schedule`, `__main__` dispatch | flags, and the `dossier`/`action`/`sources` hand-off |
@@ -825,7 +826,42 @@ model verdict (or heuristic)
 with `deep_read_item` re-entering the same two functions after stage 2, so declared intent is
 re-applied to the refined verdict.
 
-### 10.3 Ordering
+### 10.3 The explanation (`explain_assessment`)
+
+One label cannot carry seven different questions. `explain_assessment(row, cluster=None)`
+returns the axes separately, each with the reason it got its value, so the priority can be
+opened up instead of taken on faith:
+
+| Axis | Source | Notes |
+| --- | --- | --- |
+| `relevance` | the deciding layer | `watchlist` 1.0, `topic` 0.8, `model` 0.5, `heuristic` 0.3 — declared intent scores above inference by construction |
+| `urgency` | publication age | today 0.9 … over a year 0.05; **undated is 0.4 with "recency is unknown"**, never treated as fresh |
+| `impact` | the severity tier | high 1.0, medium 0.6, low 0.3, none 0.0 |
+| `evidence` | what was actually retrieved | article with quoted facts 1.0, article without 0.7, feed summary 0.4, headline only 0.2, no link 0.1 |
+| `novelty` | the story | first stored occurrence 1.0, another outlet on a stored story 0.4, in-scan dedupe 0.1 |
+| `coverage` | stored occurrences and delivery hosts | explicitly "a delivery host is not a verified independent publisher" |
+| `confidence` | the model's own number | labelled "not a probability of truth"; `None` when the heuristic graded it |
+
+The return value is `{"priority", "layer", "precedence", "dimensions", "because", "notes"}`.
+`priority` stays the four-value vocabulary the rest of the application already sorts by
+(`watchlist`, `topic`, `core`, `context`), and `precedence` says whether it came from declared
+intent or inference.
+
+**The explanation is read back from the stored reason, not re-derived from today's
+configuration.** A row graded six months ago by a watchlist rule that has since been renamed is
+explained with the rule that actually fired (`verdict_reason`), because re-running the current
+watchlist would produce a tidy answer that was never true.
+
+Story context comes from `cluster_coverage(conn, cluster_key)` or, for a page of signals,
+`cluster_coverage_map(conn, keys)` — one query per page rather than two per row. Without it the
+explanation says "story history not consulted" instead of assuming a first occurrence.
+
+The breakdown is stored with the assessment (`assessment_history.dimensions` and
+`.rationale`, schema 7), so history explains itself without re-deriving. The web API returns it
+as `explain` on every signal and the detail pane renders it. The values are heuristic ranks
+for ordering and display, never calibrated probabilities, and the response says so.
+
+### 10.4 Ordering
 
 `row_order(name)` builds the SQL `ORDER BY` clause from three pieces, each defined once:
 
@@ -858,7 +894,7 @@ which is why ordering follows a profile switch without a restart.
 `1y+`, or `undated` when the feed supplied no usable date. Nothing estimates a missing date;
 undated rows are counted and labelled in the grid, the API, the exports and the report.
 
-### 10.4 Cross-feed dedupe
+### 10.5 Cross-feed dedupe
 
 `_dedupe_key(title)` lower-cases and strips a trailing ` - Publisher` suffix; within one scan,
 a repeat key reuses the earlier verdict (with `[Deduped]` in the analysis, facts cleared,

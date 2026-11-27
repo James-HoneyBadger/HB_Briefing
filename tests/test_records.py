@@ -158,7 +158,9 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(signal.severity, "")
 
 
-class AssessmentHistoryTest(unittest.TestCase):
+class _HistoryCase(unittest.TestCase):
+    """Shared database and row fixtures for the assessment-history suites."""
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -184,6 +186,7 @@ class AssessmentHistoryTest(unittest.TestCase):
         self.conn.commit()
         return hbnscan.item_hash(title, "https://e.test/a")
 
+class AssessmentHistoryTest(_HistoryCase):
     def test_the_schema_carries_the_history_table(self):
         self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0],
                          hbnscan.SCHEMA_VERSION)
@@ -288,3 +291,174 @@ class AssessmentHistoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplanationTest(unittest.TestCase):
+    """The axes behind a priority, and the promise that declared intent wins."""
+
+    def row(self, **overrides):
+        base = {
+            "item_hash": "h1", "title": "Acme fined", "link": "https://e.test/a",
+            "feed_url": "https://feed.test/rss", "flagged": 1,
+            "summary": "[Watchlist] acme.", "seen_at": "2026-11-27T10:00:00",
+            "category": "policy", "severity": "high", "entities": "{}",
+            "facts": '["a fact"]', "confidence": 0.9, "deep_read": 1, "dismissed": 0,
+            "published": datetime.now().strftime("%Y-%m-%d"),
+            "source_layer": "watchlist", "verdict_reason": "rule: acme",
+            "cluster_key": "u:abc", "excerpt": "summary",
+        }
+        base.update(overrides)
+        return base
+
+    def test_every_axis_is_reported_separately(self):
+        explanation = hbnscan.explain_assessment(self.row())
+        dimensions = explanation["dimensions"]
+        for axis in ("relevance", "urgency", "impact", "evidence", "novelty", "coverage",
+                     "confidence"):
+            self.assertIn(axis, dimensions, axis)
+        self.assertEqual(len({entry["axis"] for entry in explanation["because"]}), 7)
+
+    def test_each_value_carries_a_reason(self):
+        explanation = hbnscan.explain_assessment(self.row())
+        for entry in explanation["because"]:
+            self.assertTrue(entry["detail"], entry)
+            self.assertIn("kind", entry)
+
+    def test_declared_intent_outranks_inference(self):
+        watchlist = hbnscan.explain_assessment(self.row())
+        inferred = hbnscan.explain_assessment(
+            self.row(source_layer="heuristic", verdict_reason="core: acme",
+                     summary="[Local Heuristic] Core focus: acme."))
+        self.assertEqual(watchlist["priority"], "watchlist")
+        self.assertEqual(watchlist["precedence"], "declared intent")
+        self.assertEqual(inferred["precedence"], "inferred")
+        self.assertGreater(watchlist["dimensions"]["relevance"],
+                           inferred["dimensions"]["relevance"])
+
+    def test_the_matched_rule_comes_from_the_stored_reason_not_todays_config(self):
+        explanation = hbnscan.explain_assessment(
+            self.row(verdict_reason="rule: old-name", summary="[Watchlist] old-name."))
+        matched = [entry for entry in explanation["because"]
+                   if entry["kind"] == "watchlist_rule"]
+        self.assertEqual(matched[0]["detail"], "old-name")
+
+    def test_keywords_are_reported_for_a_heuristic_verdict(self):
+        explanation = hbnscan.explain_assessment(
+            self.row(source_layer="heuristic", verdict_reason="core: acme, penalty",
+                     summary="[Local Heuristic] Core focus: acme, penalty."))
+        keywords = [entry for entry in explanation["because"] if entry["kind"] == "keywords"]
+        self.assertEqual(keywords[0]["detail"], ["acme", "penalty"])
+
+    def test_a_topic_match_is_reported_as_a_topic(self):
+        explanation = hbnscan.explain_assessment(
+            self.row(source_layer="topic", verdict_reason="topic: broadband",
+                     summary="[Topic] broadband (General)."))
+        self.assertEqual(explanation["priority"], "topic")
+        kinds = {entry["kind"] for entry in explanation["because"]}
+        self.assertIn("topic", kinds)
+
+    def test_an_undated_item_is_unknown_not_fresh(self):
+        dated = hbnscan.explain_assessment(self.row())
+        undated = hbnscan.explain_assessment(self.row(published=""))
+        self.assertLess(undated["dimensions"]["urgency"], dated["dimensions"]["urgency"])
+        reasons = [entry["detail"] for entry in undated["because"]
+                   if entry["axis"] == "urgency"]
+        self.assertIn("unknown", reasons[0])
+
+    def test_evidence_reflects_what_was_actually_read(self):
+        read = hbnscan.explain_assessment(self.row())
+        screened = hbnscan.explain_assessment(self.row(deep_read=0, facts="[]",
+                                                       excerpt="a summary"))
+        headline = hbnscan.explain_assessment(self.row(deep_read=0, facts="[]", excerpt=""))
+        self.assertGreater(read["dimensions"]["evidence"], screened["dimensions"]["evidence"])
+        self.assertGreater(screened["dimensions"]["evidence"],
+                           headline["dimensions"]["evidence"])
+
+    def test_a_syndicated_copy_is_not_novel_and_several_feeds_are_not_corroboration(self):
+        context = {"occurrences": 4, "sources": 3, "first_seen_at": "2026-11-26T00:00:00"}
+        explanation = hbnscan.explain_assessment(self.row(), context)
+        self.assertEqual(explanation["dimensions"]["novelty"], 0.4)
+        self.assertEqual(explanation["dimensions"]["coverage"], 3)
+        coverage = [entry for entry in explanation["because"] if entry["axis"] == "coverage"]
+        self.assertIn("not a verified independent publisher", coverage[0]["detail"])
+        self.assertTrue(any("not probabilities" in note for note in explanation["notes"]))
+
+    def test_model_confidence_is_labelled_not_trusted(self):
+        explanation = hbnscan.explain_assessment(self.row(confidence=0.93))
+        self.assertEqual(explanation["dimensions"]["confidence"], 0.93)
+        note = [entry for entry in explanation["because"] if entry["axis"] == "confidence"]
+        self.assertIn("not a probability of truth", note[0]["detail"])
+        missing = hbnscan.explain_assessment(self.row(confidence=None))
+        self.assertIsNone(missing["dimensions"]["confidence"])
+
+    def test_an_unknown_severity_does_not_borrow_a_number(self):
+        explanation = hbnscan.explain_assessment(self.row(severity="none"))
+        self.assertEqual(explanation["dimensions"]["impact"], 0.0)
+
+
+class HistoryUpgradeTest(unittest.TestCase):
+    """A database written by the release before this one keeps working, and gains the axes."""
+
+    def test_a_version_six_database_gains_the_breakdown_columns(self):
+        import sqlite3
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "state.db"
+        legacy = sqlite3.connect(str(path))
+        # Exactly the schema-6 shape: every column the release shipped, without the two
+        # this change adds.
+        legacy.execute(
+            "CREATE TABLE assessment_history (id TEXT PRIMARY KEY, item_hash TEXT NOT NULL, "
+            "recorded_at TEXT NOT NULL, profile TEXT DEFAULT '', method TEXT DEFAULT '', "
+            "layer TEXT DEFAULT '', category TEXT DEFAULT '', severity TEXT DEFAULT '', "
+            "flagged INTEGER DEFAULT 0, confidence REAL, analysis TEXT DEFAULT '', "
+            "reason TEXT DEFAULT '', supersedes TEXT DEFAULT '')")
+        legacy.execute("INSERT INTO assessment_history (id, item_hash, recorded_at, analysis) "
+                       "VALUES ('asm:old', 'h1', '2026-01-01T00:00:00', 'old judgement')")
+        legacy.execute("PRAGMA user_version = 6")
+        legacy.commit()
+        legacy.close()
+
+        with mock.patch.object(hbnscan, "DB_PATH", path):
+            conn = hbnscan.connect()
+            self.addCleanup(conn.close)
+            columns = {row[1] for row in conn.execute(
+                "PRAGMA table_info(assessment_history)")}
+            self.assertTrue({"dimensions", "rationale"} <= columns)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                             hbnscan.SCHEMA_VERSION)
+            # The old row survives, and an absent breakdown reads as None rather than "{}".
+            self.assertIsNone(hbnscan.assessment_history(conn, "h1")[0]["dimensions"])
+
+
+class BreakdownHistoryTest(_HistoryCase):
+    """The stored judgement keeps the axes it was made with."""
+
+    def test_the_breakdown_is_persisted_with_the_judgement(self):
+        item = self.add_row()
+        hbnscan.record_assessment(self.conn, item, link="https://e.test/a",
+                                  method="heuristic", layer="heuristic",
+                                  category="policy", severity="medium",
+                                  analysis="[Local Heuristic] x.", reason="core: acme")
+        self.conn.commit()
+        entry = hbnscan.assessment_history(self.conn, item)[0]
+        self.assertIsInstance(entry["dimensions"], dict)
+        self.assertIn("relevance", entry["dimensions"])
+        self.assertTrue(entry["rationale"])
+        self.assertEqual(entry["dimensions"]["impact"], 0.6)
+
+    def test_a_stored_explanation_is_not_recomputed_from_new_rules(self):
+        item = self.add_row()
+        explanation = hbnscan.explain_assessment(
+            {"item_hash": item, "link": "https://e.test/a", "summary": "[Watchlist] acme.",
+             "seen_at": "2026-11-13T10:00:00", "category": "policy", "severity": "high",
+             "flagged": 1, "source_layer": "watchlist", "verdict_reason": "rule: acme",
+             "published": "2026-11-12", "deep_read": 0, "facts": "[]", "excerpt": "",
+             "confidence": None, "cluster_key": "", "feed_url": "https://feed.test/rss"},
+            {"occurrences": 1, "sources": 1, "first_seen_at": "2026-11-13T10:00:00"})
+        hbnscan.record_assessment(self.conn, item, link="https://e.test/a",
+                                  explanation=explanation)
+        self.conn.commit()
+        entry = hbnscan.assessment_history(self.conn, item)[0]
+        self.assertEqual(entry["dimensions"]["relevance"], 1.0)
+        self.assertEqual(entry["rationale"][0]["detail"], "acme")

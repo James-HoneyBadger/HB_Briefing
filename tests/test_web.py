@@ -163,6 +163,27 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(recent["total"], 1)
         self.assertEqual(recent["rows"][0]["hash"], "h1")
 
+    def test_every_signal_explains_the_axes_behind_its_priority(self):
+        payload = self.get_json("/api/signals")
+        row = next(item for item in payload["rows"] if item["hash"] == "h1")
+        explain = row["explain"]
+        self.assertEqual(explain["priority"], "watchlist")
+        self.assertEqual(explain["precedence"], "declared intent")
+        self.assertEqual({entry["axis"] for entry in explain["because"]},
+                         {"relevance", "urgency", "impact", "evidence", "novelty",
+                          "coverage", "confidence"})
+        self.assertTrue(all(entry["detail"] for entry in explain["because"]))
+        self.assertIn("not probabilities", " ".join(explain["notes"]))
+
+        detail = self.get_json("/api/signal/h1")
+        self.assertEqual(detail["explain"]["dimensions"]["relevance"], 1.0)
+
+    def test_the_page_renders_the_explanation_rather_than_hiding_it(self):
+        status, page = self.request("/")
+        self.assertEqual(status, 200)
+        self.assertIn("Why this priority", page)
+        self.assertIn("sig.explain.because", page)
+
     def test_state_counts_flagged_and_undated(self):
         state = self.get_json("/api/state")
         self.assertEqual(state["counts"]["flagged"], 2)

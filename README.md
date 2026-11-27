@@ -92,6 +92,14 @@ nothing installed but Python. Details and the HTTP API: [Web app and terminal UI
 | TUI | `a` | `i` | `settings.json` |
 | CLI | `--auto` / `--no-auto` | `--interval N` | `--window HH:MM-HH:MM` or `off` |
 
+**Explainable priorities.** A single severity label hides the reasoning, so each signal also
+carries its axes — relevance, urgency, impact, evidence, novelty, source coverage and model
+confidence — each with the reason it was assigned. Declared intent (a watchlist rule or a
+standing topic) always outranks inference, an undated item is reported as *unknown* rather than
+fresh, and several outlets repeating one story are shown as delivery hosts, not as independent
+corroboration. The breakdown is stored with the assessment, so history explains itself, and it
+is returned by the API and shown in the web detail pane.
+
 **Records.** The engine stores one row per observed item, but it reasons in `hbrecords` terms:
 a *source* is not an *article*, an article is not a *story*, a *signal* is not an *assessment*,
 and a re-grade is a new assessment rather than a rewrite of the evidence. Every record has a

@@ -318,6 +318,11 @@ class Assessment(Record):
     reason: str = ""
     evidence: tuple = ()
     supersedes: str = ""
+    # The axes behind this judgement and the reason for each, as produced by
+    # `hbnscan.explain_assessment`. Kept on the record so history explains itself without
+    # re-deriving today's answer from data the assessment never saw.
+    dimensions: dict = field(default_factory=dict)
+    rationale: tuple = ()
 
 
 @dataclass
@@ -592,7 +597,7 @@ def signal_from_row(row):
 
 def assessment_for(item_hash_value, link, *, profile="", method="heuristic", layer="",
                    category="", severity="", flagged=False, confidence=0.0, analysis="",
-                   reason="", supersedes="", evidence=()):
+                   reason="", supersedes="", evidence=(), dimensions=None, rationale=()):
     """Build an `Assessment` from explicit values, as the engine has them at write time.
 
     The assessment id is scoped to the stored row, not only to the article: two rows can share
@@ -618,6 +623,8 @@ def assessment_for(item_hash_value, link, *, profile="", method="heuristic", lay
         reason=reason,
         evidence=tuple(evidence),
         supersedes=supersedes,
+        dimensions=dict(dimensions or {}),
+        rationale=tuple(rationale),
     )
 
 
