@@ -178,6 +178,13 @@ class WebApiTest(unittest.TestCase):
         detail = self.get_json("/api/signal/h1")
         self.assertEqual(detail["explain"]["dimensions"]["relevance"], 1.0)
 
+    def test_the_detail_pane_reports_story_coverage_and_independence(self):
+        detail = self.get_json("/api/signal/h1")
+        self.assertIn("independence", detail["story"])
+        self.assertIn("independence_note", detail["story"])
+        status, page = self.request("/")
+        self.assertIn("Independence:", page)
+
     def test_the_page_renders_the_explanation_rather_than_hiding_it(self):
         status, page = self.request("/")
         self.assertEqual(status, 200)

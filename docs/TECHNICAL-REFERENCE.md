@@ -145,7 +145,7 @@ with every edit, so this map names the entry points instead; follow the banner c
 | topics | `_parse_topic_file`, `load_topics`, `_topic_match`, `topic_feeds` | standing subjects |
 | feeds | `fetch_feed`, `_parse_feed`, `_parse_foreign_entry`, `resolve_aggregator_link` | conditional GET, parsing, redirect decoding |
 | AI layer | `_call_deepseek`, `_normalise_verdict`, `heuristic_verdict`, `_apply_topics`, `_apply_watchlist` | model client, verdict contract, layering |
-| storytelling | `canonical_url`, `story_keys`, `adopt_cluster`, `detach_from_cluster`, `cluster_summary` | cross-scan story identity |
+| storytelling | `story_keys`, `adopt_cluster`, `adopt_similar`, `story_relations`, `story_sources`, `related_stories`, `merge_stories`, `split_from_story`, `undo_story_change`, `cluster_summary` | story identity, typed relationships, independence, reversible correction |
 | scan | `_ScanBudget`, `_prepare_scan`, `_scan_feed`, `_record_scan_meta`, `_record_scan_run`, `_run_scan` | orchestration, budgets, commit boundary |
 | notifications | `_pending_alerts`, `send_notifications`, `send_test_notification` | per-item delivery state, SMTP/SMS |
 | export | `_export_filters`, `select_signals`, `export_rows`, `render_*`, `export_items` | one filter builder, all formats |
@@ -1112,7 +1112,7 @@ factory) and does three things in order:
 3. Ordered data steps in `_MIGRATIONS`, each guarded by `PRAGMA user_version`, then
    `user_version = SCHEMA_VERSION`.
 
-Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **6**:
+Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **8**:
 
 | Version | Step | What it does |
 | --- | --- | --- |
@@ -1121,7 +1121,9 @@ Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **6**:
 | 3 | `_backfill_feed_health` | seeds `feed_state.last_success_at` from `checked_at`, leaving HTTP status unknown rather than inventing one |
 | 4 | `_backfill_story_bands` | indexes every stored headline for the near-duplicate pass |
 | 5 | `_ensure_dossier_snapshots` | creates the export-history table a dossier report diffs against |
-| 6 | — (schema only) | adds `assessment_history`, the append-only judgement log; created by `_create_schema`, so existing databases pick it up on the next open |
+| 6 | — (schema only) | adds `assessment_history`, the append-only judgement log |
+| 7 | — (schema only) | adds `assessment_history.dimensions` and `.rationale`, so a stored judgement keeps the axes it was made with |
+| 8 | — (schema only) | adds `story_links` (typed relationships) and `story_overrides` (reversible manual corrections) |
 
 Table and column creation is separate from the versioned steps: `_create_schema` and
 `_ensure_columns` are idempotent and run on every open, and the version gates only work that
@@ -1730,9 +1732,47 @@ sharing either key and, if found, rewrites the new row's `cluster_key` to the si
 member therefore points at the same key regardless of which feed arrived first, and the query is
 indexed by `cluster_key`.
 
-**Undo.** `detach_from_cluster(conn, item_hash)` sets `cluster_key = "row:<hash>"`, which matches
-nothing else, so the row becomes a story of one. The GUI exposes it as *Detach from story*. Only
-that row changes; the rest of the story keeps its key.
+**Typed relationships.** Membership says *which* story; `story_links` says *why*, because "the
+same text appeared twice" and "two outlets reported it" are different facts:
+
+| Relation | Evidence | Recorded by |
+| --- | --- | --- |
+| `duplicate` | the same canonical URL | `adopt_cluster`, method `canonical_url` |
+| `syndicated` | the same normalised headline under another URL | `adopt_cluster`, method `normalized_headline` |
+| `near_duplicate` | Jaccard over word shingles ≥ `SIMILARITY_THRESHOLD` | `adopt_similar`, method `minhash` |
+
+`adopt_cluster` checks the canonical URL first and the headline second, so a duplicate is never
+recorded as mere syndication. Relations are recorded as they are discovered; rows stored before
+this existed have none, and nothing is invented for them.
+
+**Related, never merged.** `related_stories(conn, story_key)` finds stories that share a named
+entity with this one and labels every hit *"related, not merged: shared names do not make it the
+same event."* Merging on a company mention is exactly how a false corroboration is manufactured.
+
+**Source independence.** `story_sources(conn, story_key)` separates delivery hosts (where the
+item arrived from) from publisher hosts (where the article lives), and returns one of
+`single_publisher`, `multiple_hosts`, `partial` or `unknown`:
+
+- an unresolved aggregator link, or a missing link, counts as unresolved — the publisher is
+  unknown, so independence is `unknown` rather than optimistic;
+- one publisher host means repeated coverage is the same reporting;
+- several publisher hosts are reported as *hosts*, with the caveat that shared ownership and
+  syndication cannot be ruled out from links alone.
+
+`cluster_summary` carries this verdict, so the detail panes in every front end show it.
+
+**Correction and undo.** Manual edits are recorded in `story_overrides` with the key the row came
+from, so they are reversible rather than one-way mutations:
+
+| Function | Effect |
+| --- | --- |
+| `merge_stories(conn, from_key, into_key)` | moves every member, returns the count |
+| `split_from_story(conn, item_hash)` | gives one row `cluster_key = "row:<hash>"` |
+| `detach_from_cluster(conn, item_hash)` | the older name for a split; now records the override too |
+| `undo_story_change(conn, item_hash=\|cluster_key=)` | restores the previous story for one row, or every corrected row in a story |
+
+`story_record(conn, key)` returns the canonical `hbrecords.Story` for a key, and the workspace
+CLI exposes the whole thing (`hbnscan.py story show|merge|split|undo`).
 
 **Limits** — worth stating plainly, and covered in §24:
 
@@ -1753,6 +1793,10 @@ before the flag-based path, so these commands never start a scan:
 
 | Command | Behaviour |
 | --- | --- |
+| `story show KEY [--json]` | members, typed relationships, independence verdict, related stories, manual corrections |
+| `story merge FROM INTO [--note TEXT]` | move one story into another (reversible) |
+| `story split HASH [--note TEXT]` | take one signal out of its story (reversible) |
+| `story undo TARGET [--all]` | restore a corrected row, or every corrected row in a story |
 | `dossier list [--all]` | id, item count, open actions, status, name |
 | `dossier new NAME [--summary TEXT] [--kind subject\|entity\|question]` | create |
 | `dossier show ID` | full Markdown report on stdout |

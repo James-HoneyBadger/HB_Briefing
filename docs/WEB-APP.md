@@ -40,7 +40,9 @@ beyond your own machine.
   declared interest. *Priority* is a real column: `watchlist`, `topic`, `core` or `context`.
 - **Detail pane** — assessment, next step, key facts, entities, confidence, verification state
   and the publisher link (resolved from a Google News redirect when the engine has it cached).
-  It also shows **why the priority was assigned**: the separate axes (relevance, urgency,
+  It also shows **story coverage and independence** (how many stored occurrences arrived, from how
+  many delivery and publisher hosts, and whether independence can be claimed at all), and
+  **why the priority was assigned**: the separate axes (relevance, urgency,
   impact, evidence, novelty, coverage, confidence) with a reason for each, and whether the
   priority came from declared intent or from inference.
 - **Run / Stop** a scan, with the live log in the *Log* tab and the digest in *Briefing*.

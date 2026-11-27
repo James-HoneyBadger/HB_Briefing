@@ -1281,6 +1281,18 @@ async function select(hash) {
     for (const [kind, values] of ents) ul.append(esc("li", kind + ": " + values.join(", ")));
     pane.append(esc("div", "Entities"), ul);
   }
+  if (sig.story && sig.story.count) {
+    // Coverage is reported as delivery and publisher hosts, never as "confirmed by N sources".
+    const box = document.createElement("div");
+    box.className = "explain";
+    box.append(esc("div", "Story: " + sig.story.count + " stored occurrence(s) from " +
+                          sig.story.sources.length + " delivery host(s)"));
+    if (sig.story.independence) {
+      box.append(esc("p", "Independence: " + sig.story.independence + " - " +
+                          (sig.story.independence_note || "")));
+    }
+    pane.append(box);
+  }
   if (sig.explain) {
     // The axes behind the single priority label, each with the reason it was assigned.
     // Colour never carries the meaning: the value is written out, and the reason is text.

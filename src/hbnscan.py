@@ -360,7 +360,7 @@ SCAN_RUN_EXTRA_COLUMNS = (
 
 # Bumped when a step is added to _MIGRATIONS; stored in PRAGMA user_version so a database
 # can be upgraded exactly once. Additive column sync alone cannot backfill or index.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SOURCE_LAYERS = ("watchlist", "topic", "heuristic", "model")
 
@@ -2179,6 +2179,33 @@ def _create_schema(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_assessment_signal "
                  "ON assessment_history (item_hash, recorded_at)")
+    # Typed story relationships. `cluster_key` says which story a row belongs to; this says
+    # *why*, so a duplicate is never mistaken for corroboration of itself.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS story_links (
+            item_hash TEXT NOT NULL,
+            other_hash TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            score REAL DEFAULT 0,
+            method TEXT DEFAULT '',
+            recorded_at TEXT,
+            PRIMARY KEY (item_hash, other_hash, relation)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_story_links_other "
+                 "ON story_links (other_hash)")
+    # Manual correction is a first-class, reversible edit: the previous key is kept so a
+    # merge or split can be undone instead of being a one-way mutation.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS story_overrides (
+            item_hash TEXT PRIMARY KEY,
+            previous_key TEXT DEFAULT '',
+            new_key TEXT NOT NULL,
+            action TEXT NOT NULL,
+            note TEXT DEFAULT '',
+            created_at TEXT
+        )
+    """)
     # MinHash band keys: a shared band makes two rows candidates for an exact Jaccard check.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS story_bands (
@@ -2321,6 +2348,7 @@ def adopt_similar(conn, item_hash_value, title, excerpt="", threshold=None, limi
     target = sibling_key or f"row:{other}"
     conn.execute("UPDATE seen_items SET cluster_key = ? WHERE item_hash = ?",
                  (target, item_hash_value))
+    _record_story_link(conn, item_hash_value, other, "near_duplicate", score, "minhash")
     return {"cluster_key": target, "score": score, "other": other}
 
 
@@ -3933,52 +3961,312 @@ def story_keys(title, link):
     return cluster_key, title_key
 
 
+# The four ways two rows can be the same story. `related` is deliberately not here: it is a
+# relationship between stories, not membership of one, and merging on it is how a company
+# mention turns into a false corroboration.
+STORY_RELATIONS = ("duplicate", "syndicated", "near_duplicate")
+
+
+def _record_story_link(conn, item_hash_value, other_hash, relation, score=0.0, method=""):
+    """Remember why two rows were treated as one story."""
+    if not other_hash or other_hash == item_hash_value:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO story_links "
+        "(item_hash, other_hash, relation, score, method, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (item_hash_value, other_hash, relation, float(score), method,
+         datetime.now().isoformat(timespec="seconds")))
+
+
 def adopt_cluster(conn, item_hash_value, cluster_key, title_key):
-    """Join a new row to the earliest existing member of the same story, if there is one."""
+    """Join a new row to the earliest existing member of the same story, if there is one.
+
+    Two lookups, in order of certainty: the same canonical URL is a duplicate; the same
+    normalised headline under another URL is a syndicated copy. The relationship is recorded,
+    because "the same text appeared twice" and "two outlets reported it" are different facts.
+    """
     if not title_key:
         return cluster_key
-    row = conn.execute(
-        "SELECT cluster_key FROM seen_items WHERE item_hash != ? "
-        "AND (cluster_key = ? OR title_key = ?) "
-        "AND cluster_key IS NOT NULL AND cluster_key != '' "
-        "ORDER BY seen_at ASC, rowid ASC LIMIT 1",
-        (item_hash_value, cluster_key, title_key),
-    ).fetchone()
-    if row and row[0] and row[0] != cluster_key:
-        conn.execute("UPDATE seen_items SET cluster_key = ? WHERE item_hash = ?",
-                     (row[0], item_hash_value))
-        return row[0]
+    for column, relation, method in (("cluster_key", "duplicate", "canonical_url"),
+                                     ("title_key", "syndicated", "normalized_headline")):
+        row = conn.execute(
+            f"SELECT item_hash, cluster_key FROM seen_items WHERE item_hash != ? "
+            f"AND {column} = ? AND cluster_key IS NOT NULL AND cluster_key != '' "
+            f"ORDER BY seen_at ASC, rowid ASC LIMIT 1",
+            (item_hash_value, cluster_key if column == "cluster_key" else title_key),
+        ).fetchone()
+        if row is None:
+            continue
+        target = row[1] or f"row:{row[0]}"
+        # Compare against what the row stores, not against the key we computed: a row can
+        # already carry a different story (a manual correction, or an earlier title-key join)
+        # and must still follow the earliest member.
+        current = conn.execute("SELECT cluster_key FROM seen_items WHERE item_hash = ?",
+                               (item_hash_value,)).fetchone()
+        if current is None or (current[0] or "") != target:
+            conn.execute("UPDATE seen_items SET cluster_key = ? WHERE item_hash = ?",
+                         (target, item_hash_value))
+        _record_story_link(conn, item_hash_value, row[0], relation, 1.0, method)
+        return target
     return cluster_key
 
 
 def detach_from_cluster(conn, item_hash_value):
-    """Undo a merge: the row becomes a cluster of its own. Returns True when it changed."""
-    row = conn.execute("SELECT cluster_key FROM seen_items WHERE item_hash = ?",
-                       (item_hash_value,)).fetchone()
-    if row is None:
-        return False
-    conn.execute("UPDATE seen_items SET cluster_key = ? WHERE item_hash = ?",
-                 (f"row:{item_hash_value}", item_hash_value))
-    conn.commit()
-    return True
+    """Undo a merge: the row becomes a cluster of its own. Returns True when it changed.
+
+    The previous key is kept in `story_overrides`, so the edit is reversible with
+    `undo_story_change`.
+    """
+    return bool(split_from_story(conn, item_hash_value))
 
 
 def cluster_summary(conn, cluster_key):
     """How many visible rows make up a story, and which publishers carried it."""
     if not cluster_key:
-        return {"count": 0, "sources": [], "first": "", "last": "", "undated": 0}
+        # Keep the shape stable: a reader must not need a special case for "no story".
+        return {"count": 0, "sources": [], "first": "", "last": "", "undated": 0,
+                "independence": "unknown", "independence_note": "no stored occurrences",
+                "publisher_hosts": []}
     rows = conn.execute(
         "SELECT feed_url, published, seen_at FROM seen_items "
         f"WHERE cluster_key = ? AND {VISIBLE_SQL}", (cluster_key,)).fetchall()
     hosts = sorted({urlparse(row[0] or "").hostname or "" for row in rows} - {""})
     dates = sorted(row[1] or row[2] or "" for row in rows)
+    independence = story_sources(conn, cluster_key)
     return {
         "count": len(rows),
         "sources": hosts,
         "first": dates[0] if dates else "",
         "last": dates[-1] if dates else "",
         "undated": sum(1 for row in rows if not (row[1] or "").strip()),
+        # Repeated delivery is not corroboration; say which it is.
+        "independence": independence["independence"],
+        "independence_note": independence["note"],
+        "publisher_hosts": independence["publisher_hosts"],
     }
+
+
+def story_relations(conn, cluster_key, limit=100):
+    """Typed links between the members of one story, newest relationship first."""
+    if not cluster_key:
+        return []
+    rows = conn.execute(
+        "SELECT l.item_hash, l.other_hash, l.relation, l.score, l.method, l.recorded_at "
+        "FROM story_links l JOIN seen_items s ON s.item_hash = l.item_hash "
+        "WHERE s.cluster_key = ? ORDER BY l.relation, l.score DESC LIMIT ?",
+        (cluster_key, limit)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def story_sources(conn, cluster_key):
+    """Who carried a story, and how far the stored evidence actually supports independence.
+
+    A delivery host is where the item arrived from; a publisher host is where the article
+    lives. Neither establishes ownership, and an unresolved aggregator link establishes
+    nothing at all, so the verdict says `unknown` rather than guessing.
+    """
+    empty = {"occurrences": 0, "delivery_hosts": [], "publisher_hosts": [],
+             "unresolved": 0, "independence": "unknown",
+             "note": "no stored occurrences"}
+    if not cluster_key:
+        return empty
+    rows = conn.execute(
+        "SELECT feed_url, link FROM seen_items WHERE cluster_key = ?",
+        (cluster_key,)).fetchall()
+    if not rows:
+        return empty
+    delivery, publishers, unresolved = set(), set(), 0
+    for feed_url, link in rows:
+        host = (urlparse(feed_url or "").hostname or "").lower()
+        if host:
+            delivery.add(host)
+        link = (link or "").strip()
+        if not link:
+            unresolved += 1
+            continue
+        if is_aggregator_link(link):
+            # The real publisher is behind a redirect we may not have resolved.
+            unresolved += 1
+            continue
+        publisher = (urlparse(link).hostname or "").lower()
+        if publisher.startswith("www."):
+            publisher = publisher[4:]
+        if publisher:
+            publishers.add(publisher)
+        else:
+            unresolved += 1
+    if unresolved and not publishers:
+        independence = "unknown"
+        note = ("publisher hosts could not be established from the stored links, "
+                "so independence cannot be assessed")
+    elif unresolved:
+        independence = "partial"
+        note = (f"{unresolved} link(s) unresolved; independence is assessed only from the "
+                f"{len(publishers)} host(s) that could be identified")
+    elif len(publishers) <= 1:
+        independence = "single_publisher"
+        note = "one publisher host: repeated coverage is not independent corroboration"
+    else:
+        independence = "multiple_hosts"
+        note = ("several publisher hosts, which is not the same as independent reporting; "
+                "shared ownership and syndication cannot be ruled out from links alone")
+    return {
+        "occurrences": len(rows),
+        "delivery_hosts": sorted(delivery),
+        "publisher_hosts": sorted(publishers),
+        "unresolved": unresolved,
+        "independence": independence,
+        "note": note,
+    }
+
+
+def related_stories(conn, cluster_key, limit=5):
+    """Stories sharing entities with this one, which are *not* the same story.
+
+    Shown so a reader can see the neighbourhood without the application merging unrelated
+    events because two companies happen to be named in both.
+    """
+    if not cluster_key:
+        return []
+    row = conn.execute("SELECT entities FROM seen_items WHERE cluster_key = ? LIMIT 1",
+                       (cluster_key,)).fetchone()
+    if row is None:
+        return []
+    try:
+        entities = json.loads(row[0] or "{}")
+    except (TypeError, ValueError):
+        return []
+    names = []
+    for values in entities.values() if isinstance(entities, dict) else ():
+        for value in values if isinstance(values, list) else ():
+            text = str(value).strip()
+            if len(text) >= 3 and text not in names:
+                names.append(text)
+    if not names:
+        return []
+    found = {}
+    for name in names[:6]:
+        rows = conn.execute(
+            "SELECT cluster_key, title, entities FROM seen_items "
+            f"WHERE cluster_key IS NOT NULL AND cluster_key != '' AND cluster_key != ? "
+            f"AND entities LIKE ? AND {VISIBLE_SQL} LIMIT 20",
+            (cluster_key, f"%{name}%")).fetchall()
+        for other_key, title, other_entities in rows:
+            shared = found.setdefault(other_key, {"cluster_key": other_key, "title": title,
+                                                  "shared": []})
+            for candidate in names:
+                if candidate in (other_entities or "") and candidate not in shared["shared"]:
+                    shared["shared"].append(candidate)
+    ordered = sorted(found.values(), key=lambda item: (-len(item["shared"]), item["title"]))
+    for item in ordered:
+        item["note"] = "related, not merged: shared names do not make it the same event"
+    return ordered[:limit]
+
+
+def story_record(conn, cluster_key):
+    """The canonical `Story` for a stored story, or None when nothing matches."""
+    rows = conn.execute(
+        "SELECT item_hash, title, link, feed_url FROM seen_items "
+        "WHERE cluster_key = ? ORDER BY seen_at ASC, rowid ASC", (cluster_key,)).fetchall()
+    if not rows:
+        return None
+    return hbrecords.Story(
+        id=hbrecords.story_id(cluster_key),
+        title=rows[0][1] or "",
+        keys=(cluster_key,),
+        article_ids=tuple(hbrecords.article_id(row[2]) for row in rows),
+        source_ids=tuple(hbrecords.source_id(row[3]) for row in rows),
+    )
+
+
+def story_overrides(conn, cluster_key=""):
+    """Manual corrections, most recent first; all of them when no story is named."""
+    if cluster_key:
+        rows = conn.execute(
+            "SELECT o.item_hash, o.previous_key, o.new_key, o.action, o.note, o.created_at "
+            "FROM story_overrides o JOIN seen_items s ON s.item_hash = o.item_hash "
+            "WHERE s.cluster_key = ? ORDER BY o.created_at DESC",
+            (cluster_key,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT item_hash, previous_key, new_key, action, note, created_at "
+            "FROM story_overrides ORDER BY created_at DESC").fetchall()
+    return [dict(row) for row in rows]
+
+
+def _record_story_override(conn, item_hash_value, previous_key, new_key, action, note=""):
+    conn.execute(
+        "INSERT OR REPLACE INTO story_overrides "
+        "(item_hash, previous_key, new_key, action, note, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (item_hash_value, previous_key or "", new_key, action, note,
+         datetime.now().isoformat(timespec="seconds")))
+
+
+def merge_stories(conn, from_key, into_key, note=""):
+    """Move every member of one story into another. Returns how many rows moved.
+
+    Reversible: each moved row remembers the story it came from.
+    """
+    if not from_key or not into_key:
+        raise ValueError("both story keys are required")
+    if from_key == into_key:
+        raise ValueError("a story cannot be merged into itself")
+    rows = conn.execute("SELECT item_hash, cluster_key FROM seen_items WHERE cluster_key = ?",
+                        (from_key,)).fetchall()
+    if not rows:
+        raise ValueError("no stored signals in that story")
+    for item_hash_value, previous in rows:
+        _record_story_override(conn, item_hash_value, previous or from_key, into_key,
+                               "merge", note)
+    conn.execute("UPDATE seen_items SET cluster_key = ? WHERE cluster_key = ?",
+                 (into_key, from_key))
+    conn.commit()
+    return len(rows)
+
+
+def split_from_story(conn, item_hash_value, note=""):
+    """Take one row out of its story and give it a story of its own. Returns the new key."""
+    row = conn.execute("SELECT cluster_key FROM seen_items WHERE item_hash = ?",
+                       (item_hash_value,)).fetchone()
+    if row is None:
+        raise ValueError("no such signal")
+    previous = row[0] or ""
+    new_key = f"row:{item_hash_value}"
+    _record_story_override(conn, item_hash_value, previous, new_key, "split", note)
+    conn.execute("UPDATE seen_items SET cluster_key = ? WHERE item_hash = ?",
+                 (new_key, item_hash_value))
+    conn.commit()
+    return new_key
+
+
+def undo_story_change(conn, item_hash_value="", cluster_key=""):
+    """Restore the story a manual edit moved rows out of. Returns how many rows were restored.
+
+    Given an item hash, that row is restored. Given a story key, every row currently in it
+    that carries an override is restored — which is how a merge of several rows is undone in
+    one step.
+    """
+    if not item_hash_value and not cluster_key:
+        raise ValueError("name an item hash or a story key")
+    if item_hash_value:
+        rows = conn.execute(
+            "SELECT item_hash, previous_key FROM story_overrides WHERE item_hash = ?",
+            (item_hash_value,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT o.item_hash, o.previous_key FROM story_overrides o "
+            "JOIN seen_items s ON s.item_hash = o.item_hash WHERE s.cluster_key = ?",
+            (cluster_key,)).fetchall()
+    restored = 0
+    for item_hash_value, previous in rows:
+        conn.execute("UPDATE seen_items SET cluster_key = ? WHERE item_hash = ?",
+                     (previous or f"row:{item_hash_value}", item_hash_value))
+        conn.execute("DELETE FROM story_overrides WHERE item_hash = ?", (item_hash_value,))
+        restored += 1
+    conn.commit()
+    return restored
 
 
 def _verdict_row(item, url, verdict):
@@ -5633,7 +5921,7 @@ def cli_main(argv=None):
     if argv is not None:
         sys.argv = [sys.argv[0], *argv]
     bootstrap_home()
-    if sys.argv[1:2] and sys.argv[1] in ("entity", "dossier", "action", "sources"):
+    if sys.argv[1:2] and sys.argv[1] in ("entity", "dossier", "action", "sources", "story"):
         try:
             import hbworkspace
         except ImportError as exc:

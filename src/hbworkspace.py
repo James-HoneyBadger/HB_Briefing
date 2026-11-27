@@ -1345,6 +1345,61 @@ def _print_entity(report):
             print(f"  {note['created_at'][:10]}  {(note['body'] or '')[:90]}")
 
 
+# --------------------------------------------------------------------------- stories
+
+
+def story_report(conn, cluster_key):
+    """Everything stored about one story, or None when the key matches nothing."""
+    rows = conn.execute(
+        "SELECT item_hash, title, link, feed_url, published, seen_at, severity, category, "
+        "summary, source_layer FROM seen_items WHERE cluster_key = ? "
+        "ORDER BY COALESCE(NULLIF(published, ''), seen_at) ASC", (cluster_key,)).fetchall()
+    if not rows:
+        return None
+    record = hbnscan.story_record(conn, cluster_key)
+    return {
+        "key": cluster_key,
+        "title": rows[0]["title"] or "",
+        "record": record.to_dict() if record else None,
+        "summary": hbnscan.cluster_summary(conn, cluster_key),
+        "sources": hbnscan.story_sources(conn, cluster_key),
+        "relations": hbnscan.story_relations(conn, cluster_key),
+        "related": hbnscan.related_stories(conn, cluster_key),
+        "overrides": hbnscan.story_overrides(conn, cluster_key),
+        "members": [dict(row) for row in rows],
+    }
+
+
+def _print_story(report):
+    sources = report["sources"]
+    print(f"Story: {report['title']}")
+    print(f"  key: {report['key']}")
+    print(f"  {sources['occurrences']} stored occurrence(s); "
+          f"{len(sources['delivery_hosts'])} delivery host(s); "
+          f"{len(sources['publisher_hosts'])} publisher host(s)")
+    print(f"  independence: {sources['independence']} - {sources['note']}")
+    relations = report["relations"]
+    if relations:
+        print("  relationships:")
+        for entry in relations:
+            print(f"    {entry['relation']:14} {entry['other_hash'][:12]}  "
+                  f"score {entry['score']:.2f}  via {entry['method'] or 'unknown'}")
+    print("  members:")
+    for member in report["members"]:
+        print(f"    {member['item_hash'][:12]}  {member['severity'] or '':6} "
+              f"{(member['published'] or member['seen_at'] or '')[:10]}  "
+              f"{(member['title'] or '')[:70]}")
+    if report["related"]:
+        print("  related stories (not merged):")
+        for entry in report["related"]:
+            print(f"    {entry['cluster_key']}  shares {', '.join(entry['shared'][:4])}")
+    if report["overrides"]:
+        print("  manual corrections:")
+        for entry in report["overrides"]:
+            print(f"    {entry['action']} {entry['item_hash'][:12]} "
+                  f"from {entry['previous_key'] or '(none)'}  {entry['note']}")
+
+
 def main(argv):
     """`hbnscan.py dossier|action|entity|sources ...` - the same workspace from a shell."""
     import argparse
@@ -1413,6 +1468,23 @@ def main(argv):
     sources = sub.add_parser("sources", help="source health and coverage")
     sources.add_argument("--json", action="store_true", help="machine-readable output")
 
+    story = sub.add_parser("story", help="story grouping: inspect it, correct it, undo the edit")
+    story_sub = story.add_subparsers(dest="action", required=True)
+    story_show = story_sub.add_parser("show", help="members, relationships and independence")
+    story_show.add_argument("key", help="story key as shown in the grid or a signal")
+    story_show.add_argument("--json", action="store_true", help="machine-readable output")
+    story_merge = story_sub.add_parser("merge", help="move one story into another")
+    story_merge.add_argument("from_key")
+    story_merge.add_argument("into_key")
+    story_merge.add_argument("--note", default="", help="why the merge was made")
+    story_split = story_sub.add_parser("split", help="take one signal out of its story")
+    story_split.add_argument("item_hash")
+    story_split.add_argument("--note", default="", help="why the split was made")
+    story_undo = story_sub.add_parser("undo", help="restore the story a merge or split moved")
+    story_undo.add_argument("target", help="an item hash, or a story key with --all")
+    story_undo.add_argument("--all", action="store_true", dest="all_in_story",
+                            help="restore every corrected row in that story")
+
     args = parser.parse_args(argv)
     conn = _connect()
     try:
@@ -1423,6 +1495,50 @@ def main(argv):
             else:
                 _print_sources(summary)
             return 0
+
+        if args.command == "story":
+            if args.action == "show":
+                report = story_report(conn, args.key)
+                if report is None:
+                    print(f"[FAIL] no stored signals in story {args.key!r}")
+                    return 2
+                if args.json:
+                    print(json.dumps(report, indent=2, ensure_ascii=False))
+                else:
+                    _print_story(report)
+                return 0
+            if args.action == "merge":
+                try:
+                    moved = hbnscan.merge_stories(conn, args.from_key, args.into_key,
+                                                  note=args.note)
+                except ValueError as exc:
+                    print(f"[FAIL] {exc}")
+                    return 2
+                print(f"[OK] {moved} signal(s) moved into {args.into_key}"
+                      " (undo with: story undo <story> --all)")
+                return 0
+            if args.action == "split":
+                try:
+                    key = hbnscan.split_from_story(conn, args.item_hash, note=args.note)
+                except ValueError as exc:
+                    print(f"[FAIL] {exc}")
+                    return 2
+                print(f"[OK] {args.item_hash} now stands alone as {key}")
+                return 0
+            if args.action == "undo":
+                try:
+                    restored = hbnscan.undo_story_change(
+                        conn,
+                        item_hash_value="" if args.all_in_story else args.target,
+                        cluster_key=args.target if args.all_in_story else "")
+                except ValueError as exc:
+                    print(f"[FAIL] {exc}")
+                    return 2
+                if not restored:
+                    print("[OK] nothing to undo: that signal has no manual correction")
+                    return 0
+                print(f"[OK] restored {restored} signal(s) to their previous story")
+                return 0
 
         if args.command == "entity":
             report = entity_report(conn, args.query, args.limit)

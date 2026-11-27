@@ -100,6 +100,15 @@ fresh, and several outlets repeating one story are shown as delivery hosts, not 
 corroboration. The breakdown is stored with the assessment, so history explains itself, and it
 is returned by the API and shown in the web detail pane.
 
+**Stories, not duplicates.** A development can arrive as four rows: the same URL twice, a
+syndicated rewrite under another headline, and one near-duplicate. Those are grouped into one
+story and the *reason* is recorded — `duplicate`, `syndicated` or `near_duplicate` — because the
+same text appearing twice is not two outlets reporting it. Stories that merely share a company
+name are shown as related and deliberately not merged, and source counts are reported as delivery
+and publisher hosts with the independence verdict spelled out (`single_publisher`,
+`multiple_hosts`, `partial` or `unknown`). Every grouping can be corrected by hand and undone:
+`hbnscan.py story show|merge|split|undo`.
+
 **Records.** The engine stores one row per observed item, but it reasons in `hbrecords` terms:
 a *source* is not an *article*, an article is not a *story*, a *signal* is not an *assessment*,
 and a re-grade is a new assessment rather than a rewrite of the evidence. Every record has a
