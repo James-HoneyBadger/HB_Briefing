@@ -637,7 +637,7 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _is_public_asset(route):
         if route in ("/manifest.webmanifest", "/sw.js", "/favicon.ico",
-                     "/apple-touch-icon.png"):
+                     "/apple-touch-icon.png", "/healthz"):
             return True
         return _icon_size(route) is not None
 
@@ -714,6 +714,17 @@ class Handler(BaseHTTPRequestHandler):
                 page = PAGE.replace("__THEME_CSS__", THEME_CSS).replace(
                     "__TOKEN__", "" if self.require_auth else self.token)
                 return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            if route == "/healthz":
+                # Liveness for a container or a reverse proxy. Public because it exposes no
+                # data beyond "the process is up and the database answers"; a health check
+                # that needs a credential cannot be run by the thing it monitors.
+                try:
+                    with closing(_connect()) as conn:
+                        conn.execute("SELECT 1").fetchone()
+                except sqlite3.Error:
+                    return self._send(503, {"status": "error",
+                                            "detail": "database unavailable"})
+                return self._send(200, {"status": "ok", "product": "HB Briefing"})
             if not self._read_allowed(route):
                 return self._error(401, "this server needs the token; open /?token=... once")
             if route == "/api/state":

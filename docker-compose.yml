@@ -20,7 +20,10 @@ services:
     environment:
       TZ: ${TZ:-UTC}
       PORT: ${PORT:-8765}
-      # 0600 in the container, but a token in the URL is still a token: keep it to loopback.
+      # The container binds 0.0.0.0, so reads and writes both need this token: open
+      # http://127.0.0.1:8765/?token=<value> once and the browser keeps a session cookie.
+      # Set it here, or read the generated one from `docker compose logs`. Empty means a new
+      # random token on every start, which also invalidates existing sessions.
       HB_WEB_TOKEN: ${HB_WEB_TOKEN:-}
       # The LLM key can live here instead of in the volume's .env; both are read.
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -31,8 +34,9 @@ services:
       # topics.txt, profiles/, settings.json, .env, latest_report.md.
       - hb-data:/data
     healthcheck:
+      # /healthz is public by design (no data, database check); /api/state needs the token.
       test: ["CMD", "python3", "-c",
-             "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=4).status==200 else 1)"]
+             "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=4).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 20s

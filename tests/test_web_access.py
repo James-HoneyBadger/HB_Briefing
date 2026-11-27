@@ -143,6 +143,12 @@ class RemoteAccessTest(unittest.TestCase):
                 urllib.request.Request(f"http://127.0.0.1:{self.port}{path}"), timeout=5) as resp:
             return resp.status
 
+    def test_health_is_public_and_needs_no_credential(self):
+        # A container or reverse proxy cannot hold the token, so liveness must be readable.
+        status, body, _headers = self.request("/healthz")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["status"], "ok")
+
     def test_install_assets_stay_public_because_they_carry_no_data(self):
         for path in ("/manifest.webmanifest", "/sw.js", "/favicon.ico", "/icon-192.png"):
             self.assertEqual(self.status_of(path), 200, path)

@@ -235,9 +235,20 @@ Configuration comes from either place, and both are read:
   `PORT`, `TZ`);
 - or `/data/.env` inside the volume, which is what the desktop app would write.
 
-The published port is bound to `127.0.0.1` on purpose. The web app has a token for mutating
-requests, but it is not an authentication system: put it behind your own reverse proxy with TLS
-before exposing it, and set `HB_WEB_TOKEN` to something long.
+The published port is bound to `127.0.0.1` on purpose. Inside the container the app binds
+`0.0.0.0`, which is not loopback, so it runs its **authenticated** mode: reads and writes both
+need the token, and the browser keeps a signed session cookie after a single sign-in.
+
+- Set `HB_WEB_TOKEN` to something long, or leave it empty and read the generated one from
+  `docker compose logs`. An empty value means a fresh random token on every start, which also
+  signs every existing session out.
+- Open `http://127.0.0.1:8765/?token=<the token>` once. The token is exchanged for a
+  `HttpOnly` cookie and the address bar is cleaned, so it does not end up in history.
+- `/healthz` is public and checks the database: that is what the container health check uses,
+  and what your own monitoring should use. Everything under `/api/` is not.
+
+The token gates access; it does not encrypt anything. Put the port behind your own reverse proxy
+with TLS before exposing it beyond the host.
 
 The image carries the CLI, the web app and the terminal UI — but not Tkinter, because there is no
 screen in a container. Use the desktop packages for the GUI.

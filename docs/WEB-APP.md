@@ -82,6 +82,9 @@ instead of assuming one:
 - **Query-string tokens are limited to one place** — a download the browser navigates to
   (`/api/export`). Every other route reads only the header or the cookie, so a token cannot leak
   into history, a log or a `Referer`. Request logs redact any `token=` value.
+- **`/healthz` is public.** It answers `{"status": "ok"}` after a `SELECT 1`, so a container
+  health check or a reverse proxy can probe liveness without holding the token. It exposes no
+  data beyond that; every `/api/` route is gated as described above.
 - **Rate limits** apply per client address: 300 reads and 60 writes per minute, answered with
   `429` rather than being queued.
 - Requests whose `Host` header is not the address the server bound are rejected (421), which

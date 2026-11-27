@@ -63,21 +63,31 @@ jobs:
         run: docker build -t hb-briefing:test .
       - name: Start it and ask it for state
         run: |
-          docker run -d --name hb-smoke -p 8765:8765 hb-briefing:test
+          # The container binds 0.0.0.0, so it runs the authenticated path: liveness is the
+          # public /healthz, and a read needs the token. Both are asserted below.
+          docker run -d --name hb-smoke -e HB_WEB_TOKEN=ci-smoke-token -p 8765:8765 hb-briefing:test
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8765/api/state -o /tmp/state.json; then break; fi
+            if curl -fsS http://127.0.0.1:8765/healthz -o /tmp/health.json; then break; fi
             sleep 2
           done
+          test -s /tmp/health.json
+          grep -q '"status": "ok"' /tmp/health.json
+          curl -fsS -H "X-HB-Token: ci-smoke-token" \
+            http://127.0.0.1:8765/api/state -o /tmp/state.json
           test -s /tmp/state.json
           grep -q '"product": "HB Briefing' /tmp/state.json
           grep -q '"mode": "offline"' /tmp/state.json
+          # An unauthenticated read must be refused, or the boundary is not doing anything.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/api/state)
+          test "$code" = "401"
       - name: Seeding and state survive a restart
         run: |
           docker exec hb-smoke python3 /app/hbnscan.py --seed-feeds
           docker exec hb-smoke test -s /data/feeds.txt
           docker restart hb-smoke >/dev/null
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8765/api/state > /dev/null; then break; fi
+            if curl -fsS -H "X-HB-Token: ci-smoke-token" \
+                 http://127.0.0.1:8765/api/state > /dev/null; then break; fi
             sleep 2
           done
           docker exec hb-smoke test -s /data/watchdog_state.db

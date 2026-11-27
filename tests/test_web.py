@@ -121,6 +121,10 @@ class WebApiTest(unittest.TestCase):
         self.assertIn("Running in Offline Mode", page)
         self.assertIn("hb-offline-notice", page, "the dismissal must be remembered locally")
 
+    def test_health_endpoint_answers_without_a_token_on_loopback(self):
+        health = self.get_json("/healthz")
+        self.assertEqual(health["status"], "ok")
+
     def test_service_worker_is_served_with_a_javascript_type(self):
         status, body, ctype = self.request_bytes("/sw.js")
         self.assertEqual(status, 200)

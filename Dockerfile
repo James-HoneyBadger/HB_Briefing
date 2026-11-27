@@ -40,10 +40,11 @@ USER briefing
 VOLUME ["/data"]
 EXPOSE 8765
 
-# The web app answers /api/state without a token; that is enough to prove it is alive.
+# /healthz needs no credential and checks the database, so the health check can run without
+# knowing the access token. /api/state needs the token: the container binds beyond loopback.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python3 -c "import urllib.request,sys; \
-sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=4).status==200 else 1)"
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=4).status==200 else 1)"
 
 ENTRYPOINT ["/usr/local/bin/hb-briefing"]
 CMD ["web"]

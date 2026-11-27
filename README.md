@@ -80,7 +80,9 @@ and the schedule or theme you set in one is what the others show. None of them c
 logic: they all call the same engine.
 
 The web app is a single self-contained page — no framework, no CDN, no build step — bound to
-loopback and gated by a per-run token. The terminal UI is curses, so it works over SSH with
+loopback and gated by a per-run token. A non-loopback bind (including the container, which
+publishes `0.0.0.0`) requires that token for reads as well as writes, exchanged once for a signed
+session cookie. The terminal UI is curses, so it works over SSH with
 nothing installed but Python. Details and the HTTP API: [Web app and terminal UI](./docs/WEB-APP.md).
 
 **Scheduling** is exposed in each of them, so the timer is never buried in a file:
