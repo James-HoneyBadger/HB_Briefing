@@ -1468,6 +1468,20 @@ def main(argv):
     sources = sub.add_parser("sources", help="source health and coverage")
     sources.add_argument("--json", action="store_true", help="machine-readable output")
 
+    review = sub.add_parser(
+        "review", help="what changed since you last looked, and marking that you looked")
+    review.add_argument("--dossier", help="scope to one dossier, named or by id")
+    review.add_argument("--story", help="scope to one story key")
+    review.add_argument("--since", default="", help="explicit start time (ISO 8601)")
+    review.add_argument("--days", type=int, default=None,
+                        help="compare against the last N days when nothing was acknowledged")
+    review.add_argument("--ack", action="store_true",
+                        help="record that you have reviewed this, then stop")
+    review.add_argument("--note", default="", help="why this was acknowledged")
+    review.add_argument("--stored", action="store_true",
+                        help="print the last stored summary instead of computing a new one")
+    review.add_argument("--json", action="store_true", help="machine-readable output")
+
     story = sub.add_parser("story", help="story grouping: inspect it, correct it, undo the edit")
     story_sub = story.add_subparsers(dest="action", required=True)
     story_show = story_sub.add_parser("show", help="members, relationships and independence")
@@ -1494,6 +1508,57 @@ def main(argv):
                 print(json.dumps(summary, indent=2, ensure_ascii=False))
             else:
                 _print_sources(summary)
+            return 0
+
+        if args.command == "review":
+            subject_type, subject_id = "", ""
+            if args.dossier:
+                row = resolve_dossier(conn, args.dossier)
+                if row is None:
+                    print(f"[FAIL] no dossier matches {args.dossier!r}")
+                    return 2
+                subject_type, subject_id = "dossier", row["name"]
+            elif args.story:
+                subject_type, subject_id = "story", args.story
+
+            if args.stored:
+                stored = hbnscan.latest_change_summary(conn, subject_type, subject_id)
+                if stored is None:
+                    print("[OK] no stored summary for that subject yet")
+                    return 0
+                if args.json:
+                    print(json.dumps(stored, indent=2, ensure_ascii=False))
+                else:
+                    print(hbnscan.render_changes(stored))
+                return 0
+
+            if args.ack:
+                try:
+                    if subject_type:
+                        when = hbnscan.acknowledge(conn, subject_type, subject_id, args.note)
+                    else:
+                        when = hbnscan.acknowledge(conn, "briefing", "all", args.note)
+                except ValueError as exc:
+                    print(f"[FAIL] {exc}")
+                    return 2
+                target = f"{subject_type}:{subject_id}" if subject_type else "the briefing"
+                print(f"[OK] {target} acknowledged at {when}")
+                return 0
+
+            try:
+                summary = hbnscan.review_subject(
+                    conn, subject_type, subject_id, since=args.since, days=args.days)
+            except ValueError as exc:
+                print(f"[FAIL] {exc}")
+                return 2
+            if args.json:
+                print(json.dumps(summary, indent=2, ensure_ascii=False))
+            else:
+                print(hbnscan.render_changes(summary))
+                if subject_type:
+                    print("")
+                    print(f"Mark this reviewed: hbnscan.py review --{subject_type} "
+                          f"{subject_id} --ack")
             return 0
 
         if args.command == "story":

@@ -100,6 +100,15 @@ fresh, and several outlets repeating one story are shown as delivery hosts, not 
 corroboration. The breakdown is stored with the assessment, so history explains itself, and it
 is returned by the API and shown in the web detail pane.
 
+**What changed, not what exists.** Collection and review are separate clocks: acknowledging a
+subject records that you looked, without dismissing or deleting anything. `hbnscan.py review`
+then answers the question that actually matters — *what is different since I last looked* — and
+says which watermark it used. A brand-new development and an existing story that gained another
+report are listed separately, a revised verdict shows both the old and the new judgement, and
+new entities are diffed against everything already known so a company mentioned every day is not
+announced as new each morning. Summaries are stored, so `review --stored` replays exactly what you
+were shown.
+
 **Stories, not duplicates.** A development can arrive as four rows: the same URL twice, a
 syndicated rewrite under another headline, and one near-duplicate. Those are grouped into one
 story and the *reason* is recorded — `duplicate`, `syndicated` or `near_duplicate` — because the

@@ -1066,6 +1066,13 @@ copying: one subject, a subject plus a complaint venue, and an investor.
 
 ## 13. Appearance and keyboard
 
+**Reviewing what changed.** `hbnscan.py review` prints only what arrived since your last review —
+new developments, updates to stories you were already following, revised assessments with both
+sides shown, and entities that had not appeared before. `review --ack` records that you have
+looked; it moves the watermark and touches nothing else, so a reminder never becomes a deletion.
+`review --dossier "Acme"` scopes the answer to one research subject, and `review --stored`
+replays the last summary exactly as you saw it.
+
 **Themes.** Six palettes — classic (default for a new installation: muted light, slate header,
 brass accent), dark, light, midnight, solarized and high contrast —
 switchable in Settings and applied to every widget instantly, including the table, log, dialogs

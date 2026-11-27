@@ -151,6 +151,7 @@ with every edit, so this map names the entry points instead; follow the banner c
 | export | `_export_filters`, `select_signals`, `export_rows`, `render_*`, `export_items` | one filter builder, all formats |
 | scheduling | `run_daemon` | headless loop |
 | explanation | `explain_assessment`, `cluster_coverage`, `cluster_coverage_map` | the axes behind a priority, with a reason for each |
+| change intelligence | `acknowledge`, `review_state`, `changes_since`, `review_subject`, `render_changes`, `save_change_summary` | what is new against a watermark the user controls |
 | dismissals / reclassify | `dismiss_item`, `reclassify` | auditable state transitions |
 | report | `_report_summary`, `_report_new_section`, `write_report` | `latest_report.md` |
 | CLI | `_apply_cli_schedule`, `__main__` dispatch | flags, and the `dossier`/`action`/`sources` hand-off |
@@ -1112,7 +1113,7 @@ factory) and does three things in order:
 3. Ordered data steps in `_MIGRATIONS`, each guarded by `PRAGMA user_version`, then
    `user_version = SCHEMA_VERSION`.
 
-Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **8**:
+Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **9**:
 
 | Version | Step | What it does |
 | --- | --- | --- |
@@ -1124,6 +1125,7 @@ Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **8**:
 | 6 | — (schema only) | adds `assessment_history`, the append-only judgement log |
 | 7 | — (schema only) | adds `assessment_history.dimensions` and `.rationale`, so a stored judgement keeps the axes it was made with |
 | 8 | — (schema only) | adds `story_links` (typed relationships) and `story_overrides` (reversible manual corrections) |
+| 9 | — (schema only) | adds `acknowledgments` (what the user has reviewed) and `change_summaries` (stored change reports) |
 
 Table and column creation is separate from the versioned steps: `_create_schema` and
 `_ensure_columns` are idempotent and run on every open, and the version gates only work that
@@ -1786,13 +1788,61 @@ Fuzzy matching and embeddings were rejected on purpose: they need a threshold th
 justified from the data, and they fail silently. The migration step `2` backfills the keys for
 rows stored before clustering existed.
 
-### 19.9 Workspace CLI
+### 19.9 Change intelligence
+
+Collection and review are two different clocks. Items arrive whether or not anyone looks, and
+having looked is a fact only the user can supply. `acknowledgments` records that second clock:
+
+| Column | Meaning |
+| --- | --- |
+| `subject_type`, `subject_id` | `signal`, `story`, `dossier`, or `briefing` (the unscoped review) |
+| `acked_at` | when the subject was reviewed, with microseconds |
+| `note` | optional, why |
+
+Acknowledging never deletes or dismisses anything, so the record of what was collected is
+unaffected. `review_state(conn, item_hash)` answers "have I already reviewed this?".
+
+**What changed** is `changes_since(conn, since, subject_type="", subject_id="", until=None)`,
+which lists only material after the watermark and separates findings that usually get conflated:
+
+| Section | What it contains | Why it is separate |
+| --- | --- | --- |
+| `new_signals` | visible rows first stored after the watermark whose story did not exist before it | a new development |
+| `story_updates` | visible rows added to a story that predates the watermark (with `story_first_seen`) | the same story gaining a report, not a new event |
+| `revised_assessments` | assessment-history rows after the watermark with a `supersedes`, carrying `from` and `to` | a changed judgement, with both sides visible |
+| `new_entities` | entity names that first appear in this window | genuinely new, not everything mentioned |
+| `story_corrections` | `story_overrides` written in this window | a manual merge or split the user made |
+
+Dismissed rows are excluded, and an initial assessment is not reported as a revision. Entities
+are diffed against everything visible before the watermark, so a company mentioned every day is
+not announced as new each morning.
+
+**Which watermark.** `review_subject()` uses, in order: an explicit `--since`; the subject's last
+acknowledgment; otherwise the last *N* days (default 1). The answer records `basis`
+(`explicit`, `last acknowledgment`, `last N day(s)`) and `acknowledged_at`, because "since
+yesterday" and "since you last looked" are different questions and an answer that hides which one
+it answered is misleading. `acked_at` carries microseconds so a row collected in the same second
+as the acknowledgment reads as already reviewed instead of reappearing.
+
+**Reproducibility.** Each scoped summary is written to `change_summaries` with its payload, and
+`latest_change_summary()` returns it unchanged: `review --stored` shows exactly what was shown,
+even if the rendering has since changed. `render_changes()` is the one Markdown rendering, so the
+CLI and any report that embeds a change summary agree.
+
+**Known gap.** Contradictory *claims* are not yet reported, because the engine does not extract
+claims from article text; the record exists (`hbrecords.Claim`) but nothing populates it. What is
+reported is a change in the assessment itself, which is honest but narrower.
+
+### 19.10 Workspace CLI
 
 `hbnscan.py` dispatches `entity`, `dossier`, `action` and `sources` to `hbworkspace.main(argv)`
 before the flag-based path, so these commands never start a scan:
 
 | Command | Behaviour |
 | --- | --- |
+| `review [--days N \| --since ISO] [--dossier NAME \| --story KEY] [--json]` | what is genuinely new since the watermark; says which watermark it used |
+| `review --ack [--note TEXT]` | record that the subject has been reviewed; moves the watermark only |
+| `review --stored` | replay the last stored summary unchanged |
 | `story show KEY [--json]` | members, typed relationships, independence verdict, related stories, manual corrections |
 | `story merge FROM INTO [--note TEXT]` | move one story into another (reversible) |
 | `story split HASH [--note TEXT]` | take one signal out of its story (reversible) |
@@ -1819,7 +1869,7 @@ script. Identifiers may be an id or a dossier name, so scripts can stay readable
 python3 hbnscan.py dossier report "Acme fiber" --export acme.md
 ```
 
-### 19.10 Entity index
+### 19.11 Entity index
 
 `entity_report(conn, query, limit=200)` reverses the entity extraction. Stage 1 stores entities
 as JSON groups (`{"companies": [...], "agencies": [...]}`) on each graded row; the index reads

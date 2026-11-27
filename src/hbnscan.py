@@ -360,7 +360,7 @@ SCAN_RUN_EXTRA_COLUMNS = (
 
 # Bumped when a step is added to _MIGRATIONS; stored in PRAGMA user_version so a database
 # can be upgraded exactly once. Additive column sync alone cannot backfill or index.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SOURCE_LAYERS = ("watchlist", "topic", "heuristic", "model")
 
@@ -2179,6 +2179,31 @@ def _create_schema(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_assessment_signal "
                  "ON assessment_history (item_hash, recorded_at)")
+    # What the user has reviewed. Kept apart from collection on purpose: reading the news and
+    # having read it are different facts, and only the second one should silence a reminder.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS acknowledgments (
+            subject_type TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            acked_at TEXT NOT NULL,
+            note TEXT DEFAULT '',
+            PRIMARY KEY (subject_type, subject_id)
+        )
+    """)
+    # Generated change summaries are stored, so a user can retrieve exactly what they were
+    # shown rather than whatever the current code would say about that period.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS change_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_type TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            since TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_change_summaries "
+                 "ON change_summaries (subject_type, subject_id, id DESC)")
     # Typed story relationships. `cluster_key` says which story a row belongs to; this says
     # *why*, so a duplicate is never mistaken for corroboration of itself.
     conn.execute("""
@@ -4164,6 +4189,307 @@ def related_stories(conn, cluster_key, limit=5):
     return ordered[:limit]
 
 
+# --------------------------------------------------------------------------- change intelligence
+#
+# "What changed" is a different question from "what is there". Collection appends; a person
+# reads, decides and moves on. Those two clocks are kept apart: acknowledging a subject records
+# when it was reviewed, and every change summary compares against that watermark.
+
+ACKNOWLEDGMENT_SCOPES = ("signal", "story", "dossier", "briefing")
+
+
+def acknowledge(conn, subject_type, subject_id, note=""):
+    """Record that the user has reviewed a subject. Returns the timestamp used.
+
+    Repeated acknowledgments move the watermark forward; they never delete anything, so the
+    record of what was collected is untouched.
+    """
+    if subject_type not in ACKNOWLEDGMENT_SCOPES:
+        raise ValueError(f"unknown subject type {subject_type!r}")
+    subject_id = str(subject_id or "").strip()
+    if not subject_id:
+        raise ValueError("a subject id is required")
+    # Microseconds on purpose: a row stored in the same second as the acknowledgment has a
+    # second-precision `seen_at`, and must read as already reviewed rather than reappear.
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO acknowledgments (subject_type, subject_id, acked_at, note) "
+        "VALUES (?, ?, ?, ?)", (subject_type, subject_id, now, note or ""))
+    conn.commit()
+    return now
+
+
+def acknowledgment(conn, subject_type, subject_id):
+    """When a subject was last reviewed, or None."""
+    row = conn.execute(
+        "SELECT subject_type, subject_id, acked_at, note FROM acknowledgments "
+        "WHERE subject_type = ? AND subject_id = ?",
+        (subject_type, str(subject_id or ""))).fetchone()
+    return dict(row) if row else None
+
+
+def review_state(conn, item_hash_value):
+    """Whether one signal has been reviewed, and when."""
+    found = acknowledgment(conn, "signal", item_hash_value)
+    return {"acknowledged": bool(found),
+            "acked_at": found["acked_at"] if found else "",
+            "note": found["note"] if found else ""}
+
+
+def _subject_scope(subject_type, subject_id):
+    """The SQL that restricts a change summary to one subject, plus its parameters."""
+    if not subject_type:
+        return "", ()
+    if subject_type == "dossier":
+        return (" AND item_hash IN (SELECT item_hash FROM dossier_items "
+                "WHERE dossier_id = (SELECT id FROM dossiers WHERE name = ? COLLATE NOCASE))",
+                (subject_id,))
+    if subject_type == "story":
+        return " AND cluster_key = ?", (subject_id,)
+    if subject_type == "signal":
+        return " AND item_hash = ?", (subject_id,)
+    raise ValueError(f"unknown subject type {subject_type!r}")
+
+
+def _entity_names(conn, since, subject_type="", subject_id=""):
+    """Entity names seen before and after `since`; the difference is what is genuinely new."""
+    scope, params = _subject_scope(subject_type, subject_id)
+    before, after = set(), {}
+    rows = conn.execute(
+        f"SELECT item_hash, seen_at, entities FROM seen_items WHERE {VISIBLE_SQL}{scope}",
+        params).fetchall()
+    for _item_hash, seen_at, payload in rows:
+        try:
+            entities = json.loads(payload or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(entities, dict):
+            continue
+        bucket = after if (seen_at or "") >= since else before
+        for kind, values in entities.items():
+            for value in values if isinstance(values, list) else ():
+                name = str(value).strip()
+                if not name:
+                    continue
+                key = (str(kind), name)
+                if bucket is before:
+                    before.add(key)
+                else:
+                    after.setdefault(key, {"kind": str(kind), "name": name,
+                                           "first_seen": seen_at or ""})
+    return [entry for key, entry in sorted(after.items())
+            if key not in before]
+
+
+def changes_since(conn, since, subject_type="", subject_id="", until=None):
+    """Everything that is genuinely different after `since`, scoped to a subject when given.
+
+    Only what arrived is listed. Nothing is repeated from before the watermark, and a revised
+    assessment is reported as a change of judgement with both sides visible.
+    """
+    if not since:
+        raise ValueError("a start time is required")
+    until = until or datetime.now().isoformat(timespec="seconds")
+    scope, params = _subject_scope(subject_type, subject_id)
+
+    new_rows = conn.execute(
+        "SELECT item_hash, title, link, feed_url, severity, category, published, seen_at, "
+        f"cluster_key FROM seen_items WHERE {VISIBLE_SQL} AND seen_at >= ?{scope} "
+        "ORDER BY seen_at ASC, rowid ASC", (since, *params)).fetchall()
+
+    # A row that joins a story already stored before the watermark is an update to that story,
+    # not a new development. Conflating the two is what makes a briefing feel repetitive.
+    new_signals, story_updates = [], []
+    for row in new_rows:
+        entry = {"item_hash": row["item_hash"], "title": row["title"] or "",
+                 "severity": (row["severity"] or "none").lower(),
+                 "category": row["category"] or "", "published": row["published"] or "",
+                 "seen_at": row["seen_at"] or "", "story": row["cluster_key"] or "",
+                 "source": urlparse(row["feed_url"] or "").hostname or ""}
+        story_key = row["cluster_key"] or ""
+        older = None
+        if story_key:
+            older = conn.execute(
+                "SELECT MIN(seen_at) FROM seen_items WHERE cluster_key = ? AND item_hash != ?",
+                (story_key, row["item_hash"])).fetchone()[0]
+        if older and older < since:
+            entry["story_first_seen"] = older
+            story_updates.append(entry)
+        else:
+            new_signals.append(entry)
+
+    revised = []
+    history = conn.execute(
+        "SELECT id, item_hash, recorded_at, category, severity, method, analysis, supersedes "
+        "FROM assessment_history WHERE recorded_at >= ? ORDER BY recorded_at ASC",
+        (since,)).fetchall()
+    for entry in history:
+        if not entry["supersedes"]:
+            continue                     # the first judgement is not a revision
+        if subject_type:
+            keep = conn.execute(
+                f"SELECT 1 FROM seen_items WHERE item_hash = ?{scope}",
+                (entry["item_hash"], *params)).fetchone()
+            if not keep:
+                continue
+        previous = conn.execute(
+            "SELECT category, severity, method, analysis FROM assessment_history WHERE id = ?",
+            (entry["supersedes"],)).fetchone()
+        title = conn.execute("SELECT title FROM seen_items WHERE item_hash = ?",
+                             (entry["item_hash"],)).fetchone()
+        revised.append({
+            "item_hash": entry["item_hash"],
+            "title": (title[0] if title else "") or "",
+            "recorded_at": entry["recorded_at"] or "",
+            "method": entry["method"] or "",
+            "from": {"category": previous[0] if previous else "",
+                     "severity": previous[1] if previous else "",
+                     "method": previous[2] if previous else ""},
+            "to": {"category": entry["category"] or "", "severity": entry["severity"] or ""},
+        })
+
+    corrections = []
+    overrides = conn.execute(
+        "SELECT o.item_hash, o.previous_key, o.new_key, o.action, o.note, o.created_at, "
+        "s.title FROM story_overrides o LEFT JOIN seen_items s ON s.item_hash = o.item_hash "
+        "WHERE o.created_at >= ? ORDER BY o.created_at ASC", (since,)).fetchall()
+    for entry in overrides:
+        if subject_type == "story" and entry["new_key"] != subject_id:
+            continue
+        corrections.append({"item_hash": entry["item_hash"], "title": entry["title"] or "",
+                            "action": entry["action"] or "",
+                            "from_key": entry["previous_key"] or "",
+                            "to_key": entry["new_key"] or "",
+                            "note": entry["note"] or "",
+                            "created_at": entry["created_at"] or ""})
+
+    entities = _entity_names(conn, since, subject_type, subject_id)
+
+    summary = {
+        "since": since,
+        "until": until,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "subject": {"type": subject_type, "id": subject_id} if subject_type else None,
+        "new_signals": new_signals,
+        "story_updates": story_updates,
+        "revised_assessments": revised,
+        "new_entities": entities,
+        "story_corrections": corrections,
+        "counts": {
+            "new_signals": len(new_signals),
+            "story_updates": len(story_updates),
+            "revised_assessments": len(revised),
+            "new_entities": len(entities),
+            "story_corrections": len(corrections),
+        },
+        "notes": [
+            "only new material is listed; nothing from before the watermark is repeated",
+            "a story update means an existing story gained a report, not a new development",
+        ],
+    }
+    return summary
+
+
+def save_change_summary(conn, summary):
+    """Store a generated summary, so what the user was shown can be retrieved unchanged."""
+    subject = summary.get("subject") or {"type": "briefing", "id": "all"}
+    conn.execute(
+        "INSERT INTO change_summaries (subject_type, subject_id, since, generated_at, payload) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (subject.get("type") or "", subject.get("id") or "", summary["since"],
+         summary["generated_at"], json.dumps(summary, ensure_ascii=False)))
+    conn.commit()
+    return summary
+
+
+def latest_change_summary(conn, subject_type="", subject_id=""):
+    """The most recent stored summary for a subject, or None."""
+    subject_type, subject_id = _review_subject(subject_type, subject_id)
+    row = conn.execute(
+        "SELECT payload FROM change_summaries WHERE subject_type = ? AND subject_id = ? "
+        "ORDER BY id DESC LIMIT 1", (subject_type, subject_id)).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _review_subject(subject_type, subject_id):
+    """An unscoped review is the briefing as a whole, and is acknowledged as such."""
+    if subject_type:
+        return subject_type, str(subject_id or "")
+    return "briefing", "all"
+
+
+def review_subject(conn, subject_type="", subject_id="", since=None, days=None,
+                   save=True, until=None):
+    """The change report the CLI and front ends show: watermark, summary and what was reviewed.
+
+    Without an explicit `since`, the subject's last acknowledgment is used; without an
+    acknowledgment, the last `days` (default 1) are compared. The answer always states which
+    watermark it used, because "since yesterday" and "since you last looked" differ.
+    """
+    lookup_type, lookup_id = _review_subject(subject_type, subject_id)
+    found = acknowledgment(conn, lookup_type, lookup_id)
+    watermark = (since or "").strip()
+    basis = "explicit"
+    if not watermark and found:
+        watermark = found["acked_at"]
+        basis = "last acknowledgment"
+    if not watermark:
+        days = 1 if days is None else int(days)
+        watermark = (datetime.now() - timedelta(days=max(0, days))).isoformat(
+            timespec="seconds")
+        basis = f"last {days} day(s)"
+    summary = changes_since(conn, watermark, subject_type, subject_id, until=until)
+    summary["basis"] = basis
+    summary["acknowledged_at"] = found["acked_at"] if found else ""
+    summary["subject"] = {"type": lookup_type, "id": lookup_id}
+    if save:
+        save_change_summary(conn, summary)
+    return summary
+
+
+def render_changes(summary):
+    """A short Markdown rendering, used by the CLI and by any report that embeds it."""
+    lines = [f"Changes since {summary['since']} "
+             f"({summary.get('basis') or 'explicit'})", ""]
+    counts = summary["counts"]
+    if not any(counts.values()):
+        lines.append("Nothing new in this period.")
+        return "\n".join(lines)
+    for key, label in (("new_signals", "New signals"),
+                       ("story_updates", "Updates to existing stories"),
+                       ("revised_assessments", "Revised assessments"),
+                       ("new_entities", "New entities"),
+                       ("story_corrections", "Story corrections")):
+        entries = summary.get(key) or []
+        if not entries:
+            continue
+        lines.append(f"## {label} ({len(entries)})")
+        lines.append("")
+        for entry in entries:
+            if key in ("new_signals", "story_updates"):
+                lines.append(f"- [{entry['severity']}] {entry['title']}"
+                             + (f" — {entry['source']}" if entry.get("source") else ""))
+            elif key == "revised_assessments":
+                lines.append(
+                    f"- {entry['title']}: {entry['from']['severity'] or 'none'}"
+                    f"/{entry['from']['category'] or 'other'} → "
+                    f"{entry['to']['severity'] or 'none'}/{entry['to']['category'] or 'other'}"
+                    f" ({entry['method'] or 'unknown'} method)")
+            elif key == "new_entities":
+                lines.append(f"- {entry['name']} ({entry['kind']})")
+            else:
+                lines.append(f"- {entry['action']} {entry['item_hash'][:12]}: "
+                             f"{entry['from_key'] or '(none)'} → {entry['to_key']}")
+        lines.append("")
+    lines.extend(f"_{note}_" for note in summary.get("notes") or [])
+    return "\n".join(lines).rstrip()
+
+
 def story_record(conn, cluster_key):
     """The canonical `Story` for a stored story, or None when nothing matches."""
     rows = conn.execute(
@@ -5921,7 +6247,8 @@ def cli_main(argv=None):
     if argv is not None:
         sys.argv = [sys.argv[0], *argv]
     bootstrap_home()
-    if sys.argv[1:2] and sys.argv[1] in ("entity", "dossier", "action", "sources", "story"):
+    if sys.argv[1:2] and sys.argv[1] in ("entity", "dossier", "action", "sources", "story",
+                                         "review"):
         try:
             import hbworkspace
         except ImportError as exc:
