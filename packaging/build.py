@@ -45,14 +45,15 @@ ICONS = PACKAGING / "icons"
 
 # Everything the application needs at run time; the tests, packaging and git metadata are not
 # installed. Adding a module here is the one place a new file has to be declared.
-RUNTIME_MODULES = ("hbnscan.py", "hbworkspace.py", "hbconfig.py", "hbnconfig_gui.py",
-                   "hbnscan_gui.py", "hbntui.py", "hbnweb.py", "hbsimilar.py", "hbicons.py",
-                   "hbversion.py")
+RUNTIME_MODULES = ("hbnscan.py", "hbnet.py", "hbtheme.py", "hbworkspace.py", "hbconfig.py",
+                   "hbnconfig_gui.py", "hbnscan_gui.py", "hbntui.py", "hbnweb.py",
+                   "hbsimilar.py", "hbicons.py", "hbversion.py")
 RUNTIME_ASSETS = ("feeds.txt.example", "watchlist.txt.example", "topics.txt.example",
                   ".env.example", "LICENSE", "README.md", "requirements.txt")
 # Only what hbwasm.py needs: the engine, the similarity pass and the version. The browser app
 # runs the same scoring code, so it ships the same files.
-WASM_MODULES = ("hbwasm.py", "hbnscan.py", "hbsimilar.py", "hbversion.py")
+WASM_MODULES = ("hbwasm.py", "hbnscan.py", "hbnet.py", "hbtheme.py", "hbsimilar.py",
+                "hbversion.py")
 # Deliberately absent from the desktop payloads: the browser adapter is only useful in the tab.
 BROWSER_ONLY = ("hbwasm.py",)
 DOC_FILES = {"README.md": "README.md", "USER-MANUAL.md": "USER-MANUAL.md",

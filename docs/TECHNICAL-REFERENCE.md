@@ -100,7 +100,9 @@ The design choices that follow from that:
 
 | File | Lines (approx.) | Responsibility |
 | --- | --- | --- |
-| `hbnscan.py` | 4 400 | Engine: profiles, topics, feeds, scoring, AI, storage and migrations, report, exports, notifications, scheduling, daemon, CLI |
+| `hbnscan.py` | 5 300 | Engine: profiles, topics, feeds, scoring, AI, storage and migrations, report, exports, notifications, scheduling, daemon, CLI |
+| `hbnet.py` | 475 | Network trust boundary: purpose-based destination policy, address classification, DNS pinning, manual redirect validation, capped reads. Every outbound request goes through it |
+| `hbtheme.py` | 145 | Design tokens: the authoritative `PALETTE`, the six `THEMES`, and the CSS custom properties the web app generates from them |
 | `hbworkspace.py` | 900 | Research workspace: dossiers, notes, actions, cited reports, source health, workspace CLI. Deterministic, offline, no network |
 | `hbconfig.py` | 700 | Configuration workspace: lossless documents for `feeds.txt`/`topics.txt`/`watchlist.txt`, profile validation, `.env` budgets and transport, whole-configuration diagnostics |
 | `hbnconfig_gui.py` | 900 | The Configuration window: seven sections over `hbconfig`, with validation and refresh hooks |
@@ -233,7 +235,7 @@ the file is ignored, never echoed into SQL. `_coerce_setting` validates per type
 | `notify_include_watchlist` | bool | Keep (`true`) or exclude declared-interest hits from the digest — **`[Watchlist]` rules and `[Topic]` matches both** |
 | `notify_min_severity` | enum | `high` or `medium` |
 | `notify_max_items` | int | Clamped 1–20 |
-| `theme` | enum | One of `hbnscan.THEME_NAMES` — `dark`, `light`, `midnight`, `solarized`, `contrast`. The engine owns the list so `SETTING_CHOICES`, the GUI `THEMES` dict and the web CSS palettes cannot drift; the GUI validates its own dict against it at import and raises `RuntimeError` on a mismatch, and an unknown stored value falls back to `dark` |
+| `theme` | enum | One of `hbnscan.THEME_NAMES` — `classic`, `dark`, `light`, `midnight`, `solarized`, `contrast`. The list and every palette live in `hbtheme.py`, which the GUI and the web app both read, so `SETTING_CHOICES`, the Tk palettes and the page's CSS custom properties cannot drift; the GUI asserts the two orders agree at import, and an unknown stored value falls back to `hbtheme.DEFAULT_THEME` (`classic`). A new installation starts in `classic`; a saved value is never rewritten |
 | `window_geometry` | string | `WINDOW_GEOMETRY_RE` (`1200x800+10+10`) |
 | `window_state` | enum | `normal`, `zoomed` |
 | `sash` | int | 0–4000 |
@@ -262,7 +264,8 @@ screen shows is what the file holds.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `LLM_API_KEY` | — | Provider key; falls back to `DEEPSEEK_API_KEY` |
+| `LLM_API_KEY` | — | Provider key for a **remote** endpoint; falls back to `DEEPSEEK_API_KEY`. Empty is normal for a local server |
+| `HB_AI_DISABLED` | `0` | Switch every model call off, even with an endpoint and key (`LLM_DISABLED` is an alias) |
 | `LLM_MODEL` | `deepseek-chat` | Model name; falls back to `DEEPSEEK_MODEL` |
 | `LLM_BASE_URL` | DeepSeek chat-completions URL | Any OpenAI-compatible endpoint; falls back to `DEEPSEEK_BASE_URL` |
 | `WATCHDOG_PROFILE` | — | Profile name or path (beats the `profile` setting) |
@@ -811,6 +814,23 @@ updates the module globals (`update_env_file` rewrites only the named keys, pres
 comments and unrelated lines). `check_api()` performs one real triage call and reports the
 verdict, the token usage and the active profile.
 
+**Availability is a property of the endpoint, not of a key.** `ai_status()` resolves four states
+and every front end reads the answer from it:
+
+| Mode | When | Sends a key? |
+| --- | --- | --- |
+| `disabled` | `HB_AI_DISABLED=1` (or the `LLM_DISABLED` alias) | never — no call is made |
+| `offline` | no `LLM_BASE_URL`, or a remote endpoint with no usable key | no call is made |
+| `local` | the endpoint's host is loopback, a private address, `.local`, `.internal` or `.home.arpa` | only if one is set; none is required |
+| `remote` | any other endpoint with a real key | yes |
+
+`llm_api_key()` maps the template values (`""`, `your_deepseek_api_key_here`) to `""`, so a
+placeholder is never sent as a bearer token, and `_call_deepseek` omits the `Authorization`
+header entirely when there is no key. `grading_mode()` stays the two-value answer stored in the
+database and shown in the grid (`model` / `offline`); `describe_grading_mode()` adds the reason,
+including which host the local server is on. A local endpoint is never silently swapped for a
+cloud one: a failure falls back to the deterministic heuristic, which is logged.
+
 The three stages differ only in system prompt, user payload, `max_tokens` and temperature:
 
 | Stage | System prompt | max_tokens | Temperature | Budget |
@@ -1269,9 +1289,11 @@ directly, so a bug in scoring is fixed once.
 
 Mechanics worth knowing:
 
-- **Theming.** `THEMES` maps a name to a palette; `apply_theme()` rebinds module-level colour
-  globals (`BG_PANEL`, `FG_TEXT`, `AMBER`, …) that widgets captured at creation time, so a theme
-  or font change requires `_rebuild_ui()` — the settings dialog destroys itself and calls it.
+- **Theming.** `hbtheme.THEMES` maps a name to a palette (`classic` is the default and is built
+  from `hbtheme.PALETTE`, the authoritative role table); `apply_theme()` rebinds module-level
+  colour globals (`BG_PANEL`, `FG_TEXT`, `AMBER`, …) that widgets captured at creation time, so a
+  theme or font change requires `_rebuild_ui()` — the settings dialog destroys itself and calls
+  it. An unknown name falls back to the default rather than raising.
 - **Persistence.** Geometry, zoom state, sash position, row limit, filters, ordering, theme and
   font scale all live in `settings.json`; `_restore_window` applies them at startup.
 - **Search** is debounced 250 ms and queries the whole database, not just the loaded page.
@@ -1303,12 +1325,13 @@ hbntui/hbnweb ── imports ──► hbnscan  (run_scan, export_items, load_se
 
 | Area | Members |
 | --- | --- |
-| Server | `serve()` builds `ThreadingHTTPServer`, generates `secrets.token_urlsafe(18)`, sets `Handler.token` and `Handler.allowed_hosts`, starts the scheduler, optionally opens a browser |
-| Transport guards | `_host_ok` (Host header must be a bound loopback name, else 421), `_token_ok` (`secrets.compare_digest` over `X-HB-Token` or `?token=`), `_send` (sets `nosniff`, `no-referrer`, `X-Frame-Options: DENY`, `Cache-Control: no-store`), `_body` (`MAX_BODY` cap, JSON only) |
+| Server | `serve()` builds `ThreadingHTTPServer`, generates `secrets.token_urlsafe(18)` and a per-run `session_secret`, sets `Handler.token`, `Handler.allowed_hosts` and `Handler.require_auth` (true for any non-loopback bind), starts the scheduler, optionally opens a browser |
+| Transport guards | `_host_ok` (Host header must be a bound name, else 421), `_token_ok(allow_query=…)` (`secrets.compare_digest` over `X-HB-Token`, or a signed `hb_session` cookie; `?token=` only for `/api/export`), `_read_allowed` (401 on reads when `require_auth` and unauthenticated), `_rate_ok` (300 reads / 60 writes per client per minute, else 429), `_send` (CSP, `nosniff`, `no-referrer`, `X-Frame-Options`, COOP, `Permissions-Policy`, `Cache-Control: no-store`), `_body` (`MAX_BODY` cap, JSON only) |
+| Session | `_session_value` signs `f"{expiry}.{hmac_sha256(expiry)}"`; `_session_ok` verifies the HMAC and the expiry; `/?token=…` exchanges a valid token for the cookie and redirects to `/` with `303` so the token leaves the address bar |
 | Reads | `_signal_payload`, `one_signal`, `cached_resolution`, `export_document` |
 | Writes | `/api/scan`, `/api/scan/cancel`, `/api/dismiss`, `/api/settings` |
 | Scheduling | `start_scan`, `cancel_scan`, `scheduler_step`, `_scheduler_loop` |
-| Page | one `PAGE` string: markup, CSS with five `html[data-theme=…]` palettes, and vanilla JS. `__TOKEN__` is substituted per request so the page carries its own credential |
+| Page | one `PAGE` string: markup, CSS whose `:root` plus six `html[data-theme=…]` blocks are generated from `hbtheme` into `THEME_CSS`, and vanilla JS. `__TOKEN__` is substituted per request on a loopback bind; on a LAN bind it is left empty, because the cookie carries the authorization and the page is reachable by anyone |
 
 Design notes:
 
@@ -1680,10 +1703,15 @@ disagree about whether a name is in the database.
 | **Unsafe links in output** | `safe_link` admits only `http(s)`; report and export renderers escape text (`_md_text`, `html.escape`) |
 | **SQL injection** | Every value is parameterised; the only interpolated SQL is the profile's own category names in `_group_rank`, which are `'`-escaped |
 | **Prompt injection from feeds** | Untrusted text is fenced with explicit markers and instructions; model output is structurally validated and never executed |
-| **SSRF against internal hosts** | Only URLs from `feeds.txt`, topic-generated Google News queries, and links that appeared in those feeds are fetched — a user-supplied list, not remote input. There is no arbitrary URL parameter in the CLI or GUI |
+| **SSRF against internal hosts** | `hbnet` sits in front of every outbound request and decides by *purpose*: a configured feed may reach LAN/loopback, an article link taken from feed content may only reach the public internet. Loopback, private, link-local, reserved, multicast and cloud-metadata addresses are classified before connecting; **all** DNS answers are checked, so one poisoned record cannot hide behind a good one; the socket is pinned to the validated address (closing the check/use gap); redirects are followed by hand and re-validated per hop; embedded credentials, non-http(s) schemes and malformed URLs are refused |
+| **Cloud metadata access** | `169.254.169.254`, `169.254.170.2`, `100.100.100.200`, `fd00:ec2::254` and the metadata hostnames are refused for every purpose, including the ones allowed to reach a LAN |
+| **Unbounded or hostile responses** | `hbnet.read_capped` refuses a declared oversized `Content-Length` before reading and bounds the read itself; `Accept-Encoding: identity` avoids inviting a compression bomb; `WATCHDOG_FETCH_CMD` output is streamed through the same cap with a watchdog that kills a hung child |
 | **Secret leakage** | Keys live in `.env` (written `0600`), masked in logs (`sk-691…366b`), never written to `settings.json`, never exported, never committed (`.gitignore`) |
 | **DNS rebinding against the web app** | The handler rejects any request whose `Host` header is not a bound loopback name (421), so a hostile domain cannot resolve to 127.0.0.1 and drive the API |
-| **Cross-site request forgery** | Every mutating request needs the per-run `secrets.token_urlsafe(18)` token (`X-HB-Token` or `?token=`), compared with `compare_digest`; the token dies with the process |
+| **Cross-site request forgery** | Every mutating request needs the per-run `secrets.token_urlsafe(18)` token (`X-HB-Token`) or a `SameSite=Strict` session cookie, compared with `compare_digest`; the token and the cookie secret die with the process. `?token=` is accepted only on the export download |
+| **Unauthenticated reads on a shared network** | A non-loopback bind sets `require_auth`, so data routes answer 401 without the token or session; the served page carries no token in that mode |
+| **Token leakage into logs or history** | The query-string token is accepted for one download route only, and `log_message` redacts any `token=` value before it reaches stderr |
+| **Denial of service against the API** | Per-client fixed-window rate limits (300 reads, 60 writes per minute) answer 429; `MAX_BODY` caps request bodies |
 | **Cross-site scripting from feed text** | The page writes feed-derived values with `textContent` only; `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY` are set on every response |
 | **Unbounded request bodies** | `_body()` refuses anything over `MAX_BODY` and accepts only JSON |
 | **Secret in the report/export** | Export and report renderers only emit stored signal fields; no environment value is interpolated |

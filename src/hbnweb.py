@@ -19,9 +19,12 @@ a single-user tool: there are no accounts, and nothing is exposed beyond the sig
 import argparse
 import collections
 from contextlib import closing
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -35,9 +38,18 @@ from urllib.parse import parse_qs, urlparse, urlsplit
 
 import hbicons
 import hbnscan
+import hbtheme
 
 MAX_BODY = 64 * 1024
 LOG_LINES = 400
+# Remote mode: the long-lived token is exchanged once for a short-lived signed cookie, so it
+# never has to sit in the address bar, the history file or a proxy log.
+SESSION_COOKIE = "hb_session"
+SESSION_TTL = 12 * 3600
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+READ_LIMIT = 300          # requests per minute and client address
+WRITE_LIMIT = 60          # mutating requests per minute and client address
+RATE_WINDOW = 60.0
 # The engine owns the column set and the read query, so the API cannot drift from the GUI.
 SIGNAL_FIELDS = hbnscan.SIGNAL_COLUMNS
 
@@ -54,6 +66,26 @@ SCAN = {
     "log": collections.deque(maxlen=LOG_LINES),
 }
 SCAN_LOCK = threading.Lock()
+
+
+class _RateLimiter:
+    """A per-client fixed window, enough to blunt a brute-force or a runaway page."""
+
+    def __init__(self):
+        self._hits = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key, limit, now=None):
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            recent = [stamp for stamp in self._hits.get(key, ())
+                      if now - stamp < RATE_WINDOW]
+            if len(recent) >= limit:
+                self._hits[key] = recent
+                return False
+            recent.append(now)
+            self._hits[key] = recent
+            return True
 
 
 def _log(line):
@@ -423,8 +455,8 @@ def manifest_payload(token=""):
         "display": "standalone",
         "display_override": ["standalone", "minimal-ui", "browser"],
         "orientation": "any",
-        "background_color": "#0f131c",
-        "theme_color": "#252f5e",
+        "background_color": hbtheme.palette(hbtheme.DEFAULT_THEME)["bg_main"],
+        "theme_color": hbtheme.palette(hbtheme.DEFAULT_THEME)["header"],
         "categories": ["news", "productivity"],
         "icons": [
             {"src": f"/icon-{size}.png", "sizes": f"{size}x{size}", "type": "image/png",
@@ -461,7 +493,11 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) {
     // Network first: the cache is a fallback for reading offline, never a silent override.
     event.respondWith(fetch(request).then((response) => {
-      if (response.ok) {
+      // Responses marked no-store are data the server does not want left on the device.
+      // Caching them here would quietly overrule that decision.
+      const cacheable = response.ok &&
+        !(response.headers.get("Cache-Control") || "").includes("no-store");
+      if (cacheable) {
         const copy = response.clone();
         caches.open(CACHE).then((cache) => cache.put(request, copy));
       }
@@ -482,12 +518,65 @@ class Handler(BaseHTTPRequestHandler):
     token = ""
     allowed_hosts = set()
     quiet = False
+    # Loopback is a trusted single-user context. A non-loopback bind is not: see serve().
+    require_auth = False
+    session_secret = b""
+    _limiter_lock = threading.Lock()
 
     # -- helpers -----------------------------------------------------------------
     def log_message(self, fmt, *args):
-        # Request logs go to the console, never into the scan log the page displays.
-        if not self.quiet:
-            sys.stderr.write(f"[WEB] {self.address_string()} {fmt % args}\n")
+        # Request logs go to the console, never into the scan log the page displays. A token
+        # that arrives in a query string is redacted before it reaches the terminal or a
+        # systemd journal.
+        if self.quiet:
+            return
+        text = re.sub(r"(token=)[^&\s\"]+", r"\1REDACTED", fmt % args)
+        sys.stderr.write(f"[WEB] {self.address_string()} {text}\n")
+
+    def _limiter(self):
+        """One limiter per bound server class, created on first use."""
+        cls = type(self)
+        with Handler._limiter_lock:
+            limiter = cls.__dict__.get("_limiter_instance")
+            if limiter is None:
+                limiter = _RateLimiter()
+                cls._limiter_instance = limiter
+            return limiter
+
+    def _rate_ok(self, write):
+        limit = WRITE_LIMIT if write else READ_LIMIT
+        return self._limiter().allow(self.client_address[0], limit)
+
+    def _session_value(self, now=None):
+        """A signed, expiring cookie value. The token itself never leaves the server."""
+        if not self.session_secret:
+            return ""
+        expires = int((now if now is not None else time.time()) + SESSION_TTL)
+        payload = str(expires)
+        digest = hmac.new(self.session_secret, payload.encode("ascii"),
+                          hashlib.sha256).hexdigest()
+        return f"{payload}.{digest}"
+
+    def _session_ok(self):
+        if not self.session_secret:
+            return False
+        raw = ""
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE:
+                raw = value
+                break
+        payload, _, digest = raw.partition(".")
+        if not payload or not digest:
+            return False
+        expected = hmac.new(self.session_secret, payload.encode("ascii", "ignore"),
+                            hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(digest, expected):
+            return False
+        try:
+            return int(payload) > int(time.time())
+        except ValueError:
+            return False
 
     def _host_ok(self):
         """Reject Host headers we did not bind: this is the DNS-rebinding guard."""
@@ -510,10 +599,45 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         return False
 
-    def _token_ok(self):
-        supplied = self.headers.get("X-HB-Token", "") or parse_qs(
-            urlparse(self.path).query).get("token", [""])[0]
-        return bool(self.token) and secrets.compare_digest(supplied, self.token)
+    def _token_ok(self, allow_query=False):
+        """A valid `X-HB-Token` header or a live session cookie authorizes the request.
+
+        The query string is accepted only where it has to be — a download the browser
+        navigates to — because a URL ends up in history, logs and referrers.
+        """
+        supplied = self.headers.get("X-HB-Token", "")
+        if not supplied and allow_query:
+            supplied = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+        if self.token and supplied and secrets.compare_digest(supplied, self.token):
+            return True
+        return self._session_ok()
+
+    def _read_allowed(self, route):
+        if not self.require_auth:
+            return True
+        if self._is_public_asset(route):
+            # The manifest, the worker and the icons carry no data; asking for a token to
+            # install the app would only break the install prompt on a LAN.
+            return True
+        return self._token_ok(allow_query=route == "/api/export")
+
+    @staticmethod
+    def _is_public_asset(route):
+        if route in ("/manifest.webmanifest", "/sw.js", "/favicon.ico",
+                     "/apple-touch-icon.png"):
+            return True
+        return _icon_size(route) is not None
+
+    def _set_session_and_redirect(self):
+        """Exchange a valid `?token=` for a cookie, then send the browser to a clean URL."""
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Set-Cookie",
+                         f"{SESSION_COOKIE}={self._session_value()}; Path=/; HttpOnly; "
+                         f"SameSite=Strict; Max-Age={SESSION_TTL}")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send(self, status, body, content_type="application/json", headers=None):
         payload = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
@@ -524,6 +648,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("X-Permitted-Cross-Domain-Policies", "none")
+        self.send_header("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
+        # The page is one inline script and one inline stylesheet with no external fetches,
+        # so this is as tight as it can be while remaining self-contained.
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; img-src 'self' data:; "
+                         "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+                         "connect-src 'self'; manifest-src 'self'; worker-src 'self'; "
+                         "form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         for key, value in (headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -547,13 +681,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):                                        # noqa: N802 (http.server API)
         if not self._host_ok():
             return self._error(421, "unexpected Host header")
+        if not self._rate_ok(write=False):
+            return self._error(429, "too many requests; slow down and retry")
         parsed = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         route = parsed.path
         try:
             if route in ("/", "/index.html"):
-                page = PAGE.replace("__TOKEN__", self.token)
+                supplied = query.get("token", "")
+                if self.token and supplied and secrets.compare_digest(supplied, self.token):
+                    return self._set_session_and_redirect()
+                if self.require_auth and not self._session_ok():
+                    # No data is served, and the page carries no token: the visitor has to
+                    # arrive with the token once before anything is readable.
+                    return self._send(200, LOGIN_PAGE.encode("utf-8"),
+                                      "text/html; charset=utf-8")
+                # In remote mode the cookie carries the authorization, so the shell must not
+                # embed the token in a page anyone on the network can fetch.
+                page = PAGE.replace("__THEME_CSS__", THEME_CSS).replace(
+                    "__TOKEN__", "" if self.require_auth else self.token)
                 return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            if not self._read_allowed(route):
+                return self._error(401, "this server needs the token; open /?token=... once")
             if route == "/api/state":
                 return self._send(200, state_payload())
             if route == "/api/signals":
@@ -583,7 +732,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, data, ctype,
                                   {"Content-Disposition": f'attachment; filename="{filename}"'})
             if route == "/manifest.webmanifest":
-                return self._send(200, manifest_payload(self.token),
+                return self._send(200, manifest_payload("" if self.require_auth else self.token),
                                   "application/manifest+json")
             if route == "/sw.js":
                 return self._send(200, SERVICE_WORKER.encode("utf-8"),
@@ -609,6 +758,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):                                       # noqa: N802
         if not self._host_ok():
             return self._error(421, "unexpected Host header")
+        if not self._rate_ok(write=True):
+            return self._error(429, "too many requests; slow down and retry")
         if not self._token_ok():
             return self._error(403, "missing or invalid token")
         route = urlparse(self.path).path
@@ -644,6 +795,47 @@ class Handler(BaseHTTPRequestHandler):
 # comes from a feed is written with textContent, never innerHTML, so a hostile headline cannot
 # inject markup.
 
+# Theme blocks are generated from hbtheme, so the browser app and the desktop GUI read one
+# palette table. `:root` carries the default, which means the very first paint is already in
+# the house style and an unknown saved value degrades to it.
+THEME_CSS = "\n".join(
+    [f'  :root {{ {hbtheme.web_vars(hbtheme.DEFAULT_THEME)} }}']
+    + [f'  html[data-theme="{name}"] {{ {hbtheme.web_vars(name)} }}'
+       for name in hbtheme.THEME_NAMES]
+)
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HB Briefing - token required</title>
+<meta name="robots" content="noindex">
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#F5F3EB; color:#354650;
+         font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  form { background:#E1E3DE; border:1px solid #B6BCB8; padding:24px 28px; max-width:380px; }
+  h1 { font-size:15px; letter-spacing:.06em; margin:0 0 12px; color:#536B79; }
+  p { margin:0 0 14px; color:#59656A; }
+  input { width:100%; padding:7px 9px; border:1px solid #B6BCB8; background:#EAE8E1;
+          color:#354650; font:inherit; }
+  button { margin-top:12px; padding:7px 16px; border:1px solid #A88B55; background:#A88B55;
+           color:#F5F4EE; font:inherit; cursor:pointer; }
+  code { font-size:12px; }
+</style></head>
+<body>
+<form method="get" action="/">
+  <h1>HB BRIEFING</h1>
+  <p>This server is reachable beyond this machine, so it asks for the access token before
+     it will show any signals.</p>
+  <p><label for="token">Access token</label>
+     <input id="token" name="token" type="password" autocomplete="current-password" autofocus>
+  </p>
+  <button type="submit">Continue</button>
+  <p style="margin-top:14px"><code>The token was printed by the server when it started.</code></p>
+</form>
+</body></html>
+"""
+
 PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -651,7 +843,7 @@ PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>HB Briefing</title>
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#252f5e">
+<meta name="theme-color" content="#536B79">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -664,31 +856,7 @@ PAGE = r"""<!DOCTYPE html>
   body { padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
 </style>
 <style>
-  :root, html[data-theme="dark"] {
-    --bg:#0f131c; --panel:#171d29; --line:#253044; --line-soft:#1b2331; --hover:#141b27;
-    --bg-input:#0c111a; --ink:#e6edf7; --muted:#94a3b8;
-    --amber:#f5b642; --green:#3fb950; --red:#e5534b; --blue:#58a6ff; --violet:#a371f7;
-  }
-  html[data-theme="light"] {
-    --bg:#eef2f6; --panel:#ffffff; --line:#c7d3e0; --line-soft:#e3e9f0; --hover:#e6edf5;
-    --bg-input:#f8fafc; --ink:#0f172a; --muted:#475569;
-    --amber:#b45309; --green:#047857; --red:#b91c1c; --blue:#1d4ed8; --violet:#6d28d9;
-  }
-  html[data-theme="midnight"] {
-    --bg:#0a0e17; --panel:#111827; --line:#1c2740; --line-soft:#151d2e; --hover:#131c2c;
-    --bg-input:#070a11; --ink:#e5ecf8; --muted:#7b8aa8;
-    --amber:#60a5fa; --green:#22c55e; --red:#f87171; --blue:#93c5fd; --violet:#c4b5fd;
-  }
-  html[data-theme="solarized"] {
-    --bg:#fdf6e3; --panel:#eee8d5; --line:#d8d2bd; --line-soft:#e7e0cc; --hover:#e9e2cd;
-    --bg-input:#fffbf0; --ink:#073642; --muted:#657b83;
-    --amber:#b58900; --green:#859900; --red:#dc322f; --blue:#268bd2; --violet:#6c71c4;
-  }
-  html[data-theme="contrast"] {
-    --bg:#000000; --panel:#0b0b0b; --line:#5a5a5a; --line-soft:#2e2e2e; --hover:#1a1a1a;
-    --bg-input:#000000; --ink:#ffffff; --muted:#d7d7d7;
-    --amber:#ffd400; --green:#00ff88; --red:#ff4d4d; --blue:#7cc4ff; --violet:#d7a6ff;
-  }
+__THEME_CSS__
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink);
          font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
@@ -793,9 +961,9 @@ PAGE = r"""<!DOCTYPE html>
   </label>
   <label class="sub">theme
     <select id="themeSel">
-      <option value="dark">Dark</option><option value="light">Light</option>
-      <option value="midnight">Midnight</option><option value="solarized">Solarized</option>
-      <option value="contrast">High contrast</option>
+      <option value="classic">Classic (light)</option><option value="dark">Dark</option>
+      <option value="light">Light</option><option value="midnight">Midnight</option>
+      <option value="solarized">Solarized</option><option value="contrast">High contrast</option>
     </select>
   </label>
   <span class="sub" id="scheduleLabel"></span>
@@ -1221,22 +1389,38 @@ if ("serviceWorker" in navigator) {
 
 
 def serve(host="127.0.0.1", port=8765, token=None, open_browser=True, quiet=False):
-    """Start the web app. Returns the server so a caller can shut it down."""
+    """Start the web app. Returns the server so a caller can shut it down.
+
+    Three access contexts, three policies:
+
+      * loopback  - a trusted single-user context; reads need no token, mutations do
+      * LAN       - reads and writes both need the token, exchanged once for a session cookie
+      * remote    - the LAN policy plus a TLS-terminating reverse proxy in front
+
+    Nothing here makes a plain-HTTP server on a public address safe; the token is a capability
+    check, not transport security.
+    """
     token = token or secrets.token_urlsafe(18)
+    local = host in LOOPBACK_HOSTS
     handler = type("BoundHandler", (Handler,), {
         "token": token,
         "allowed_hosts": {"127.0.0.1", "localhost", "::1", host.lower()},
         "allow_ip_hosts": host in ("0.0.0.0", "::"),
         "quiet": quiet,
+        "require_auth": not local,
+        "session_secret": secrets.token_bytes(32),
     })
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}/"
     print(f"[INFO] {hbnscan.APP_NAME} web app on {url}")
     print(f"[INFO] token: {token}")
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        print("[WARN] Bound to a non-loopback address; anyone who can reach this port and "
-              "knows the token can read your signals and start scans.")
+    if not local:
+        print(f"[INFO] not loopback: open {url}?token=<token> once to sign in; "
+              f"the cookie lasts {SESSION_TTL // 3600}h")
+        print("[WARN] Bound to a non-loopback address. The token gates every read and write, "
+              "but the traffic is plain HTTP: use TLS or a trusted reverse proxy if this "
+              "port is reachable beyond a network you control.")
     stop_event = threading.Event()
     scheduler = threading.Thread(target=_scheduler_loop, args=(stop_event,), daemon=True,
                                  name="hb-scheduler")

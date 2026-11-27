@@ -98,9 +98,17 @@ class InstalledLayoutTest(unittest.TestCase):
         self.assertEqual(reader.execute("SELECT COUNT(*) FROM seen_items").fetchone()[0], 1)
 
     def test_the_home_override_wins_over_the_checkout(self):
-        with mock.patch.dict("os.environ", {"HB_BRIEFING_HOME": str(self.home)}):
+        with mock.patch.dict("os.environ", {"HB_BRIEFING_HOME": str(self.home)}, clear=True):
             self.assertEqual(hbnscan.default_home(), self.home)
-        with mock.patch.dict("os.environ", {"WATCHDOG_HOME": str(self.home)}, clear=False):
+        # The legacy name must work on its own, so the newer variable is cleared here: a host
+        # shell that exports HB_BRIEFING_HOME must not decide what this assertion proves.
+        with mock.patch.dict("os.environ", {"WATCHDOG_HOME": str(self.home)}, clear=True):
+            self.assertEqual(hbnscan.default_home(), self.home)
+
+    def test_the_current_name_outranks_the_legacy_one(self):
+        with mock.patch.dict("os.environ", {"HB_BRIEFING_HOME": str(self.home),
+                                            "WATCHDOG_HOME": str(self.home / "legacy")},
+                             clear=True):
             self.assertEqual(hbnscan.default_home(), self.home)
 
     def test_a_source_checkout_keeps_state_beside_the_code(self):

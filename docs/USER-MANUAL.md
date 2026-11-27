@@ -638,7 +638,8 @@ not dropped: they stay pending and go out on a later scan.
 
 ### 8.6 Appearance
 
-- **Theme** — one of five palettes: `dark`, `light`, `midnight`, `solarized`, `contrast`. Applied
+- **Theme** — one of six palettes: `classic` (the muted-light house style, default for a new
+  installation), `dark`, `light`, `midnight`, `solarized`, `contrast`. Applied
   immediately and remembered; the web app offers the same five, so a shared `settings.json`
   keeps both looking the same.
 - **Text size** — 80 % to 150 % scaling for the whole interface, for dense tables or large displays.
@@ -1065,7 +1066,8 @@ copying: one subject, a subject plus a complaint venue, and an investor.
 
 ## 13. Appearance and keyboard
 
-**Themes.** Five palettes — dark (default), light, midnight, solarized and high contrast —
+**Themes.** Six palettes — classic (default for a new installation: muted light, slate header,
+brass accent), dark, light, midnight, solarized and high contrast —
 switchable in Settings and applied to every widget instantly, including the table, log, dialogs
 and menus.
 

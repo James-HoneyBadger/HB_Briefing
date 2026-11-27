@@ -39,3 +39,6 @@ htmlcov/
 # Packaging output
 /dist/
 /build/
+
+# macOS metadata
+.DS_Store

@@ -22,67 +22,34 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 import hbnscan
+import hbtheme
 import hbworkspace as ws
 
 FEEDS_PATH = hbnscan.FEEDS_PATH
 TOPICS_PATH = hbnscan.TOPICS_PATH
 REPORT_PATH = hbnscan.REPORT_PATH
 
-# Themes. Widgets capture colours at creation time, so switching rebuilds the UI.
-THEMES = {
-    "dark": {
-        "bg_main": "#12161f", "bg_panel": "#1a202c", "bg_accent": "#252e3f",
-        "bg_input": "#0d1117", "bg_select": "#334155", "log_fg": "#cbd5e1",
-        "fg_text": "#e2e8f0", "fg_muted": "#94a3b8",
-        "accent": "#f59e0b", "accent_hover": "#d97706",
-        "green": "#10b981", "red": "#ef4444",
-    },
-    "light": {
-        "bg_main": "#eef2f6", "bg_panel": "#ffffff", "bg_accent": "#dfe6ee",
-        "bg_input": "#f8fafc", "bg_select": "#c7d3e0", "log_fg": "#1e293b",
-        "fg_text": "#0f172a", "fg_muted": "#475569",
-        "accent": "#b45309", "accent_hover": "#92400e",
-        "green": "#047857", "red": "#b91c1c",
-    },
-    "midnight": {
-        "bg_main": "#0a0e17", "bg_panel": "#111827", "bg_accent": "#1c2740",
-        "bg_input": "#070a11", "bg_select": "#2b3a5c", "log_fg": "#a5b4cf",
-        "fg_text": "#e5ecf8", "fg_muted": "#7b8aa8",
-        "accent": "#60a5fa", "accent_hover": "#3b82f6",
-        "green": "#22c55e", "red": "#f87171",
-    },
-    "solarized": {
-        "bg_main": "#fdf6e3", "bg_panel": "#eee8d5", "bg_accent": "#dfd9c3",
-        "bg_input": "#fffbf0", "bg_select": "#cfc9b3", "log_fg": "#586e75",
-        "fg_text": "#073642", "fg_muted": "#657b83",
-        "accent": "#b58900", "accent_hover": "#8f6c00",
-        "green": "#859900", "red": "#dc322f",
-    },
-    "contrast": {
-        "bg_main": "#000000", "bg_panel": "#0b0b0b", "bg_accent": "#1f1f1f",
-        "bg_input": "#000000", "bg_select": "#3a3a3a", "log_fg": "#ffffff",
-        "fg_text": "#ffffff", "fg_muted": "#d0d0d0",
-        "accent": "#ffd400", "accent_hover": "#ffb700",
-        "green": "#00ff88", "red": "#ff4d4d",
-    },
-}
+# Palettes come from hbtheme, which the web app reads too. Widgets capture colours at
+# creation time, so switching rebuilds the UI.
+THEMES = hbtheme.THEMES
+DEFAULT_THEME = hbtheme.DEFAULT_THEME
 
 if tuple(THEMES) != hbnscan.THEME_NAMES:
     raise RuntimeError(
         f"GUI palettes {tuple(THEMES)} do not match hbnscan.THEME_NAMES "
-        f"{hbnscan.THEME_NAMES}; add the palette here or remove the name in the engine")
+        f"{hbnscan.THEME_NAMES}; both must come from hbtheme")
 
 BG_MAIN = BG_PANEL = BG_ACCENT = BG_INPUT = BG_SELECT = ""
 FG_TEXT = FG_MUTED = LOG_FG = AMBER = AMBER_HOVER = GREEN = RED = ""
-THEME_NAME = "dark"
+THEME_NAME = DEFAULT_THEME
 
 
 def apply_theme(name):
     """Bind the module-level palette names used by every widget builder."""
     global BG_MAIN, BG_PANEL, BG_ACCENT, BG_INPUT, BG_SELECT, FG_TEXT, FG_MUTED
     global LOG_FG, AMBER, AMBER_HOVER, GREEN, RED, THEME_NAME
-    THEME_NAME = name if name in THEMES else "dark"
-    theme = THEMES[THEME_NAME]
+    THEME_NAME = name if name in THEMES else DEFAULT_THEME
+    theme = hbtheme.palette(THEME_NAME)
     BG_MAIN, BG_PANEL, BG_ACCENT = theme["bg_main"], theme["bg_panel"], theme["bg_accent"]
     BG_INPUT, BG_SELECT, LOG_FG = theme["bg_input"], theme["bg_select"], theme["log_fg"]
     FG_TEXT, FG_MUTED = theme["fg_text"], theme["fg_muted"]
@@ -90,7 +57,7 @@ def apply_theme(name):
     GREEN, RED = theme["green"], theme["red"]
 
 
-apply_theme("dark")
+apply_theme(DEFAULT_THEME)
 
 
 class SettingsForm:
@@ -1843,12 +1810,14 @@ class NewsScanApp(tk.Tk):
 
     def _settings_ai_section(self, win, ctx):
         self._section_title(win, "LLM / AI PROVIDER")
-        if hbnscan.deepseek_configured():
-            key_status = (f"Configured ({hbnscan.LLM_API_KEY[:6]}…"
-                          f"{hbnscan.LLM_API_KEY[-4:]}) - {hbnscan.LLM_MODEL}")
+        status = hbnscan.ai_status()
+        if status["mode"] in (hbnscan.AI_MODE_LOCAL, hbnscan.AI_MODE_REMOTE):
+            key_note = "key configured" if status["key_used"] else "no key needed"
+            key_status = (f"Configured: {status['mode']} provider, {status['model']} at "
+                          f"{status['host']} ({key_note})")
             status_colour = GREEN
         else:
-            key_status = "No key - running on the offline heuristic only."
+            key_status = f"Not active: {status['reason']}. Offline heuristic only."
             status_colour = AMBER
         tk.Label(win, text=key_status, bg=BG_PANEL, fg=status_colour, font=("Sans", 9),
                  anchor="w", justify="left", wraplength=500).pack(fill=tk.X, padx=16)

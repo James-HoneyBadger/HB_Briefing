@@ -51,7 +51,9 @@ from urllib.parse import parse_qsl, quote_plus, urlencode, urlparse, urlsplit
 
 from dotenv import dotenv_values, load_dotenv
 
+import hbnet
 import hbsimilar
+import hbtheme
 from hbversion import VERSION
 
 __version__ = VERSION
@@ -123,7 +125,19 @@ LLM_PRESETS = {
     "Custom": ("", ""),
 }
 
-PLACEHOLDER_API_KEYS = {"", "your_deepseek_api_key_here"}
+# Values that look like a key but are not one. The shipped `.env.example` used to carry
+# `your_api_key_here`, and bootstrap copies that file into place, so a fresh install could
+# believe it had a credential and fail every model call with a 401 instead of running offline.
+PLACEHOLDER_API_KEYS = {"", "your_deepseek_api_key_here", "your_api_key_here"}
+PLACEHOLDER_KEY_RE = re.compile(
+    r"^(your[._-].*[._-]here|changeme|change[._-]me|placeholder|replace[._-]?me|sk-x+|x{6,})$",
+    re.IGNORECASE)
+
+
+def is_placeholder_key(value):
+    """True for an absent key or a template value that was never replaced."""
+    key = (value or "").strip()
+    return key.lower() in PLACEHOLDER_API_KEYS or bool(PLACEHOLDER_KEY_RE.match(key))
 
 USER_AGENT = "HB-Briefing/1.0.0"
 # Several government feeds reject requests that omit a feed Accept type.
@@ -145,6 +159,7 @@ AI_TIMEOUT = 25
 AI_MAX_ATTEMPTS = 3
 AI_MAX_RETRY_DELAY = 20.0
 AI_MAX_TOKENS_CEILING = 8000
+AI_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 RETENTION_DAYS = 90
 
 # Topic limits are shared by the profile defaults, topics.txt and the GUI editors, so
@@ -408,6 +423,9 @@ FETCH_CMD = (os.getenv("WATCHDOG_FETCH_CMD") or "").strip()
 FETCH_CMD_TIMEOUT = _env_int("WATCHDOG_FETCH_CMD_TIMEOUT", 30)
 FETCH_CMD_ALWAYS = _env_flag("WATCHDOG_FETCH_CMD_ALWAYS", False)
 PDFTOTEXT = shutil.which("pdftotext") or ""
+# A switch, not a fallback: with this set no model is called even when an endpoint and key
+# exist, which is what a deterministic-only deployment needs.
+AI_DISABLED = _env_flag("HB_AI_DISABLED", _env_flag("LLM_DISABLED", False))
 
 # Local near-duplicate grouping: 0 disables the pass.
 SIMILARITY_THRESHOLD = float(os.getenv("WATCHDOG_SIMILARITY", str(hbsimilar.DEFAULT_THRESHOLD))
@@ -423,7 +441,7 @@ def reload_env_limits():
     """
     global DEEP_READ_ENABLED, BRIEFING_ENABLED, DEEP_READ_BUDGET, TRIAGE_BUDGET
     global BRIEF_WINDOW_HOURS, FETCH_CMD, FETCH_CMD_TIMEOUT, FETCH_CMD_ALWAYS
-    global SIMILARITY_THRESHOLD
+    global SIMILARITY_THRESHOLD, AI_DISABLED
     env = _env_values()
 
     def as_int(key, default):
@@ -446,6 +464,7 @@ def reload_env_limits():
     FETCH_CMD = str(env.get("WATCHDOG_FETCH_CMD", "")).strip()
     FETCH_CMD_TIMEOUT = as_int("WATCHDOG_FETCH_CMD_TIMEOUT", 30)
     FETCH_CMD_ALWAYS = as_flag("WATCHDOG_FETCH_CMD_ALWAYS", False)
+    AI_DISABLED = as_flag("HB_AI_DISABLED", as_flag("LLM_DISABLED", False))
     try:
         SIMILARITY_THRESHOLD = float(str(env.get("WATCHDOG_SIMILARITY", "")).strip()
                                      or hbsimilar.DEFAULT_THRESHOLD)
@@ -566,8 +585,67 @@ def _retry_delay(exc, attempt):
     return min(1.5 * 2 ** (attempt - 1), AI_MAX_RETRY_DELAY) + random.uniform(0, 0.4)
 
 
+# --------------------------------------------------------------------------- AI availability
+#
+# A key is one way to authorize a model call, not the only one. A local server is authorized by
+# the operator running it, so `LLM_BASE_URL=http://localhost:11434/...` is a working
+# configuration with an empty key. Conflating the two made every local-only setup look broken.
+AI_MODE_DISABLED = "disabled"
+AI_MODE_OFFLINE = "offline"
+AI_MODE_LOCAL = "local"
+AI_MODE_REMOTE = "remote"
+
+
+def llm_api_key(api_key=None):
+    """The key to send, or ``""`` when none is configured. A template value is not a key."""
+    key = (api_key if api_key is not None else LLM_API_KEY).strip()
+    return "" if is_placeholder_key(key) else key
+
+
+def ai_disabled():
+    """True when the operator has switched model calls off outright."""
+    return bool(AI_DISABLED)
+
+
+def ai_status(base_url=None, api_key=None, model=None):
+    """Resolve how the AI stages will run, and why.
+
+    Returns a dict with `mode` (disabled|offline|local|remote), `endpoint`, `model`,
+    `key_used` and `reason`. The reason is written for a person reading a settings screen.
+    """
+    endpoint = (base_url if base_url is not None else LLM_BASE_URL).strip()
+    named = (model if model is not None else LLM_MODEL).strip()
+    key = llm_api_key(api_key)
+    host = ""
+    try:
+        host = (urlsplit(endpoint).hostname or "").lower()
+    except ValueError:
+        host = ""
+    status = {"endpoint": endpoint, "model": named, "host": host, "key_used": bool(key)}
+    if ai_disabled():
+        status.update(mode=AI_MODE_DISABLED,
+                      reason="AI is switched off in configuration; the offline heuristic runs")
+        return status
+    if not endpoint:
+        status.update(mode=AI_MODE_OFFLINE,
+                      reason="no LLM_BASE_URL configured; the offline heuristic runs")
+        return status
+    if hbnet.refers_to_local(host):
+        status.update(mode=AI_MODE_LOCAL,
+                      reason=f"local model server at {host}: no API key required")
+        return status
+    if key:
+        status.update(mode=AI_MODE_REMOTE,
+                      reason=f"remote model at {host}: an API key is configured")
+        return status
+    status.update(mode=AI_MODE_OFFLINE,
+                  reason=f"{host or 'the configured endpoint'} is remote and no API key is set")
+    return status
+
+
 def deepseek_configured():
-    return LLM_API_KEY not in PLACEHOLDER_API_KEYS
+    """True when the AI stages can run: a local server, or a remote one with a real key."""
+    return ai_status()["mode"] in (AI_MODE_LOCAL, AI_MODE_REMOTE)
 
 
 def _now_hms():
@@ -1122,7 +1200,7 @@ SETTING_CHOICES = {
     "filter_recent": ("all", "1d", "3d", "7d", "30d"),
     "row_order": ("relevance", "priority", "newest", "oldest", "detected",
                   "severity", "title", "category"),
-    "theme": ("dark", "light", "midnight", "solarized", "contrast"),
+    "theme": hbtheme.THEME_NAMES,
     "window_state": ("normal", "zoomed"),
     "notify_min_severity": ("high", "medium"),
     "scan_interval_minutes": ("5", "10", "15", "30", "60", "120", "240"),
@@ -1319,8 +1397,8 @@ def freshness_label(published, seen_at="", now=None):
     return "1y+"
 
 
-# Palettes are defined by the front ends (hbnscan_gui.THEMES, hbnweb CSS); this is the
-# shared vocabulary that validation and every picker read, so a name cannot drift.
+# Palettes live in hbtheme, which the desktop GUI and the web app both read; this is the
+# shared vocabulary that validation and every picker use, so a name cannot drift.
 THEME_NAMES = SETTING_CHOICES["theme"]
 
 DEFAULT_SETTINGS = {
@@ -1347,7 +1425,7 @@ DEFAULT_SETTINGS = {
     "notify_min_severity": "high",
     "notify_include_watchlist": True,
     "notify_max_items": 5,
-    "theme": "dark",
+    "theme": hbtheme.DEFAULT_THEME,
     "window_geometry": "",
     "window_state": "normal",
     "sash": 360,
@@ -1408,20 +1486,28 @@ def _coerce_setting(key, value, default):
 
 
 def grading_mode(api_key=None):
-    """'model' when an LLM key is configured, else 'offline'.
+    """'model' when the AI stages can run, else 'offline'.
 
     One function, because the first-run notice, the scan banner, the web app and the TUI all
-    answer the same question and must never disagree about which mode is running.
+    answer the same question and must never disagree about which mode is running. The
+    distinction between a local and a remote model lives in `ai_status()`; this stays the
+    two-value answer the database and the settings screen store.
     """
-    key = (api_key if api_key is not None else LLM_API_KEY).strip()
-    return "offline" if key in PLACEHOLDER_API_KEYS else "model"
+    return "offline" if ai_status(api_key=api_key)["mode"] in (
+        AI_MODE_OFFLINE, AI_MODE_DISABLED) else "model"
 
 
 def describe_grading_mode(api_key=None):
     """A phrase for a log line or a banner, not a bare identifier."""
-    if grading_mode(api_key) == "offline":
-        return "offline heuristic (no key: add one for deep reads and briefings)"
-    return f"model {LLM_MODEL} (deep reads and briefings enabled)"
+    status = ai_status(api_key=api_key)
+    if status["mode"] == AI_MODE_DISABLED:
+        return "offline heuristic (AI is switched off; no deep reads or briefings)"
+    if status["mode"] == AI_MODE_OFFLINE:
+        return (f"offline heuristic ({status['reason']}); "
+                "deep reads and briefings need a key or a local model")
+    if status["mode"] == AI_MODE_LOCAL:
+        return f"local model {status['model']} at {status['host']} (deep reads and briefings)"
+    return f"model {status['model']} at {status['host']} (deep reads and briefings enabled)"
 
 
 def load_settings():
@@ -1491,14 +1577,19 @@ def _element_text(element, limit=1000):
 
 
 def safe_link(link):
-    """Return the URL only when it is a well-formed http(s) link."""
+    """Return the URL only when it is a structurally fetchable http(s) link.
+
+    Shape only: credentials, control characters, non-http schemes and implausible lengths are
+    rejected here. Whether the destination may be reached is decided at fetch time by
+    `hbnet`, because that is where the request's purpose is known.
+    """
     link = (link or "").strip()
     if not link:
         return ""
-    parsed = urlparse(link)
-    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+    try:
+        return hbnet.shape_ok(link)
+    except hbnet.NetworkError:
         return ""
-    return link
 
 
 def is_aggregator_host(url):
@@ -1540,9 +1631,10 @@ def _decode_google_batchexecute(article_id, timeout=FETCH_TIMEOUT):
     """Resolve a modern opaque Google News id to its publisher URL."""
     article_url = "https://news.google.com/rss/articles/" + article_id
     headers = {"User-Agent": GOOGLE_UA, "Accept": "text/html,application/xhtml+xml"}
-    req = urllib.request.Request(article_url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        page = resp.read(GOOGLE_BATCHEXECUTE_MAX_BYTES).decode("utf-8", errors="replace")
+    with hbnet.open_url(article_url, hbnet.PURPOSE_AGGREGATOR, timeout=timeout,
+                        headers=headers) as resp:
+        page = hbnet.read_capped(
+            resp, GOOGLE_BATCHEXECUTE_MAX_BYTES).decode("utf-8", errors="replace")
     signature = re.search(r'data-n-a-sg="([^"]+)"', page)
     stamp = re.search(r'data-n-a-ts="([^"]+)"', page)
     if not (signature and stamp):
@@ -1554,11 +1646,13 @@ def _decode_google_batchexecute(article_id, timeout=FETCH_TIMEOUT):
         article_id, stamp.group(1), signature.group(1)]
     envelope = [[["Fbv4je", json.dumps(payload), None, "generic"]]]
     body = urlencode({"f.req": json.dumps(envelope)}).encode("utf-8")
-    post = urllib.request.Request(
-        GOOGLE_BATCHEXECUTE, data=body,
-        headers={"User-Agent": GOOGLE_UA, "Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(post, timeout=timeout) as resp:
-        reply = resp.read(GOOGLE_BATCHEXECUTE_MAX_BYTES).decode("utf-8", errors="replace")
+    with hbnet.open_url(
+            GOOGLE_BATCHEXECUTE, hbnet.PURPOSE_AGGREGATOR, timeout=timeout, data=body,
+            method="POST",
+            headers={"User-Agent": GOOGLE_UA,
+                     "Content-Type": "application/x-www-form-urlencoded"}) as resp:
+        reply = hbnet.read_capped(
+            resp, GOOGLE_BATCHEXECUTE_MAX_BYTES).decode("utf-8", errors="replace")
     match = (re.search(r'garturlres\\",\\"(.*?)\\"', reply)
              or re.search(r'garturlres","(.*?)"', reply))
     return match.group(1).replace("\\/", "/") if match else ""
@@ -2508,10 +2602,11 @@ def load_feeds():
 
 
 def _read_capped(resp, limit=MAX_FEED_BYTES):
-    raw = resp.read(limit + 1)
-    if len(raw) > limit:
-        raise FeedError(f"payload exceeds {limit // (1024 * 1024)} MiB limit")
-    return raw
+    """Bounded read, kept as the engine's name for `hbnet.read_capped`."""
+    try:
+        return hbnet.read_capped(resp, limit)
+    except hbnet.NetworkError as exc:
+        raise FeedError(str(exc)) from None
 
 
 def _parse_feed(raw, source):
@@ -2598,15 +2693,17 @@ def _parse_foreign_entry(entry):
 
 def fetch_feed(url, etag=None, last_modified=None, timeout=FETCH_TIMEOUT):
     """Fetch and parse a feed, honouring conditional-GET validators."""
-    headers = {"User-Agent": USER_AGENT, "Accept": FEED_ACCEPT}
+    headers = {"User-Agent": USER_AGENT, "Accept": FEED_ACCEPT,
+               # No decompression is performed, so do not invite a compressed bomb.
+               "Accept-Encoding": "identity"}
     if etag:
         headers["If-None-Match"] = etag
     if last_modified:
         headers["If-Modified-Since"] = last_modified
 
-    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with hbnet.open_url(url, hbnet.PURPOSE_FEED, timeout=timeout,
+                            headers=headers) as resp:
             raw = _read_capped(resp)
             new_etag = resp.headers.get("ETag")
             new_last_modified = resp.headers.get("Last-Modified")
@@ -2697,6 +2794,29 @@ def _extract_article(raw, url, content_type="", charset="utf-8", log_callback=No
     return _html_to_text(raw.decode(charset, errors="replace"))
 
 
+def _drain_stderr(proc, sink, cap=8192):
+    """Keep at most `cap` bytes of a child's stderr, discarding the rest as it arrives.
+
+    Draining matters as much as the cap: a fetcher that logs heavily would otherwise fill the
+    pipe buffer and block itself, which looks exactly like a hang.
+    """
+    try:
+        while True:
+            chunk = proc.stderr.read(4096)
+            if not chunk:
+                break
+            sink.append(chunk)
+            while sum(len(part) for part in sink) > cap:
+                sink.pop(0)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            proc.stderr.close()
+        except (OSError, ValueError):
+            pass
+
+
 def _run_fetch_command(url):
     """Fetch `url` through WATCHDOG_FETCH_CMD and return its raw output.
 
@@ -2714,26 +2834,77 @@ def _run_fetch_command(url):
         stdin = None
     else:
         stdin = url.encode("utf-8")
+    limit = max(1, FETCH_CMD_TIMEOUT)
     try:
-        proc = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=max(1, FETCH_CMD_TIMEOUT),
-                              check=False)
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin is not None else None,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except FileNotFoundError as exc:
         raise FeedError(f"WATCHDOG_FETCH_CMD not found: {argv[0]}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise FeedError(
-            f"WATCHDOG_FETCH_CMD timed out after {FETCH_CMD_TIMEOUT}s") from exc
     except OSError as exc:
         raise FeedError(f"WATCHDOG_FETCH_CMD could not start: {exc}") from exc
+
+    # A watchdog kills the child if it outlives its budget. Killing closes the pipes, so the
+    # bounded reads below unblock instead of waiting for a process that will never finish.
+    timed_out = threading.Event()
+
+    def _expire():
+        timed_out.set()
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(limit, _expire)
+    watchdog.daemon = True
+    watchdog.start()
+    stderr_tail = []
+    drain = None
+    try:
+        if stdin is not None:
+            try:
+                proc.stdin.write(stdin)
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass            # the child may exit before reading; the exit code says why
+        # stderr is drained on its own thread, capped, so a chatty fetcher cannot fill the
+        # pipe and deadlock against our stdout reads.
+        drain = threading.Thread(target=_drain_stderr, args=(proc, stderr_tail), daemon=True)
+        drain.start()
+        collected = []
+        total = 0
+        while True:
+            chunk = proc.stdout.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_ARTICLE_BYTES:
+                _expire()
+                raise FeedError("WATCHDOG_FETCH_CMD output exceeds the article size cap")
+            collected.append(chunk)
+        try:
+            proc.wait(timeout=limit)
+        except subprocess.TimeoutExpired:
+            _expire()
+            raise FeedError(
+                f"WATCHDOG_FETCH_CMD timed out after {limit}s") from None
+    finally:
+        watchdog.cancel()
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
+        if drain is not None:
+            drain.join(timeout=1.0)
+    if timed_out.is_set() and proc.returncode != 0:
+        raise FeedError(f"WATCHDOG_FETCH_CMD timed out after {limit}s")
     if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        detail = b"".join(stderr_tail).decode("utf-8", errors="replace").strip().splitlines()
         tail = f": {detail[-1][:160]}" if detail else ""
         raise FeedError(f"WATCHDOG_FETCH_CMD failed (exit {proc.returncode}){tail}")
-    if not proc.stdout:
+    raw = b"".join(collected)
+    if not raw:
         raise FeedError("WATCHDOG_FETCH_CMD returned no output")
-    if len(proc.stdout) > MAX_ARTICLE_BYTES:
-        raise FeedError("WATCHDOG_FETCH_CMD output exceeds the article size cap")
-    return proc.stdout
+    return raw
 
 
 def fetch_article(url, timeout=FETCH_TIMEOUT, log_callback=None):
@@ -2748,10 +2919,12 @@ def fetch_article(url, timeout=FETCH_TIMEOUT, log_callback=None):
         url = resolve_aggregator_link(url)
     if not url:
         return ""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
-                                               "Accept": ARTICLE_ACCEPT})
+    # A link taken from feed content is untrusted input: it may only reach the public
+    # internet, never a loopback service or a LAN address.
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with hbnet.open_url(url, hbnet.PURPOSE_ARTICLE, timeout=timeout,
+                            headers={"User-Agent": USER_AGENT, "Accept": ARTICLE_ACCEPT,
+                                     "Accept-Encoding": "identity"}) as resp:
             content_type = (resp.headers.get("Content-Type") or "").lower()
             charset = resp.headers.get_content_charset() or "utf-8"
             raw = _read_capped(resp, MAX_ARTICLE_BYTES)
@@ -2897,23 +3070,24 @@ def _call_deepseek(system_prompt, user_prompt, max_tokens, temperature=0.2, api_
     retried with backoff; a provider that rejects `response_format` is retried without
     it; and an answer cut off at the token cap is re-asked with a larger budget.
     """
-    key = (api_key or LLM_API_KEY).strip()
+    key = llm_api_key(api_key)
     json_mode = True
     attempt = 0
     while True:
         attempt += 1
-        request = urllib.request.Request(
-            LLM_BASE_URL,
-            data=_chat_payload(system_prompt, user_prompt, max_tokens, temperature, json_mode),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer " + key,
-                "User-Agent": USER_AGENT,
-            },
-        )
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        }
+        if key:
+            headers["Authorization"] = "Bearer " + key
         try:
-            with urllib.request.urlopen(request, timeout=AI_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with hbnet.open_url(LLM_BASE_URL, hbnet.PURPOSE_AI, timeout=AI_TIMEOUT,
+                                headers=headers, method="POST",
+                                data=_chat_payload(system_prompt, user_prompt, max_tokens,
+                                                   temperature, json_mode)) as resp:
+                data = json.loads(_read_capped(resp, AI_MAX_RESPONSE_BYTES)
+                                  .decode("utf-8"))
             break
         except urllib.error.HTTPError as exc:
             if exc.code == 400 and json_mode:
@@ -3563,6 +3737,9 @@ def run_scan(log_callback=print, cancel=None):
 
 def _feed_error_hint(exc):
     """One actionable clause for the common feed failures."""
+    if isinstance(exc, hbnet.NetworkError):
+        return (" - refused by the network policy; a feed endpoint may use this machine's "
+                "LAN, but article links inside feeds may only reach the public internet")
     code = getattr(exc, "code", None)
     if code in (401, 403):
         return (" - the publisher blocks automated clients; use a Google News "
@@ -4019,9 +4196,9 @@ def send_webhook(subject, body, config=None):
         method, url, data, headers = _webhook_request(config, subject, body)
     except (ValueError, TypeError) as exc:
         return False, f"could not build the request: {exc}"
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=WEBHOOK_TIMEOUT) as response:
+        with hbnet.open_url(url, hbnet.PURPOSE_WEBHOOK, timeout=WEBHOOK_TIMEOUT,
+                            headers=headers, method=method, data=data) as response:
             response.read(2048)          # drain, so the connection is not left half-open
             if not 200 <= response.status < 300:
                 return False, f"HTTP {response.status}"
@@ -5003,15 +5180,18 @@ def check_api(log_callback=print, api_key=None):
     log_callback(f"Profile:  {APP_NAME} ({source.name if source.exists() else 'built-in default'})"
                  f" - {len(CATEGORIES)} categories, {len(load_topics())} topic(s), "
                  f"{len(load_watchlist())} target rule(s)")
-    key = (api_key if api_key is not None else LLM_API_KEY).strip()
-    if key in PLACEHOLDER_API_KEYS:
-        log_callback("No API key configured. Add LLM_API_KEY to .env to enable the AI stages.")
-        log_callback("HB Briefing still runs in offline heuristic mode without one.")
+    status = ai_status(api_key=api_key)
+    if status["mode"] in (AI_MODE_OFFLINE, AI_MODE_DISABLED):
+        log_callback(f"AI stages are not active: {status['reason']}.")
+        log_callback("HB Briefing still runs in offline heuristic mode without a model.")
         return 1
 
-    masked = f"{key[:6]}...{key[-4:]}" if len(key) > 12 else "<set>"
-    log_callback(f"Endpoint: {DEEPSEEK_URL}")
-    log_callback(f"Model:    {DEEPSEEK_MODEL}")
+    key = llm_api_key(api_key)
+    masked = (f"{key[:6]}...{key[-4:]}" if len(key) > 12 else "<set>") if key else \
+        "<none: local server>"
+    log_callback(f"Mode:     {status['mode']} - {status['reason']}")
+    log_callback(f"Endpoint: {status['endpoint']}")
+    log_callback(f"Model:    {status['model']}")
     log_callback(f"Key:      {masked}")
 
     sample = {

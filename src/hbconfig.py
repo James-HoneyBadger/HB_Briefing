@@ -669,12 +669,16 @@ def save_notifications(smtp_host="", smtp_port="", smtp_security="starttls",
 
 
 def ai_editor():
+    """The AI section's current state, including which mode is actually in effect."""
+    status = hbnscan.ai_status()
+    key = hbnscan.llm_api_key()
     return {
-        "model": hbnscan.LLM_MODEL,
-        "base_url": hbnscan.LLM_BASE_URL,
+        "model": status["model"],
+        "base_url": status["endpoint"],
+        "mode": status["mode"],
+        "reason": status["reason"],
         "configured": hbnscan.deepseek_configured(),
-        "key_hint": (f"{hbnscan.LLM_API_KEY[:6]}…{hbnscan.LLM_API_KEY[-4:]}"
-                     if hbnscan.LLM_API_KEY else ""),
+        "key_hint": f"{key[:6]}…{key[-4:]}" if key else "",
     }
 
 
@@ -780,7 +784,8 @@ def diagnose(conn=None, feeds=None):
 
     # AI and budgets
     if not hbnscan.deepseek_configured():
-        add("info", "AI", "no API key: the offline heuristic runs, no deep reads or briefing")
+        add("info", "AI", f"{hbnscan.ai_status()['reason']}: the offline heuristic runs, "
+                          "no deep reads or briefing")
     limits = env_limits()
     if limits["max_triage"] == 0 and hbnscan.deepseek_configured():
         add("warning", "AI", "AI triage budget is 0: every item is scored offline")

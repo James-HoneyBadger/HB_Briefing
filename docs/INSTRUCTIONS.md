@@ -375,7 +375,7 @@ targets syntax are in
 | Re-sort | Click a column heading, or pick an order in the Rows bar |
 | Limit table size | **Rows:** box (50–5000) |
 | Read the narrative summary | **AI Briefing** tab |
-| Change colours or text size | **Settings → Appearance** (five themes, 80–150 % text) |
+| Change colours or text size | **Settings → Appearance** (six themes, 80–150 % text) |
 | Use a browser instead of the desktop window | `python3 hbnscan.py --serve` (§2) |
 | Work over SSH | `python3 hbnscan.py --tui` (§2) |
 | Resize panes | Drag the horizontal divider; size and position are remembered |

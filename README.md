@@ -92,8 +92,10 @@ nothing installed but Python. Details and the HTTP API: [Web app and terminal UI
 | TUI | `a` | `i` | `settings.json` |
 | CLI | `--auto` / `--no-auto` | `--interval N` | `--window HH:MM-HH:MM` or `off` |
 
-**Themes** ship as five named palettes shared by the desktop and web apps — `dark`, `light`,
-`midnight`, `solarized`, `contrast` — stored as one setting so the choice follows you.
+**Themes** ship as six named palettes shared by the desktop and web apps — `classic` (the
+muted-light house style, and the default for a new installation), `dark`, `light`, `midnight`,
+`solarized`, `contrast` — defined once in `hbtheme.py` and stored as one setting so the choice
+follows you. An existing installation keeps whichever theme it already has.
 
 ---
 
@@ -402,10 +404,26 @@ Any OpenAI-compatible endpoint works — DeepSeek by default, with OpenAI, Ollam
 URL selectable in **Settings → LLM / AI Provider** (`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`;
 the older `DEEPSEEK_*` names remain as fallbacks).
 
+**A key is only needed for a remote provider.** Point `LLM_BASE_URL` at a local server —
+`http://localhost:11434/v1/chat/completions` for Ollama, `http://127.0.0.1:1234/v1/...` for
+LM Studio — and the AI stages run with an empty `LLM_API_KEY`, because running the server is
+what authorizes it. `ai_status()` reports one of four states so the log, the settings screen and
+the web banner agree: `disabled` (switched off with `HB_AI_DISABLED=1`), `offline` (no endpoint,
+or a remote endpoint with no key), `local` and `remote`. A local model is never silently
+replaced by a cloud one.
+
 ## Reliability and safety
 
 - **Conditional GET** (`ETag` / `Last-Modified`) per feed, with an 8 MiB payload cap.
 - **DTD/entity rejection** before parsing, so a feed cannot mount an entity-expansion attack.
+- **One network trust boundary** (`hbnet.py`) in front of every request. The destination
+  policy depends on *why* the request is made: a feed endpoint you configured may be on your
+  LAN, but a link lifted out of feed content may only reach the public internet. Loopback,
+  private, link-local and cloud-metadata addresses are classified before connecting, the
+  connection is pinned to the address that was checked, redirects are re-checked hop by hop,
+  and every response is read through a byte cap.
+- **Bounded external fetcher**: `WATCHDOG_FETCH_CMD` output is streamed and capped, and a
+  hung fetcher is killed rather than drained.
 - **Links restricted to `http(s)`**; report and export text is escaped for its target format.
 - **Parameterised SQL everywhere**; the only interpolated fragments are the active profile's own
   category names, quoted and escaped.

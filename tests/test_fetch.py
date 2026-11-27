@@ -1,4 +1,5 @@
 import email.message
+import io
 import subprocess
 import tempfile
 import unittest
@@ -35,7 +36,7 @@ def http_error(code):
 class PdfExtractionTest(unittest.TestCase):
     def test_pdf_is_extracted_through_pdftotext(self):
         completed = subprocess.CompletedProcess([], 0, stdout=b"Order 2026-11-12 text", stderr=b"")
-        with mock.patch.object(hbnscan.urllib.request, "urlopen",
+        with mock.patch.object(hbnscan.hbnet, "open_url",
                                return_value=FakeResponse(b"%PDF-1.7 body", "application/pdf")), \
              mock.patch.object(hbnscan, "PDFTOTEXT", "/usr/bin/pdftotext"), \
              mock.patch.object(hbnscan.subprocess, "run", return_value=completed) as run:
@@ -47,7 +48,7 @@ class PdfExtractionTest(unittest.TestCase):
 
     def test_pdf_detected_by_magic_when_the_server_lies_about_the_type(self):
         completed = subprocess.CompletedProcess([], 0, stdout=b"filing text", stderr=b"")
-        with mock.patch.object(hbnscan.urllib.request, "urlopen",
+        with mock.patch.object(hbnscan.hbnet, "open_url",
                                return_value=FakeResponse(b"%PDF-1.4 x",
                                                          "application/octet-stream")), \
              mock.patch.object(hbnscan, "PDFTOTEXT", "/usr/bin/pdftotext"), \
@@ -56,7 +57,7 @@ class PdfExtractionTest(unittest.TestCase):
 
     def test_pdf_without_pdftotext_returns_empty_and_says_so(self):
         lines = []
-        with mock.patch.object(hbnscan.urllib.request, "urlopen",
+        with mock.patch.object(hbnscan.hbnet, "open_url",
                                return_value=FakeResponse(b"%PDF-1.4 x", "application/pdf")), \
              mock.patch.object(hbnscan, "PDFTOTEXT", ""):
             text = hbnscan.fetch_article("https://e.test/order.pdf", log_callback=lines.append)
@@ -65,78 +66,125 @@ class PdfExtractionTest(unittest.TestCase):
 
     def test_html_still_goes_through_the_text_extractor(self):
         body = b"<html><body><p>Plain <b>story</b> text</p></body></html>"
-        with mock.patch.object(hbnscan.urllib.request, "urlopen",
+        with mock.patch.object(hbnscan.hbnet, "open_url",
                                return_value=FakeResponse(body)):
             self.assertIn("Plain story text", hbnscan.fetch_article("https://e.test/a"))
 
 
+class _Sink:
+    """Stands in for the child's stdin pipe."""
+
+    def __init__(self):
+        self.data = bytearray()
+        self.closed = False
+
+    def write(self, chunk):
+        self.data.extend(chunk)
+
+    def close(self):
+        self.closed = True
+
+
+class FakeProcess:
+    """A child process whose pipes are in memory, so the streaming loop is exercised as is."""
+
+    def __init__(self, stdout=b"", stderr=b"", returncode=0, hang=False):
+        self.stdin = _Sink()
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.returncode = returncode
+        self.hang = hang
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self.hang and not self.killed:
+            raise subprocess.TimeoutExpired("fetcher", timeout)
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
 class FetchHookTest(unittest.TestCase):
-    def run_with_hook(self, hook, result, *, url="https://e.test/a"):
-        completed = subprocess.CompletedProcess([], 0, stdout=result, stderr=b"")
-        with mock.patch.object(hbnscan.urllib.request, "urlopen", side_effect=http_error(403)), \
+    def run_with_hook(self, hook, process, *, url="https://e.test/a", **kwargs):
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(403)), \
              mock.patch.object(hbnscan, "FETCH_CMD", hook), \
              mock.patch.object(hbnscan, "FETCH_CMD_TIMEOUT", 5), \
-             mock.patch.object(hbnscan.subprocess, "run", return_value=completed) as runner:
-            text = hbnscan.fetch_article(url)
+             mock.patch.object(hbnscan.subprocess, "Popen", return_value=process) as runner:
+            text = hbnscan.fetch_article(url, **kwargs)
         return text, runner
 
     def test_403_falls_back_to_the_hook_with_the_url_on_stdin(self):
-        text, runner = self.run_with_hook(
-            "myfetcher --quiet", b"<html><body>Hooked article</body></html>")
+        process = FakeProcess(b"<html><body>Hooked article</body></html>")
+        text, runner = self.run_with_hook("myfetcher --quiet", process)
         self.assertIn("Hooked article", text)
-        self.assertEqual(runner.call_args.kwargs["input"], b"https://e.test/a")
+        self.assertEqual(bytes(process.stdin.data), b"https://e.test/a")
         self.assertIsNone(runner.call_args.kwargs.get("shell"))
 
     def test_url_placeholder_becomes_an_argument_and_stdin_stays_empty(self):
-        _text, runner = self.run_with_hook("fetcher --url {url}", b"body")
+        process = FakeProcess(b"body")
+        _text, runner = self.run_with_hook("fetcher --url {url}", process)
         self.assertEqual(runner.call_args.args[0], ["fetcher", "--url", "https://e.test/a"])
-        self.assertIsNone(runner.call_args.kwargs["input"])
+        self.assertIsNone(runner.call_args.kwargs["stdin"])
 
     def test_without_a_hook_the_http_error_propagates(self):
-        with mock.patch.object(hbnscan.urllib.request, "urlopen", side_effect=http_error(403)), \
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(403)), \
              mock.patch.object(hbnscan, "FETCH_CMD", ""):
             with self.assertRaises(urllib.error.HTTPError):
                 hbnscan.fetch_article("https://e.test/a")
 
     def test_hook_is_only_for_auth_failures_unless_always_is_set(self):
-        with mock.patch.object(hbnscan.urllib.request, "urlopen", side_effect=http_error(500)), \
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(500)), \
              mock.patch.object(hbnscan, "FETCH_CMD", "fetcher"), \
              mock.patch.object(hbnscan, "FETCH_CMD_ALWAYS", False):
             with self.assertRaises(urllib.error.HTTPError):
                 hbnscan.fetch_article("https://e.test/a")
-        with mock.patch.object(hbnscan.urllib.request, "urlopen", side_effect=http_error(500)), \
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(500)), \
              mock.patch.object(hbnscan, "FETCH_CMD", "fetcher"), \
              mock.patch.object(hbnscan, "FETCH_CMD_ALWAYS", True), \
-             mock.patch.object(hbnscan.subprocess, "run",
-                               return_value=subprocess.CompletedProcess([], 0, b"ok", b"")):
+             mock.patch.object(hbnscan.subprocess, "Popen",
+                               return_value=FakeProcess(b"ok")):
             self.assertIn("ok", hbnscan.fetch_article("https://e.test/a"))
 
     def test_hook_failure_reports_the_exit_code_and_last_stderr_line(self):
-        failed = subprocess.CompletedProcess([], 3, stdout=b"", stderr=b"warn\nboom")
-        with mock.patch.object(hbnscan.urllib.request, "urlopen", side_effect=http_error(403)), \
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(403)), \
              mock.patch.object(hbnscan, "FETCH_CMD", "fetcher"), \
-             mock.patch.object(hbnscan.subprocess, "run", return_value=failed):
+             mock.patch.object(hbnscan.subprocess, "Popen",
+                               return_value=FakeProcess(b"", b"warn\nboom", returncode=3)):
             with self.assertRaises(hbnscan.FeedError) as caught:
                 hbnscan.fetch_article("https://e.test/a")
         self.assertIn("exit 3", str(caught.exception))
         self.assertIn("boom", str(caught.exception))
 
     def test_missing_binary_is_a_clear_error(self):
-        with mock.patch.object(hbnscan.urllib.request, "urlopen", side_effect=http_error(403)), \
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(403)), \
              mock.patch.object(hbnscan, "FETCH_CMD", "definitely-not-installed"), \
-             mock.patch.object(hbnscan.subprocess, "run", side_effect=FileNotFoundError):
+             mock.patch.object(hbnscan.subprocess, "Popen", side_effect=FileNotFoundError):
             with self.assertRaises(hbnscan.FeedError) as caught:
                 hbnscan.fetch_article("https://e.test/a")
         self.assertIn("not found", str(caught.exception))
 
-    def test_oversized_hook_output_is_rejected(self):
-        with mock.patch.object(hbnscan.urllib.request, "urlopen", side_effect=http_error(403)), \
+    def test_oversized_hook_output_is_rejected_while_streaming(self):
+        process = FakeProcess(b"x" * (hbnscan.MAX_ARTICLE_BYTES + 1))
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(403)), \
              mock.patch.object(hbnscan, "FETCH_CMD", "fetcher"), \
-             mock.patch.object(hbnscan.subprocess, "run",
-                               return_value=subprocess.CompletedProcess(
-                                   [], 0, b"x" * (hbnscan.MAX_ARTICLE_BYTES + 1), b"")):
-            with self.assertRaises(hbnscan.FeedError):
+             mock.patch.object(hbnscan.subprocess, "Popen", return_value=process):
+            with self.assertRaises(hbnscan.FeedError) as caught:
                 hbnscan.fetch_article("https://e.test/a")
+        self.assertIn("size cap", str(caught.exception))
+        self.assertTrue(process.killed, "an oversized fetcher must be stopped, not drained")
+
+    def test_a_hung_fetcher_is_killed_and_reported_as_a_timeout(self):
+        process = FakeProcess(b"", hang=True)
+        with mock.patch.object(hbnscan.hbnet, "open_url", side_effect=http_error(403)), \
+             mock.patch.object(hbnscan, "FETCH_CMD", "fetcher"), \
+             mock.patch.object(hbnscan, "FETCH_CMD_TIMEOUT", 2), \
+             mock.patch.object(hbnscan.subprocess, "Popen", return_value=process):
+            with self.assertRaises(hbnscan.FeedError) as caught:
+                hbnscan.fetch_article("https://e.test/a")
+        self.assertIn("timed out", str(caught.exception))
+        self.assertTrue(process.killed)
 
     def test_a_failed_hook_does_not_block_the_host_for_the_whole_scan(self):
         lines = []

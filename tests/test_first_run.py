@@ -31,6 +31,92 @@ class GradingModeTest(unittest.TestCase):
         self.assertIn("briefing", text)
 
 
+class LocalProviderTest(unittest.TestCase):
+    """A local inference server is authorized by running it, not by inventing an API key."""
+
+    def status(self, base_url, api_key="", model="llama3.1"):
+        return hbnscan.ai_status(base_url=base_url, api_key=api_key, model=model)
+
+    def test_ollama_on_loopback_needs_no_key(self):
+        with mock.patch.object(hbnscan, "LLM_BASE_URL",
+                               "http://localhost:11434/v1/chat/completions"), \
+             mock.patch.object(hbnscan, "LLM_API_KEY", "your_deepseek_api_key_here"):
+            status = hbnscan.ai_status()
+            self.assertEqual(status["mode"], hbnscan.AI_MODE_LOCAL)
+            self.assertFalse(status["key_used"])
+            self.assertTrue(hbnscan.deepseek_configured(),
+                            "a local server is a configured provider")
+            self.assertEqual(hbnscan.grading_mode(), "model")
+            self.assertIn("local model", hbnscan.describe_grading_mode())
+
+    def test_a_lan_inference_server_counts_as_local(self):
+        for url in ("http://127.0.0.1:1234/v1/chat/completions",
+                    "http://192.168.1.50:1234/v1/chat/completions",
+                    "http://studio.local:8080/v1/chat/completions",
+                    "http://[::1]:11434/v1/chat/completions"):
+            self.assertEqual(self.status(url)["mode"], hbnscan.AI_MODE_LOCAL, url)
+
+    def test_a_remote_endpoint_still_needs_a_key(self):
+        status = self.status("https://api.deepseek.com/v1/chat/completions")
+        self.assertEqual(status["mode"], hbnscan.AI_MODE_OFFLINE)
+        self.assertIn("no API key", status["reason"])
+
+    def test_a_remote_endpoint_with_a_key_is_remote(self):
+        status = self.status("https://api.openai.com/v1/chat/completions", api_key="sk-real-key-1234")
+        self.assertEqual(status["mode"], hbnscan.AI_MODE_REMOTE)
+        self.assertTrue(status["key_used"])
+
+    def test_a_switched_off_provider_is_reported_as_disabled(self):
+        with mock.patch.object(hbnscan, "AI_DISABLED", True):
+            status = self.status("http://localhost:11434/v1/chat/completions",
+                                 api_key="sk-real-key-1234")
+            self.assertEqual(status["mode"], hbnscan.AI_MODE_DISABLED)
+            self.assertIn("switched off", hbnscan.describe_grading_mode())
+            self.assertFalse(hbnscan.deepseek_configured())
+
+    def test_the_placeholder_is_not_sent_as_a_key(self):
+        for template in ("your_deepseek_api_key_here", "your_api_key_here", "CHANGEME",
+                         "sk-xxxxxxxx", "  "):
+            self.assertEqual(hbnscan.llm_api_key(template), "", template)
+        self.assertEqual(hbnscan.llm_api_key("sk-real-key-1234"), "sk-real-key-1234")
+
+    def test_a_seeded_env_file_does_not_look_like_a_configured_key(self):
+        # bootstrap_home copies .env.example into .env; its template value must read as absent.
+        with mock.patch.object(hbnscan, "LLM_BASE_URL",
+                               "https://api.deepseek.com/v1/chat/completions"):
+            status = hbnscan.ai_status(api_key="your_api_key_here")
+        self.assertEqual(status["mode"], hbnscan.AI_MODE_OFFLINE)
+        self.assertFalse(status["key_used"])
+
+    def test_a_keyless_local_server_is_not_sent_an_authorization_header(self):
+        captured = {}
+
+        class FakeResponse:
+            headers = {}
+
+            def read(self, size=-1):
+                return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_open(url, purpose, timeout=None, headers=None, method=None, data=None,
+                      **kwargs):
+            captured.update(headers=headers, url=url)
+            return FakeResponse()
+
+        with mock.patch.object(hbnscan, "LLM_BASE_URL",
+                               "http://localhost:11434/v1/chat/completions"), \
+             mock.patch.object(hbnscan, "LLM_API_KEY", ""), \
+             mock.patch.object(hbnscan.hbnet, "open_url", side_effect=fake_open):
+            hbnscan._call_deepseek("system", "user", 16)
+        self.assertNotIn("Authorization", captured["headers"])
+        self.assertEqual(captured["url"], "http://localhost:11434/v1/chat/completions")
+
+
 class FirstRunFlagTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

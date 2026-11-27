@@ -10,8 +10,8 @@ select = ["E4", "E7", "E9", "F"]
 
 [tool.coverage.run]
 branch = false
-source = ["hbnscan", "hbworkspace", "hbconfig", "hbnweb", "hbntui", "hbsimilar",
-          "hbicons", "hbwasm"]
+source = ["hbnscan", "hbnet", "hbtheme", "hbworkspace", "hbconfig", "hbnweb", "hbntui",
+          "hbsimilar", "hbicons", "hbwasm"]
 
 [tool.coverage.report]
 skip_empty = true

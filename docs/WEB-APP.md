@@ -49,33 +49,51 @@ beyond your own machine.
 - **Filters that stick** — severity, category, priority, publication recency, order and row
   limit are ordinary settings: the web app saves them as you change them and restores them on the next visit, so a
   reload or a scan never puts the grid back to defaults.
-- **Theme** — five palettes, shared with the desktop app.
+- **Theme** — six palettes, shared with the desktop app and generated from one table.
 - **Export** — one click downloads the current signal set as HTML; every other format is served
   by the same endpoint (`/api/export?fmt=md|csv|json|docx|txt`).
 
 ### 1.2 Security model
 
-The web app is a **local** tool with no accounts. The token is a **CSRF guard, not a login**: it
-protects every request that *changes* something, while reads are open to anything that can reach
-the port.
+The web app is a **single-user** tool with no accounts, and it distinguishes three contexts
+instead of assuming one:
 
-- **Reads need no token.** `GET /api/state`, `/api/signals`, `/api/briefing` and `/api/export`
-  answer anyone who can reach the port, which is why the default bind is `127.0.0.1`. A page on
-  another origin cannot read those responses: they are `application/json` behind the same-origin
-  policy, and `X-Content-Type-Options: nosniff` stops the old JSON-hijacking trick of loading one
-  as a script. It can still *trigger* a GET — an export link would download your signals to your
-  own machine — but it cannot see them.
-- **Writes need the token**: scan, cancel, dismiss and settings. The page carries its own credential
-  (`secrets.token_urlsafe(18)`, replaced per run), which a foreign origin cannot read.
-- `--host 0.0.0.0` is possible and prints a warning: on a shared network every participant can read
-  your signals, and any of them could start a scan if they also read the token from the page. For
-  wildcard binds, use an IP address (including the machine's LAN address) in the browser; arbitrary
-  DNS hostnames are rejected by the Host check.
+| Context | Reads | Writes | How it is identified |
+| --- | --- | --- | --- |
+| Loopback (`127.0.0.1`, `::1`, `localhost`) | no token | token | the bind address |
+| LAN (`--host 192.168.x.x`, `--host 0.0.0.0`) | token or session | token or session | `require_auth` on the bound handler |
+| Remote | LAN policy **plus** TLS or a trusted reverse proxy | same | not something the server can provide itself |
+
+- **Loopback is the trusted case**, which is why it is the default. Mutating requests need the
+  per-run token (`secrets.token_urlsafe(18)`, `X-HB-Token`, compared with `compare_digest`), and
+  the page carries its own copy so a foreign origin cannot read it.
+- **A non-loopback bind requires the token for reads too.** Open
+  `http://host:8765/?token=<token>` once: the token is exchanged for a signed, expiring,
+  `HttpOnly` + `SameSite=Strict` cookie (`hb_session`, 12 h) and the browser is redirected to a
+  clean `/`. The cookie contains an HMAC over an expiry, never the token itself.
+- **The token is not embedded in the page in that mode**, because the page is reachable by
+  anyone on the network. Without a valid cookie it serves a small *token required* form and
+  nothing else.
+- **Query-string tokens are limited to one place** — a download the browser navigates to
+  (`/api/export`). Every other route reads only the header or the cookie, so a token cannot leak
+  into history, a log or a `Referer`. Request logs redact any `token=` value.
+- **Rate limits** apply per client address: 300 reads and 60 writes per minute, answered with
+  `429` rather than being queued.
 - Requests whose `Host` header is not the address the server bound are rejected (421), which
   defeats DNS-rebinding tricks.
+- **Headers on every response**: `Content-Security-Policy` (self only, no external origins),
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`,
+  `Permissions-Policy` with the sensors denied, and `Cache-Control: no-store`.
+- **The service worker honours `no-store`**: it caches the app shell and offline reads, but never
+  a response the server marked as non-cacheable.
 - No path serving: the only bytes it returns are pages and exports it renders itself.
 - Feed-derived text is written with `textContent`, never `innerHTML`, so a hostile headline cannot
   inject markup.
+
+Plain HTTP is not transport security. If the port is reachable beyond a network you control,
+put TLS (or an authenticating reverse proxy) in front of it; the token is a capability check,
+not a substitute for encryption.
 
 ### 1.3 HTTP API
 
@@ -96,7 +114,8 @@ Useful for scripting or a dashboard of your own.
 | POST | `/api/dismiss` | `{"hash": "...", "undo": false}` |
 | POST | `/api/settings` | persist `profile`, `feed_since`, `feed_until`, `table_limit`, `row_order`, `filter_*`, `topics_as_feeds`, `theme`, `auto_scan`, `scan_interval_minutes`, `scan_window_start`, `scan_window_end` |
 
-Mutating calls need `X-HB-Token: <token>`; the page's own download link passes it as `?token=`,
+Mutating calls need `X-HB-Token: <token>` (or a valid `hb_session` cookie); the page's own
+download link may pass it as `?token=`, the only route that accepts a query token,
 which is accepted everywhere for convenience. Reads need nothing — see §1.2.
 
 `POST /api/settings` takes a **partial** body — send just the keys you are changing, for example
@@ -186,16 +205,21 @@ is already running"* and returns.
 
 ## 4. Themes
 
-Five palettes ship, with identical names in the desktop and web apps, stored as the `theme`
-setting so a choice follows you between them:
+Six palettes ship, with identical names in the desktop and web apps, stored as the `theme`
+setting so a choice follows you between them. The table lives once, in `src/hbtheme.py`, and
+the page's CSS custom properties are generated from it, so the two front ends cannot drift.
 
 | Name | Look |
 | --- | --- |
-| `dark` | slate blue-black with amber accents (default) |
+| `classic` | Honey Badger Classic: muted light, slate header, brass accent (default) |
+| `dark` | slate blue-black with amber accents |
 | `light` | light grey with dark text |
 | `midnight` | near-black with blue accents |
 | `solarized` | Solarized Light — warm paper, teal text |
 | `contrast` | pure black, pure white text, yellow accents |
+
+`classic` is the default for a new installation. A saved `theme` is never rewritten, so an
+upgraded install keeps the palette it had.
 
 Desktop: **Settings → Appearance → Theme** (the window rebuilds to apply it). Web: the `theme`
 menu in the schedule bar. Terminal: colours follow the terminal's own palette.
@@ -207,6 +231,8 @@ menu in the schedule bar. Terminal: colours follow the terminal's own palette.
 | Symptom | Cause and fix |
 | --- | --- |
 | `403 missing or invalid token` | The page came from an older server run, or you are calling the API by hand: reload, or use the token printed at startup |
+| `401 this server needs the token` | The server is bound beyond loopback: open `http://host:port/?token=<token>` once to sign in |
+| `429 too many requests` | A per-client rate limit tripped; wait a minute |
 | `421 unexpected Host header` | Reached the server by a name it did not bind (proxy, hosts entry); use the printed URL |
 | `started: false` (409) | A scan is already running — wait, or press Stop |
 | Page loads but the grid is empty | Filters exclude everything, or the database is empty: clear search, set Priority and Category to *all* |
