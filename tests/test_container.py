@@ -13,9 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINT = ROOT / "packaging" / "docker" / "entrypoint.sh"
-MODULES = ("hbnscan.py", "hbnet.py", "hbtheme.py", "hbworkspace.py", "hbconfig.py",
-           "hbnconfig_gui.py", "hbnscan_gui.py", "hbntui.py", "hbnweb.py", "hbsimilar.py",
-           "hbicons.py", "hbversion.py")
+MODULES = ("hbnscan.py", "hbnet.py", "hbrecords.py", "hbtheme.py", "hbworkspace.py",
+           "hbconfig.py", "hbnconfig_gui.py", "hbnscan_gui.py", "hbntui.py", "hbnweb.py",
+           "hbsimilar.py", "hbicons.py", "hbversion.py")
 
 
 class EntrypointTest(unittest.TestCase):

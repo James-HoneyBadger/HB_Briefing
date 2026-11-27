@@ -92,6 +92,12 @@ nothing installed but Python. Details and the HTTP API: [Web app and terminal UI
 | TUI | `a` | `i` | `settings.json` |
 | CLI | `--auto` / `--no-auto` | `--interval N` | `--window HH:MM-HH:MM` or `off` |
 
+**Records.** The engine stores one row per observed item, but it reasons in `hbrecords` terms:
+a *source* is not an *article*, an article is not a *story*, a *signal* is not an *assessment*,
+and a re-grade is a new assessment rather than a rewrite of the evidence. Every record has a
+stable identifier derived from what it names, and every judgement is kept in an append-only
+history, so you can always see what a signal said before it changed and why.
+
 **Themes** ship as six named palettes shared by the desktop and web apps — `classic` (the
 muted-light house style, and the default for a new installation), `dark`, `light`, `midnight`,
 `solarized`, `contrast` — defined once in `hbtheme.py` and stored as one setting so the choice

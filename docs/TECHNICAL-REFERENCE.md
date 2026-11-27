@@ -102,6 +102,7 @@ The design choices that follow from that:
 | --- | --- | --- |
 | `hbnscan.py` | 5 300 | Engine: profiles, topics, feeds, scoring, AI, storage and migrations, report, exports, notifications, scheduling, daemon, CLI |
 | `hbnet.py` | 475 | Network trust boundary: purpose-based destination policy, address classification, DNS pinning, manual redirect validation, capped reads. Every outbound request goes through it |
+| `hbrecords.py` | 560 | Canonical intelligence records: `Source`, `SourceOccurrence`, `Article`, `Story`, `Claim`, `Signal`, `Assessment`, `Alert`, `Dossier`, `Action`; stable identifiers, versioned JSON, and the storage adapters that project a `seen_items` row into them. Also owns `canonical_url`, because article identity is derived from it |
 | `hbtheme.py` | 145 | Design tokens: the authoritative `PALETTE`, the six `THEMES`, and the CSS custom properties the web app generates from them |
 | `hbworkspace.py` | 900 | Research workspace: dossiers, notes, actions, cited reports, source health, workspace CLI. Deterministic, offline, no network |
 | `hbconfig.py` | 700 | Configuration workspace: lossless documents for `feeds.txt`/`topics.txt`/`watchlist.txt`, profile validation, `.env` budgets and transport, whole-configuration diagnostics |
@@ -115,6 +116,9 @@ The design choices that follow from that:
 | `docs/*.md` | — | Instructions, manual, front ends, this reference |
 | `tests/` | — | Engine, delivery, workspace, web API, TUI and GUI smoke tests |
 | `pyproject.toml`, `requirements-dev.txt` | — | Lint and coverage configuration; development-only pins |
+
+Signals are read through `signal_record(row)`, which returns the canonical `hbrecords.Signal`,
+so a column rename cannot mean two different things in two front ends.
 
 No front end contains pipeline logic. Each one reads the database, calls the same engine
 functions (`run_scan`, `select_signals`, `export_items`, `build_briefing`, `next_scan_delay`,
@@ -149,6 +153,66 @@ with every edit, so this map names the entry points instead; follow the banner c
 | dismissals / reclassify | `dismiss_item`, `reclassify` | auditable state transitions |
 | report | `_report_summary`, `_report_new_section`, `write_report` | `latest_report.md` |
 | CLI | `_apply_cli_schedule`, `__main__` dispatch | flags, and the `dossier`/`action`/`sources` hand-off |
+
+### 2.2 Canonical records (`hbrecords.py`)
+
+The stored shape is one `seen_items` row per observed item, with the verdict columns beside it.
+That is a workable *storage* shape but a poor *thinking* shape: it makes a publisher, an
+article, a story, a signal and a judgement look like one thing. `hbrecords` separates them.
+
+| Record | Names | Identity |
+| --- | --- | --- |
+| `Source` | a publisher and the endpoint its material arrives through | `src:` + the feed URL |
+| `SourceOccurrence` | one observation of one item through one feed | `occ:` + (feed URL, delivered link) |
+| `Article` | one published document | `art:` + the canonical URL |
+| `Story` | a development several articles may represent | `sto:` + its grouping keys |
+| `Claim` | an assertion attributed to evidence | `clm:` + (statement, article) |
+| `Signal` | an assessed development | `sig:` + its article (or item hash when there is no usable URL) |
+| `Assessment` | one interpretation under one profile, at one time | `asm:` + (stored row, profile, method, verdict, chain) |
+| `Alert` | a notification generated under a rule | `alt:` + (signal, channel, rule) |
+| `Dossier` | a persistent research collection | `dos:` + the dossier row |
+| `Action` | a follow-up task | `act:` + the action row |
+
+Three rules make the model useful rather than decorative:
+
+- **Identity comes from the thing, not from a row number or a timestamp.** Re-running a
+  classification produces the same signal and the same article; only a genuinely new judgement
+  produces a new assessment. A tracking parameter or a `www.` does not invent a second article,
+  and the same article seen through three feeds is one article with three occurrences — a
+  syndicated copy is not corroboration.
+- **A judgement never destroys its evidence.** `signal_from_row`, `article_from_row` and
+  `occurrence_from_row` each carry what the row actually holds, and `Article.completeness`
+  distinguishes `headline`, `summary`, `partial`, `full`, `official`, `user` and `unavailable`
+  instead of implying that every item was read.
+- **Uncertainty is a field, not a vibe.** `Claim.status` (`asserted`, `corroborated`,
+  `contradicted`, `unresolved`), `Article.retrieval_outcome` and `Alert.state` (including
+  `uncertain`) exist so the application can say "unknown" rather than guess.
+
+Records are versioned: `CONTRACT_VERSION` is written into every record, `from_dict` refuses a
+newer contract instead of dropping fields it does not understand, and an older contract is kept
+so a migration can find it. `envelope()` is the portable form (`kind`, `contract`, `id`,
+`record`) used by interchange files.
+
+**Assessment history.** `assessment_history` is append-only and keyed by the stored item:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | the `asm:` identifier, scoped to the stored row |
+| `item_hash` | the signal row this judgement is about |
+| `profile`, `method`, `layer` | under which profile, by which method (`watchlist`, `topic`, `heuristic`, `model`, `deep_read`, `user`) |
+| `category`, `severity`, `flagged`, `confidence` | the verdict itself |
+| `analysis`, `reason` | what was said, and the rule behind it |
+| `supersedes` | the id of the judgement this one replaced |
+
+`record_assessment()` appends and links the chain; `assessment_history()` reads it newest first.
+The origin judgement is recorded when an item is first stored, and every `reclassify()` change
+appends a new one. `reclassify(apply=False)` records nothing. Pruning deletes history with an
+unflagged row and keeps it for a flagged signal, so an auditable record is never silently
+truncated.
+
+The assessment id is scoped to the stored row rather than only to the article: two rows can
+share a link while carrying different headlines, and one must not overwrite the other's chain.
+`signal_id` stays article-based, because the signal is the same development either way.
 
 ---
 
@@ -1012,7 +1076,7 @@ factory) and does three things in order:
 3. Ordered data steps in `_MIGRATIONS`, each guarded by `PRAGMA user_version`, then
    `user_version = SCHEMA_VERSION`.
 
-Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **5**:
+Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **6**:
 
 | Version | Step | What it does |
 | --- | --- | --- |
@@ -1021,6 +1085,7 @@ Step 3 is what makes a backfill possible at all. `SCHEMA_VERSION` is **5**:
 | 3 | `_backfill_feed_health` | seeds `feed_state.last_success_at` from `checked_at`, leaving HTTP status unknown rather than inventing one |
 | 4 | `_backfill_story_bands` | indexes every stored headline for the near-duplicate pass |
 | 5 | `_ensure_dossier_snapshots` | creates the export-history table a dossier report diffs against |
+| 6 | — (schema only) | adds `assessment_history`, the append-only judgement log; created by `_create_schema`, so existing databases pick it up on the next open |
 
 Table and column creation is separate from the versioned steps: `_create_schema` and
 `_ensure_columns` are idempotent and run on every open, and the version gates only work that

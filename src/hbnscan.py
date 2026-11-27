@@ -47,11 +47,12 @@ import html
 from html.parser import HTMLParser
 from xml.sax.saxutils import escape
 from pathlib import Path
-from urllib.parse import parse_qsl, quote_plus, urlencode, urlparse, urlsplit
+from urllib.parse import quote_plus, urlencode, urlparse, urlsplit
 
 from dotenv import dotenv_values, load_dotenv
 
 import hbnet
+import hbrecords
 import hbsimilar
 import hbtheme
 from hbversion import VERSION
@@ -353,7 +354,7 @@ SCAN_RUN_EXTRA_COLUMNS = (
 
 # Bumped when a step is added to _MIGRATIONS; stored in PRAGMA user_version so a database
 # can be upgraded exactly once. Additive column sync alone cannot backfill or index.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SOURCE_LAYERS = ("watchlist", "topic", "heuristic", "model")
 
@@ -1923,6 +1924,27 @@ def _create_schema(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_status "
                  "ON actions (status, priority)")
     _ensure_dossier_snapshots(conn)
+    # Assessment history: append-only, one row per judgement. The signal itself is never
+    # rewritten by this table, so a re-classification cannot destroy the evidence behind it.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS assessment_history (
+            id TEXT PRIMARY KEY,
+            item_hash TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            profile TEXT DEFAULT '',
+            method TEXT DEFAULT '',
+            layer TEXT DEFAULT '',
+            category TEXT DEFAULT '',
+            severity TEXT DEFAULT '',
+            flagged INTEGER DEFAULT 0,
+            confidence REAL,
+            analysis TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            supersedes TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_assessment_signal "
+                 "ON assessment_history (item_hash, recorded_at)")
     # MinHash band keys: a shared band makes two rows candidates for an exact Jaccard check.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS story_bands (
@@ -2194,12 +2216,86 @@ def set_feed_state(conn, feed_url, etag, last_modified):
     )
 
 
+def _delete_quietly(conn, sql, params=()):
+    """Run a maintenance delete, tolerating a database that predates the table."""
+    try:
+        conn.execute(sql, params)
+    except sqlite3.OperationalError:
+        pass
+
+
 def prune_old_items(conn, days=RETENTION_DAYS):
     cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
     conn.execute(
         "DELETE FROM story_bands WHERE item_hash IN "
         "(SELECT item_hash FROM seen_items WHERE flagged = 0 AND seen_at < ?)", (cutoff,))
+    # History for a row that is about to disappear goes with it; flagged signals keep theirs.
+    _delete_quietly(
+        conn,
+        "DELETE FROM assessment_history WHERE item_hash IN "
+        "(SELECT item_hash FROM seen_items WHERE flagged = 0 AND seen_at < ?)", (cutoff,))
     conn.execute("DELETE FROM seen_items WHERE flagged = 0 AND seen_at < ?", (cutoff,))
+
+
+# --------------------------------------------------------------------------- assessment history
+
+
+def profile_identity():
+    """A stable key for the profile a verdict was made under, used in assessment history."""
+    try:
+        path = active_profile_path()
+    except (OSError, ValueError):
+        return PROFILE.name
+    return path.stem if path.exists() else PROFILE.name
+
+
+def record_assessment(conn, item_hash_value, *, link="", profile="", method="", layer="",
+                      category="", severity="", flagged=0, confidence=0.0, analysis="",
+                      reason="", supersedes=None, evidence=()):
+    """Append one assessment to a signal's history and return it.
+
+    Append-only by design: the previous judgement stays readable, and `supersedes` points at
+    it, so "why did this change" has an answer after the fact. The signal row itself is not
+    touched here — re-classification writes its own columns and then calls this.
+    """
+    if supersedes is None:
+        row = conn.execute(
+            "SELECT id FROM assessment_history WHERE item_hash = ? "
+            "ORDER BY recorded_at DESC, rowid DESC LIMIT 1",
+            (item_hash_value,)).fetchone()
+        supersedes = row[0] if row else ""
+    record = hbrecords.assessment_for(
+        item_hash_value, link, profile=profile or profile_identity(),
+        method=method or layer or "heuristic", layer=layer, category=category,
+        severity=severity, flagged=flagged, confidence=confidence, analysis=analysis,
+        reason=reason, supersedes=supersedes, evidence=evidence)
+    conn.execute(
+        "INSERT OR REPLACE INTO assessment_history "
+        "(id, item_hash, recorded_at, profile, method, layer, category, severity, flagged, "
+        "confidence, analysis, reason, supersedes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (record.id, item_hash_value, record.recorded_at, record.profile, record.method,
+         record.layer, record.category, record.severity, int(bool(record.flagged)),
+         record.confidence, record.analysis, record.reason, record.supersedes))
+    return record
+
+
+def assessment_history(conn, item_hash_value, limit=50):
+    """One signal's assessments, newest first; empty when none were recorded."""
+    rows = conn.execute(
+        "SELECT id, recorded_at, profile, method, layer, category, severity, flagged, "
+        "confidence, analysis, reason, supersedes FROM assessment_history "
+        "WHERE item_hash = ? ORDER BY recorded_at DESC, rowid DESC LIMIT ?",
+        (item_hash_value, limit)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def signal_record(row):
+    """The canonical `Signal` for a stored row.
+
+    Every front end reads signals through this, so the record shape cannot drift between the
+    GUI, the web app, the terminal and the reports.
+    """
+    return hbrecords.signal_from_row(row)
 
 
 # --------------------------------------------------------------------------- watchlist
@@ -3552,39 +3648,11 @@ def item_hash(title, link):
     return hashlib.sha256(f"{title}|{link}".encode("utf-8")).hexdigest()
 
 
-TRACKING_PARAMS = frozenset((
-    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
-    "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer", "source", "cmpid",
-))
-
-
-def canonical_url(url):
-    """A comparable form of an article URL.
-
-    Host case, a leading `www.`, the fragment and tracking parameters are dropped and the
-    remaining query is sorted, so the same article linked from two places compares equal.
-    Returns "" for anything that is not http(s) with a host.
-    """
-    text = (url or "").strip()
-    if not text:
-        return ""
-    try:
-        parts = urlsplit(text)
-        port = parts.port
-    except ValueError:
-        return ""
-    if parts.scheme not in ("http", "https"):
-        return ""
-    host = (parts.hostname or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    if not host:
-        return ""
-    pairs = sorted((key, value) for key, value in parse_qsl(parts.query)
-                   if key.lower() not in TRACKING_PARAMS)
-    suffix = f":{port}" if port and port not in (80, 443) else ""
-    path = parts.path.rstrip("/")
-    return f"https://{host}{suffix}{path}" + (f"?{urlencode(pairs)}" if pairs else "")
+# Canonicalisation lives in hbrecords, which derives article identity from it. Re-exported
+# here so every existing caller (and `hbnscan.canonical_url` in tests and front ends) keeps
+# resolving to the one implementation.
+canonical_url = hbrecords.canonical_url
+TRACKING_PARAMS = hbrecords.TRACKING_PARAMS
 
 
 def _story_digest(value):
@@ -3840,6 +3908,7 @@ def _scan_feed(conn, url, since, until, budget, cancel, log_callback, max_new=MA
 
     processed = 0
     capped = False
+    profile_key = profile_identity()      # one settings read per feed, not per item
     for item in items:
         if cancel is not None and cancel.is_set():
             stats["cancelled"] = True
@@ -3874,6 +3943,12 @@ def _scan_feed(conn, url, since, until, budget, cancel, log_callback, max_new=MA
         verdict = budget.assess(item, url, log_callback)
         row = _verdict_row(item, url, verdict)
         conn.execute(INSERT_SQL, row)
+        # The origin judgement, so a later re-classification has something to supersede.
+        record_assessment(
+            conn, row[0], link=row[2], profile=profile_key,
+            method=verdict.get("layer") or row[16], layer=row[16], category=row[7],
+            severity=row[8], flagged=row[4], confidence=row[12] or 0.0, analysis=row[5],
+            reason=row[17])
         adopt_cluster(conn, row[0], row[-3], row[-2])
         similar = adopt_similar(conn, row[0], item["title"], row[-1])
         if similar:
@@ -4963,13 +5038,16 @@ def reclassify(conn, apply=True, log_callback=print, profile=None):
     """
     active = profile or current_profile()
     rows = conn.execute(
-        "SELECT rowid, title, category, severity, summary FROM seen_items "
+        "SELECT rowid, title, category, severity, summary, item_hash, link, flagged, "
+        f"confidence FROM seen_items "
         f"WHERE {VISIBLE_SQL} AND {_layer_sql()} IN ('heuristic', 'watchlist', 'topic')"
     ).fetchall()
 
     changes = []
     nav_pages = 0
-    for rowid, title, old_category, old_severity, summary in rows:
+    profile_key = profile_identity()
+    for (rowid, title, old_category, old_severity, summary, item_hash_value, link, flagged,
+         confidence) in rows:
         title_text = (title or "").lower()
         if _signals_in(title_text, active.noise_title_signals):
             # Flagged before the page-type rule existed. Re-deriving cannot fix it
@@ -5002,7 +5080,9 @@ def reclassify(conn, apply=True, log_callback=print, profile=None):
             changes.append({"old_category": old_category, "old_severity": old_severity,
                             "category": category, "severity": severity, "title": title,
                             "rowid": rowid, "analysis": analysis,
-                            "layer": layer, "reason": reason})
+                            "layer": layer, "reason": reason,
+                            "item_hash": item_hash_value, "link": link,
+                            "flagged": flagged, "confidence": confidence})
 
     if apply and changes:
         conn.executemany(
@@ -5011,6 +5091,14 @@ def reclassify(conn, apply=True, log_callback=print, profile=None):
             [(c["category"], c["severity"], c["analysis"], c["layer"], c["reason"],
               c["rowid"]) for c in changes],
         )
+        # Append the new judgement; the row it replaced stays in the history untouched.
+        for change in changes:
+            record_assessment(
+                conn, change["item_hash"], link=change["link"], profile=profile_key,
+                method=change["layer"], layer=change["layer"], category=change["category"],
+                severity=change["severity"], flagged=change["flagged"],
+                confidence=change["confidence"] or 0.0, analysis=change["analysis"],
+                reason=change["reason"])
         conn.commit()
 
     log_callback(
